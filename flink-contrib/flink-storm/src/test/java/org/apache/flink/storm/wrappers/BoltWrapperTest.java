@@ -35,6 +35,7 @@ import org.apache.flink.configuration.UnmodifiableConfiguration;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.operators.testutils.UnregisteredTaskMetricsGroup;
+import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 import org.apache.flink.storm.util.AbstractTest;
 import org.apache.flink.storm.util.SplitStreamType;
 import org.apache.flink.storm.util.StormConfig;
@@ -42,8 +43,8 @@ import org.apache.flink.storm.util.TestDummyBolt;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
+import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecordSerializer;
 import org.apache.flink.streaming.runtime.tasks.StreamTask;
 import org.junit.Assert;
 import org.junit.Test;
@@ -67,8 +68,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @RunWith(PowerMockRunner.class)
-@PrepareForTest({StreamRecordSerializer.class, WrapperSetupHelper.class, StreamRecord.class})
-@PowerMockIgnore({"javax.management.*", "com.sun.jndi.*"})
+@PrepareForTest({StreamElementSerializer.class, WrapperSetupHelper.class, StreamRecord.class})
+@PowerMockIgnore({"javax.management.*", "com.sun.jndi.*", "org.apache.log4j.*"})
 public class BoltWrapperTest extends AbstractTest {
 
 	@Test(expected = IllegalArgumentException.class)
@@ -327,7 +328,7 @@ public class BoltWrapperTest extends AbstractTest {
 
 	private static final class TestBolt implements IRichBolt {
 		private static final long serialVersionUID = 7278692872260138758L;
-		private OutputCollector collector;
+		private transient OutputCollector collector;
 
 		@SuppressWarnings("rawtypes")
 		@Override
@@ -366,9 +367,10 @@ public class BoltWrapperTest extends AbstractTest {
 
 	public static StreamTask<?, ?> createMockStreamTask(ExecutionConfig execConfig) {
 		Environment env = mock(Environment.class);
-		when(env.getTaskInfo()).thenReturn(new TaskInfo("Mock Task", 0, 1, 0));
+		when(env.getTaskInfo()).thenReturn(new TaskInfo("Mock Task", 1, 0, 1, 0));
 		when(env.getUserClassLoader()).thenReturn(BoltWrapperTest.class.getClassLoader());
 		when(env.getMetricGroup()).thenReturn(new UnregisteredTaskMetricsGroup());
+		when(env.getTaskManagerInfo()).thenReturn(new TestingTaskManagerRuntimeInfo());
 
 		StreamTask<?, ?> mockTask = mock(StreamTask.class);
 		when(mockTask.getCheckpointLock()).thenReturn(new Object());

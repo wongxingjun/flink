@@ -57,7 +57,17 @@ public abstract class RestartStrategyFactory implements Serializable {
 
 			return new FixedDelayRestartStrategy(
 				fixedDelayConfig.getRestartAttempts(),
-				fixedDelayConfig.getDelayBetweenAttempts());
+				fixedDelayConfig.getDelayBetweenAttemptsInterval().toMilliseconds());
+		} else if (restartStrategyConfiguration instanceof RestartStrategies.FailureRateRestartStrategyConfiguration) {
+			RestartStrategies.FailureRateRestartStrategyConfiguration config =
+					(RestartStrategies.FailureRateRestartStrategyConfiguration) restartStrategyConfiguration;
+			return new FailureRateRestartStrategy(
+					config.getMaxFailureRate(),
+					config.getFailureInterval(),
+					config.getDelayBetweenAttemptsInterval()
+			);
+		} else if (restartStrategyConfiguration instanceof RestartStrategies.FallbackRestartStrategyConfiguration) {
+			return null;
 		} else {
 			throw new IllegalArgumentException("Unknown restart strategy configuration " +
 				restartStrategyConfiguration + ".");
@@ -71,9 +81,9 @@ public abstract class RestartStrategyFactory implements Serializable {
 	 * @throws Exception which indicates that the RestartStrategy could not be instantiated.
 	 */
 	public static RestartStrategyFactory createRestartStrategyFactory(Configuration configuration) throws Exception {
-		String restartStrategyName = configuration.getString(ConfigConstants.RESTART_STRATEGY, "none").toLowerCase();
+		String restartStrategyName = configuration.getString(ConfigConstants.RESTART_STRATEGY, "none");
 
-		switch (restartStrategyName) {
+		switch (restartStrategyName.toLowerCase()) {
 			case "none":
 				// support deprecated ConfigConstants values
 				final int numberExecutionRetries = configuration.getInteger(ConfigConstants.EXECUTION_RETRIES_KEY,
@@ -110,6 +120,9 @@ public abstract class RestartStrategyFactory implements Serializable {
 			case "fixeddelay":
 			case "fixed-delay":
 				return FixedDelayRestartStrategy.createFactory(configuration);
+			case "failurerate":
+			case "failure-rate":
+				return FailureRateRestartStrategy.createFactory(configuration);
 			default:
 				try {
 					Class<?> clazz = Class.forName(restartStrategyName);

@@ -19,9 +19,7 @@
 package org.apache.flink.api.common.io;
 
 import org.apache.flink.annotation.Public;
-import org.apache.flink.util.Preconditions;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.io.statistics.BaseStatistics;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
@@ -30,10 +28,15 @@ import org.apache.flink.core.fs.FileInputSplit;
 import org.apache.flink.core.fs.FileStatus;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.types.parser.FieldParser;
+import org.apache.flink.util.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
 
 /**
  * Base implementation for input formats that split the input at a delimiter into records.
@@ -54,8 +57,11 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	 */
 	private static final Logger LOG = LoggerFactory.getLogger(DelimitedInputFormat.class);
 
-	/** The default charset  to convert strings to bytes */
-	private static final Charset UTF_8_CHARSET = Charset.forName("UTF-8");
+	// The charset used to convert strings to bytes
+	private String charsetName = "UTF-8";
+
+	// Charset is not serializable
+	private transient Charset charset;
 
 	/**
 	 * The default read buffer size = 1MB.
@@ -82,12 +88,18 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	 */
 	private static int MAX_SAMPLE_LEN;
 
-	static { loadGlobalConfigParams(); }
-	
+	/**
+	 * @Deprecated Please use {@code loadConfigParameters(Configuration config}
+	 */
+	@Deprecated
 	protected static void loadGlobalConfigParams() {
-		int maxSamples = GlobalConfiguration.getInteger(ConfigConstants.DELIMITED_FORMAT_MAX_LINE_SAMPLES_KEY,
+		loadConfigParameters(GlobalConfiguration.loadConfiguration());
+	}
+
+	protected static void loadConfigParameters(Configuration parameters) {
+		int maxSamples = parameters.getInteger(ConfigConstants.DELIMITED_FORMAT_MAX_LINE_SAMPLES_KEY,
 				ConfigConstants.DEFAULT_DELIMITED_FORMAT_MAX_LINE_SAMPLES);
-		int minSamples = GlobalConfiguration.getInteger(ConfigConstants.DELIMITED_FORMAT_MIN_LINE_SAMPLES_KEY,
+		int minSamples = parameters.getInteger(ConfigConstants.DELIMITED_FORMAT_MIN_LINE_SAMPLES_KEY,
 			ConfigConstants.DEFAULT_DELIMITED_FORMAT_MIN_LINE_SAMPLES);
 		
 		if (maxSamples < 0) {
@@ -111,7 +123,7 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 			DEFAULT_MIN_NUM_SAMPLES = minSamples;
 		}
 		
-		int maxLen = GlobalConfiguration.getInteger(ConfigConstants.DELIMITED_FORMAT_MAX_SAMPLE_LENGTH_KEY,
+		int maxLen = parameters.getInteger(ConfigConstants.DELIMITED_FORMAT_MAX_SAMPLE_LENGTH_KEY,
 				ConfigConstants.DEFAULT_DELIMITED_FORMAT_MAX_SAMPLE_LEN);
 		if (maxLen <= 0) {
 			maxLen = ConfigConstants.DEFAULT_DELIMITED_FORMAT_MAX_SAMPLE_LEN;
@@ -149,9 +161,12 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	// --------------------------------------------------------------------------------------------
 	//  The configuration parameters. Configured on the instance and serialized to be shipped.
 	// --------------------------------------------------------------------------------------------
-	
+
+	// The delimiter may be set with a byte-sequence or a String. In the latter
+	// case the byte representation is updated consistent with current charset.
 	private byte[] delimiter = new byte[] {'\n'};
-	
+	private String delimiterString = null;
+
 	private int lineLengthLimit = Integer.MAX_VALUE;
 	
 	private int bufferSize = -1;
@@ -162,16 +177,54 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	// --------------------------------------------------------------------------------------------
 	//  Constructors & Getters/setters for the configurable parameters
 	// --------------------------------------------------------------------------------------------
-	
+
 	public DelimitedInputFormat() {
-		super();
+		this(null, null);
 	}
-	
-	protected DelimitedInputFormat(Path filePath) {
+
+	protected DelimitedInputFormat(Path filePath, Configuration configuration) {
 		super(filePath);
+		if (configuration == null) {
+			configuration = GlobalConfiguration.loadConfiguration();
+		}
+		loadConfigParameters(configuration);
 	}
-	
-	
+
+	/**
+	 * Get the character set used for the row delimiter. This is also used by
+	 * subclasses to interpret field delimiters, comment strings, and for
+	 * configuring {@link FieldParser}s.
+	 *
+	 * @return the charset
+	 */
+	@PublicEvolving
+	public Charset getCharset() {
+		if (this.charset == null) {
+			this.charset = Charset.forName(charsetName);
+		}
+		return this.charset;
+	}
+
+	/**
+	 * Set the name of the character set used for the row delimiter. This is
+	 * also used by subclasses to interpret field delimiters, comment strings,
+	 * and for configuring {@link FieldParser}s.
+	 *
+	 * These fields are interpreted when set. Changing the charset thereafter
+	 * may cause unexpected results.
+	 *
+	 * @param charset name of the charset
+	 */
+	@PublicEvolving
+	public void setCharset(String charset) {
+		this.charsetName = Preconditions.checkNotNull(charset);
+		this.charset = null;
+
+		if (this.delimiterString != null) {
+			this.delimiter = delimiterString.getBytes(getCharset());
+		}
+	}
+
 	public byte[] getDelimiter() {
 		return delimiter;
 	}
@@ -180,8 +233,8 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 		if (delimiter == null) {
 			throw new IllegalArgumentException("Delimiter must not be null");
 		}
-		
 		this.delimiter = delimiter;
+		this.delimiterString = null;
 	}
 
 	public void setDelimiter(char delimiter) {
@@ -189,7 +242,11 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	}
 	
 	public void setDelimiter(String delimiter) {
-		this.delimiter = delimiter.getBytes(UTF_8_CHARSET);
+		if (delimiter == null) {
+			throw new IllegalArgumentException("Delimiter must not be null");
+		}
+		this.delimiter = delimiter.getBytes(getCharset());
+		this.delimiterString = delimiter;
 	}
 	
 	public int getLineLengthLimit() {
@@ -224,7 +281,6 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 		if (numLineSamples < 0) {
 			throw new IllegalArgumentException("Number of line samples must not be negative.");
 		}
-		
 		this.numLineSamples = numLineSamples;
 	}
 
@@ -251,7 +307,7 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	// --------------------------------------------------------------------------------------------
 	
 	/**
-	 * Configures this input format by reading the path to the file from the configuration andge the string that
+	 * Configures this input format by reading the path to the file from the configuration and the string that
 	 * defines the record delimiter.
 	 * 
 	 * @param parameters The configuration object to read the parameters from.
@@ -259,23 +315,29 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	@Override
 	public void configure(Configuration parameters) {
 		super.configure(parameters);
-		
-		String delimString = parameters.getString(RECORD_DELIMITER, null);
-		if (delimString != null) {
-			setDelimiter(delimString);
+
+		// the if() clauses are to prevent the configure() method from
+		// overwriting the values set by the setters
+
+		if (Arrays.equals(delimiter, new byte[] {'\n'})) {
+			String delimString = parameters.getString(RECORD_DELIMITER, null);
+			if (delimString != null) {
+				setDelimiter(delimString);
+			}
 		}
 		
 		// set the number of samples
-		String samplesString = parameters.getString(NUM_STATISTICS_SAMPLES, null);
-		if (samplesString != null) {
-			try {
-				setNumLineSamples(Integer.parseInt(samplesString));
-			}
-			catch (NumberFormatException e) {
-				if (LOG.isWarnEnabled()) {
-					LOG.warn("Invalid value for number of samples to take: " + samplesString + ". Skipping sampling.");
+		if (numLineSamples == NUM_SAMPLES_UNDEFINED) {
+			String samplesString = parameters.getString(NUM_STATISTICS_SAMPLES, null);
+			if (samplesString != null) {
+				try {
+					setNumLineSamples(Integer.parseInt(samplesString));
+				} catch (NumberFormatException e) {
+					if (LOG.isWarnEnabled()) {
+						LOG.warn("Invalid value for number of samples to take: " + samplesString + ". Skipping sampling.");
+					}
+					setNumLineSamples(0);
 				}
-				setNumLineSamples(0);
 			}
 		}
 	}
@@ -629,11 +691,13 @@ public abstract class DelimitedInputFormat<OT> extends FileInputFormat<OT> imple
 	//  Checkpointing
 	// --------------------------------------------------------------------------------------------
 
+	@PublicEvolving
 	@Override
 	public Long getCurrentState() throws IOException {
 		return this.offset;
 	}
 
+	@PublicEvolving
 	@Override
 	public void reopen(FileInputSplit split, Long state) throws IOException {
 		Preconditions.checkNotNull(split, "reopen() cannot be called on a null split.");

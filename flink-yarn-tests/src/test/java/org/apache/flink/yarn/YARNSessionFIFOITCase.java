@@ -81,10 +81,11 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 	 * Test regular operation, including command line parameter parsing.
 	 */
 	@Test(timeout=60000) // timeout after a minute.
-	public void testDetachedMode() {
+	public void testDetachedMode() throws InterruptedException {
 		LOG.info("Starting testDetachedMode()");
 		addTestAppender(FlinkYarnSessionCli.class, Level.INFO);
-		Runner runner = startWithArgs(new String[]{"-j", flinkUberjar.getAbsolutePath(),
+		Runner runner =
+			startWithArgs(new String[]{"-j", flinkUberjar.getAbsolutePath(),
 						"-t", flinkLibFolder.getAbsolutePath(),
 						"-n", "1",
 						"-jm", "768",
@@ -93,6 +94,8 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 						"--detached"},
 				"Flink JobManager is now running on", RunTypes.YARN_SESSION);
 
+		// before checking any strings outputted by the CLI, first give it time to return
+		runner.join();
 		checkForLogString("The Flink YARN client has been started in detached mode");
 
 		LOG.info("Waiting until two containers are running");
@@ -100,6 +103,9 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 		while(getRunningContainers() < 2) {
 			sleep(500);
 		}
+
+		//additional sleep for the JM/TM to start and establish connection
+		sleep(2000);
 		LOG.info("Two containers are running. Killing the application");
 
 		// kill application "externally".
@@ -121,6 +127,27 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 		} catch(Throwable t) {
 			LOG.warn("Killing failed", t);
 			Assert.fail();
+		} finally {
+
+			//cleanup the yarn-properties file
+			String confDirPath = System.getenv("FLINK_CONF_DIR");
+			File configDirectory = new File(confDirPath);
+			LOG.info("testDetachedPerJobYarnClusterInternal: Using configuration directory " + configDirectory.getAbsolutePath());
+
+			// load the configuration
+			LOG.info("testDetachedPerJobYarnClusterInternal: Trying to load configuration file");
+			GlobalConfiguration.loadConfiguration(configDirectory.getAbsolutePath());
+
+			try {
+				File yarnPropertiesFile = FlinkYarnSessionCli.getYarnPropertiesLocation(GlobalConfiguration.loadConfiguration());
+				if(yarnPropertiesFile.exists()) {
+					LOG.info("testDetachedPerJobYarnClusterInternal: Cleaning up temporary Yarn address reference: {}", yarnPropertiesFile.getAbsolutePath());
+					yarnPropertiesFile.delete();
+				}
+			} catch (Exception e) {
+				LOG.warn("testDetachedPerJobYarnClusterInternal: Exception while deleting the JobManager address file", e);
+			}
+
 		}
 
 		LOG.info("Finished testDetachedMode()");
@@ -138,21 +165,6 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 		LOG.info("Finished testQueryCluster()");
 	}
 
-	/**
-	 * Test deployment to non-existing queue. (user-reported error)
-	 * Deployment to the queue is possible because there are no queues, so we don't check.
-	 */
-	@Test
-	public void testNonexistingQueue() {
-		LOG.info("Starting testNonexistingQueue()");
-		runWithArgs(new String[]{"-j", flinkUberjar.getAbsolutePath(),
-				"-t", flinkLibFolder.getAbsolutePath(),
-				"-n", "1",
-				"-jm", "768",
-				"-tm", "1024",
-				"-qu", "doesntExist"}, "Number of connected TaskManagers changed to 1. Slots available: 1", null, RunTypes.YARN_SESSION, 0);
-		LOG.info("Finished testNonexistingQueue()");
-	}
 
 	/**
 	 * The test cluster has the following resources:
@@ -225,7 +237,7 @@ public class YARNSessionFIFOITCase extends YarnTestBase {
 		flinkYarnClient.addShipFiles(Arrays.asList(flinkLibFolder.listFiles()));
 		String confDirPath = System.getenv(ConfigConstants.ENV_FLINK_CONF_DIR);
 		flinkYarnClient.setConfigurationDirectory(confDirPath);
-		flinkYarnClient.setFlinkConfiguration(GlobalConfiguration.getConfiguration());
+		flinkYarnClient.setFlinkConfiguration(GlobalConfiguration.loadConfiguration());
 		flinkYarnClient.setConfigurationFilePath(new Path(confDirPath + File.separator + "flink-conf.yaml"));
 
 		// deploy

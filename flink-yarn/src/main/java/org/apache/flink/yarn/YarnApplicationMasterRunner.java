@@ -25,25 +25,31 @@ import akka.actor.Props;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.clusterframework.BootstrapTools;
 import org.apache.flink.runtime.clusterframework.ContaineredTaskManagerParameters;
 import org.apache.flink.runtime.jobmanager.JobManager;
 import org.apache.flink.runtime.jobmanager.MemoryArchivist;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
+import org.apache.flink.runtime.net.SSLUtils;
 import org.apache.flink.runtime.process.ProcessReaper;
+import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.runtime.taskmanager.TaskManager;
 import org.apache.flink.runtime.util.EnvironmentInformation;
+import org.apache.flink.runtime.util.Hardware;
+import org.apache.flink.runtime.util.JvmShutdownSafeguard;
 import org.apache.flink.runtime.util.LeaderRetrievalUtils;
+import org.apache.flink.runtime.util.NamedThreadFactory;
 import org.apache.flink.runtime.util.SignalHandler;
 import org.apache.flink.runtime.webmonitor.WebMonitor;
 
 import org.apache.flink.yarn.cli.FlinkYarnSessionCli;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.ApplicationConstants.Environment;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
@@ -54,23 +60,27 @@ import org.apache.hadoop.yarn.util.Records;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import scala.Option;
+import scala.Some;
 import scala.concurrent.duration.FiniteDuration;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.security.PrivilegedAction;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.HashMap;
 import java.util.UUID;
+import java.util.Collections;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.yarn.YarnConfigKeys.ENV_FLINK_CLASSPATH;
 
 /**
  * This class is the executable entry point for the YARN application master.
- * It starts actor system and the actors for {@link org.apache.flink.runtime.jobmanager.JobManager}
+ * It starts actor system and the actors for {@link JobManager}
  * and {@link YarnFlinkResourceManager}.
  * 
  * The JobManager handles Flink job execution, while the YarnFlinkResourceManager handles container
@@ -105,8 +115,9 @@ public class YarnApplicationMasterRunner {
 	 * @param args The command line arguments.
 	 */
 	public static void main(String[] args) {
-		EnvironmentInformation.logEnvironmentInfo(LOG, "YARN ApplicationMaster / JobManager", args);
+		EnvironmentInformation.logEnvironmentInfo(LOG, "YARN ApplicationMaster / ResourceManager / JobManager", args);
 		SignalHandler.register(LOG);
+		JvmShutdownSafeguard.installAsShutdownHook(LOG);
 
 		// run and exit with the proper return code
 		int returnCode = new YarnApplicationMasterRunner().run(args);
@@ -115,7 +126,7 @@ public class YarnApplicationMasterRunner {
 
 	/**
 	 * The instance entry point for the YARN application master. Obtains user group
-	 * information and calls the main work method {@link #runApplicationMaster()} as a
+	 * information and calls the main work method {@link #runApplicationMaster(Configuration)} as a
 	 * privileged action.
 	 *
 	 * @param args The command line arguments.
@@ -125,34 +136,65 @@ public class YarnApplicationMasterRunner {
 		try {
 			LOG.debug("All environment variables: {}", ENV);
 
-			final String yarnClientUsername = ENV.get(YarnConfigKeys.ENV_CLIENT_USERNAME);
+			final String yarnClientUsername = ENV.get(YarnConfigKeys.ENV_HADOOP_USER_NAME);
 			require(yarnClientUsername != null, "YARN client user name environment variable {} not set",
-				YarnConfigKeys.ENV_CLIENT_USERNAME);
+				YarnConfigKeys.ENV_HADOOP_USER_NAME);
 
-			final UserGroupInformation currentUser;
-			try {
-				currentUser = UserGroupInformation.getCurrentUser();
-			} catch (Throwable t) {
-				throw new Exception("Cannot access UserGroupInformation information for current user", t);
+			final String currDir = ENV.get(Environment.PWD.key());
+			require(currDir != null, "Current working directory variable (%s) not set", Environment.PWD.key());
+			LOG.debug("Current working Directory: {}", currDir);
+
+			final String remoteKeytabPath = ENV.get(YarnConfigKeys.KEYTAB_PATH);
+			LOG.debug("remoteKeytabPath obtained {}", remoteKeytabPath);
+
+			final String remoteKeytabPrincipal = ENV.get(YarnConfigKeys.KEYTAB_PRINCIPAL);
+			LOG.info("remoteKeytabPrincipal obtained {}", remoteKeytabPrincipal);
+
+			String keytabPath = null;
+			if(remoteKeytabPath != null) {
+				File f = new File(currDir, Utils.KEYTAB_FILE_NAME);
+				keytabPath = f.getAbsolutePath();
+				LOG.debug("keytabPath: {}", keytabPath);
 			}
 
-			LOG.info("YARN daemon runs as user {}. Running Flink Application Master/JobManager as user {}",
-				currentUser.getShortUserName(), yarnClientUsername);
+			UserGroupInformation currentUser = UserGroupInformation.getCurrentUser();
 
-			UserGroupInformation ugi = UserGroupInformation.createRemoteUser(yarnClientUsername);
+			LOG.info("YARN daemon is running as: {} Yarn client user obtainer: {}",
+					currentUser.getShortUserName(), yarnClientUsername );
 
-			// transfer all security tokens, for example for authenticated HDFS and HBase access
-			for (Token<?> token : currentUser.getTokens()) {
-				ugi.addToken(token);
+			// Flink configuration
+			final Map<String, String> dynamicProperties =
+				FlinkYarnSessionCli.getDynamicProperties(ENV.get(YarnConfigKeys.ENV_DYNAMIC_PROPERTIES));
+			LOG.debug("YARN dynamic properties: {}", dynamicProperties);
+
+			final Configuration flinkConfig = createConfiguration(currDir, dynamicProperties);
+			if(keytabPath != null && remoteKeytabPrincipal != null) {
+				flinkConfig.setString(ConfigConstants.SECURITY_KEYTAB_KEY, keytabPath);
+				flinkConfig.setString(ConfigConstants.SECURITY_PRINCIPAL_KEY, remoteKeytabPrincipal);
 			}
 
-			// run the actual work in a secured privileged action
-			return ugi.doAs(new PrivilegedAction<Integer>() {
+			SecurityUtils.SecurityConfiguration sc = new SecurityUtils.SecurityConfiguration(flinkConfig);
+
+			//To support Yarn Secure Integration Test Scenario
+			File krb5Conf = new File(currDir, Utils.KRB5_FILE_NAME);
+			if(krb5Conf.exists() && krb5Conf.canRead()) {
+				String krb5Path = krb5Conf.getAbsolutePath();
+				LOG.info("KRB5 Conf: {}", krb5Path);
+				org.apache.hadoop.conf.Configuration conf = new org.apache.hadoop.conf.Configuration();
+				conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION, "kerberos");
+				conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, "true");
+				sc.setHadoopConfiguration(conf);
+			}
+
+			SecurityUtils.install(sc);
+
+			return SecurityUtils.getInstalledContext().runSecured(new Callable<Integer>() {
 				@Override
-				public Integer run() {
-					return runApplicationMaster();
+				public Integer call() {
+					return runApplicationMaster(flinkConfig);
 				}
 			});
+
 		}
 		catch (Throwable t) {
 			// make sure that everything whatever ends up in the log
@@ -167,12 +209,22 @@ public class YarnApplicationMasterRunner {
 
 	/**
 	 * The main work method, must run as a privileged action.
-	 * 
-	 * @return The return code for the Java process. 
+	 *
+	 * @return The return code for the Java process.
 	 */
-	protected int runApplicationMaster() {
+	protected int runApplicationMaster(Configuration config) {
 		ActorSystem actorSystem = null;
 		WebMonitor webMonitor = null;
+
+		int numberProcessors = Hardware.getNumberCPUCores();
+
+		final ExecutorService futureExecutor = Executors.newFixedThreadPool(
+			numberProcessors,
+			new NamedThreadFactory("yarn-jobmanager-future-", "-thread-"));
+
+		final ExecutorService ioExecutor = Executors.newFixedThreadPool(
+			numberProcessors,
+			new NamedThreadFactory("yarn-jobmanager-io-", "-thread-"));
 
 		try {
 			// ------- (1) load and parse / validate all configurations -------
@@ -192,12 +244,21 @@ public class YarnApplicationMasterRunner {
 
 			LOG.info("YARN assigned hostname for application master: {}", appMasterHostname);
 
-			// Flink configuration
-			final Map<String, String> dynamicProperties =
-				FlinkYarnSessionCli.getDynamicProperties(ENV.get(YarnConfigKeys.ENV_DYNAMIC_PROPERTIES));
-			LOG.debug("YARN dynamic properties: {}", dynamicProperties);
+			//Update keytab and principal path to reflect YARN container path location
+			final String remoteKeytabPath = ENV.get(YarnConfigKeys.KEYTAB_PATH);
 
-			final Configuration config = createConfiguration(currDir, dynamicProperties);
+			final String remoteKeytabPrincipal = ENV.get(YarnConfigKeys.KEYTAB_PRINCIPAL);
+
+			String keytabPath = null;
+			if(remoteKeytabPath != null) {
+				File f = new File(currDir, Utils.KEYTAB_FILE_NAME);
+				keytabPath = f.getAbsolutePath();
+				LOG.info("keytabPath: {}", keytabPath);
+			}
+			if(keytabPath != null && remoteKeytabPrincipal != null) {
+				config.setString(ConfigConstants.SECURITY_KEYTAB_KEY, keytabPath);
+				config.setString(ConfigConstants.SECURITY_PRINCIPAL_KEY, remoteKeytabPrincipal);
+			}
 
 			// Hadoop/Yarn configuration (loads config data automatically from classpath files)
 			final YarnConfiguration yarnConfig = new YarnConfiguration();
@@ -277,9 +338,12 @@ public class YarnApplicationMasterRunner {
 
 			// we start the JobManager with its standard name
 			ActorRef jobManager = JobManager.startJobManagerActors(
-				config, actorSystem,
-				new scala.Some<>(JobManager.JOB_MANAGER_NAME()),
-				scala.Option.<String>empty(),
+				config,
+				actorSystem,
+				futureExecutor,
+				ioExecutor,
+				new Some<>(JobManager.JOB_MANAGER_NAME()),
+				Option.<String>empty(),
 				getJobManagerClass(),
 				getArchivistClass())._1();
 
@@ -288,8 +352,14 @@ public class YarnApplicationMasterRunner {
 			LOG.debug("Starting Web Frontend");
 
 			webMonitor = BootstrapTools.startWebMonitorIfConfigured(config, actorSystem, jobManager, LOG);
+
+			String protocol = "http://";
+			if (config.getBoolean(ConfigConstants.JOB_MANAGER_WEB_SSL_ENABLED,
+				ConfigConstants.DEFAULT_JOB_MANAGER_WEB_SSL_ENABLED) && SSLUtils.getSSLEnabled(config)) {
+				protocol = "https://";
+			}
 			final String webMonitorURL = webMonitor == null ? null :
-				"http://" + appMasterHostname + ":" + webMonitor.getServerPort();
+				protocol + appMasterHostname + ":" + webMonitor.getServerPort();
 
 			// 3: Flink's Yarn ResourceManager
 			LOG.debug("Starting YARN Flink Resource Manager");
@@ -312,7 +382,6 @@ public class YarnApplicationMasterRunner {
 
 			ActorRef resourceMaster = actorSystem.actorOf(resourceMasterProps);
 
-
 			// 4: Process reapers
 			// The process reapers ensure that upon unexpected actor death, the process exits
 			// and does not stay lingering around unresponsive
@@ -331,6 +400,14 @@ public class YarnApplicationMasterRunner {
 			// make sure that everything whatever ends up in the log
 			LOG.error("YARN Application Master initialization failed", t);
 
+			if (webMonitor != null) {
+				try {
+					webMonitor.stop();
+				} catch (Throwable ignored) {
+					LOG.warn("Failed to stop the web frontend", t);
+				}
+			}
+
 			if (actorSystem != null) {
 				try {
 					actorSystem.shutdown();
@@ -339,13 +416,8 @@ public class YarnApplicationMasterRunner {
 				}
 			}
 
-			if (webMonitor != null) {
-				try {
-					webMonitor.stop();
-				} catch (Throwable ignored) {
-					LOG.warn("Failed to stop the web frontend", t);
-				}
-			}
+			futureExecutor.shutdownNow();
+			ioExecutor.shutdownNow();
 
 			return INIT_ERROR_EXIT_CODE;
 		}
@@ -364,6 +436,13 @@ public class YarnApplicationMasterRunner {
 				LOG.error("Failed to stop the web frontend", t);
 			}
 		}
+
+		org.apache.flink.runtime.concurrent.Executors.gracefulShutdown(
+			AkkaUtils.getTimeout(config).toMillis(),
+			TimeUnit.MILLISECONDS,
+			futureExecutor,
+			ioExecutor);
+
 		return 0;
 	}
 
@@ -418,14 +497,19 @@ public class YarnApplicationMasterRunner {
 	private static Configuration createConfiguration(String baseDirectory, Map<String, String> additional) {
 		LOG.info("Loading config from directory " + baseDirectory);
 
-		GlobalConfiguration.loadConfiguration(baseDirectory);
-		Configuration configuration = GlobalConfiguration.getConfiguration();
+		Configuration configuration = GlobalConfiguration.loadConfiguration(baseDirectory);
 
 		configuration.setString(ConfigConstants.FLINK_BASE_DIR_PATH_KEY, baseDirectory);
 
 		// add dynamic properties to JobManager configuration.
 		for (Map.Entry<String, String> property : additional.entrySet()) {
 			configuration.setString(property.getKey(), property.getValue());
+		}
+
+		// override zookeeper namespace with user cli argument (if provided)
+		String cliZKNamespace = ENV.get(YarnConfigKeys.ENV_ZOOKEEPER_NAMESPACE);
+		if (cliZKNamespace != null && !cliZKNamespace.isEmpty()) {
+			configuration.setString(HighAvailabilityOptions.HA_CLUSTER_ID, cliZKNamespace);
 		}
 
 		// if a web monitor shall be started, set the port to random binding
@@ -439,19 +523,19 @@ public class YarnApplicationMasterRunner {
 
 		BootstrapTools.substituteDeprecatedConfigKey(configuration,
 			ConfigConstants.YARN_HEAP_CUTOFF_RATIO,
-			ConfigConstants.CONTAINERED_HEAP_CUTOFF_RATIO);
+			ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_RATIO);
 
 		BootstrapTools.substituteDeprecatedConfigKey(configuration,
 			ConfigConstants.YARN_HEAP_CUTOFF_MIN,
-			ConfigConstants.CONTAINERED_HEAP_CUTOFF_MIN);
+			ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_MIN);
 
 		BootstrapTools.substituteDeprecatedConfigPrefix(configuration,
 			ConfigConstants.YARN_APPLICATION_MASTER_ENV_PREFIX,
-			ConfigConstants.CONTAINERED_MASTER_ENV_PREFIX);
+			ConfigConstants.CONTAINERIZED_MASTER_ENV_PREFIX);
 
 		BootstrapTools.substituteDeprecatedConfigPrefix(configuration,
 			ConfigConstants.YARN_TASK_MANAGER_ENV_PREFIX,
-			ConfigConstants.CONTAINERED_TASK_MANAGER_ENV_PREFIX);
+			ConfigConstants.CONTAINERIZED_TASK_MANAGER_ENV_PREFIX);
 
 		return configuration;
 	}
@@ -516,8 +600,20 @@ public class YarnApplicationMasterRunner {
 		String shipListString = env.get(YarnConfigKeys.ENV_CLIENT_SHIP_FILES);
 		require(shipListString != null, "Environment variable %s not set", YarnConfigKeys.ENV_CLIENT_SHIP_FILES);
 
-		String yarnClientUsername = env.get(YarnConfigKeys.ENV_CLIENT_USERNAME);
-		require(yarnClientUsername != null, "Environment variable %s not set", YarnConfigKeys.ENV_CLIENT_USERNAME);
+		String yarnClientUsername = env.get(YarnConfigKeys.ENV_HADOOP_USER_NAME);
+		require(yarnClientUsername != null, "Environment variable %s not set", YarnConfigKeys.ENV_HADOOP_USER_NAME);
+
+		final String remoteKeytabPath = env.get(YarnConfigKeys.KEYTAB_PATH);
+		LOG.info("TM:remoteKeytabPath obtained {}", remoteKeytabPath);
+
+		final String remoteKeytabPrincipal = env.get(YarnConfigKeys.KEYTAB_PRINCIPAL);
+		LOG.info("TM:remoteKeytabPrincipal obtained {}", remoteKeytabPrincipal);
+
+		final String remoteYarnConfPath = env.get(YarnConfigKeys.ENV_YARN_SITE_XML_PATH);
+		LOG.info("TM:remoteYarnConfPath obtained {}", remoteYarnConfPath);
+
+		final String remoteKrb5Path = env.get(YarnConfigKeys.ENV_KRB5_PATH);
+		LOG.info("TM:remotekrb5Path obtained {}", remoteKrb5Path);
 
 		String classPathString = env.get(YarnConfigKeys.ENV_FLINK_CLASSPATH);
 		require(classPathString != null, "Environment variable %s not set", YarnConfigKeys.ENV_FLINK_CLASSPATH);
@@ -528,6 +624,33 @@ public class YarnApplicationMasterRunner {
 			yarnFileSystem = org.apache.hadoop.fs.FileSystem.get(yarnConfig);
 		} catch (IOException e) {
 			throw new Exception("Could not access YARN's default file system", e);
+		}
+
+		//register keytab
+		LocalResource keytabResource = null;
+		if(remoteKeytabPath != null) {
+			LOG.info("Adding keytab {} to the AM container local resource bucket", remoteKeytabPath);
+			keytabResource = Records.newRecord(LocalResource.class);
+			Path keytabPath = new Path(remoteKeytabPath);
+			Utils.registerLocalResource(yarnFileSystem, keytabPath, keytabResource);
+		}
+
+		//To support Yarn Secure Integration Test Scenario
+		LocalResource yarnConfResource = null;
+		LocalResource krb5ConfResource = null;
+		boolean hasKrb5 = false;
+		if(remoteYarnConfPath != null && remoteKrb5Path != null) {
+			LOG.info("TM:Adding remoteYarnConfPath {} to the container local resource bucket", remoteYarnConfPath);
+			yarnConfResource = Records.newRecord(LocalResource.class);
+			Path yarnConfPath = new Path(remoteYarnConfPath);
+			Utils.registerLocalResource(yarnFileSystem, yarnConfPath, yarnConfResource);
+
+			LOG.info("TM:Adding remoteKrb5Path {} to the container local resource bucket", remoteKrb5Path);
+			krb5ConfResource = Records.newRecord(LocalResource.class);
+			Path krb5ConfPath = new Path(remoteKrb5Path);
+			Utils.registerLocalResource(yarnFileSystem, krb5ConfPath, krb5ConfResource);
+
+			hasKrb5 = true;
 		}
 
 		// register Flink Jar with remote HDFS
@@ -556,6 +679,16 @@ public class YarnApplicationMasterRunner {
 		taskManagerLocalResources.put("flink.jar", flinkJar);
 		taskManagerLocalResources.put("flink-conf.yaml", flinkConf);
 
+		//To support Yarn Secure Integration Test Scenario
+		if(yarnConfResource != null && krb5ConfResource != null) {
+			taskManagerLocalResources.put(Utils.YARN_SITE_FILE_NAME, yarnConfResource);
+			taskManagerLocalResources.put(Utils.KRB5_FILE_NAME, krb5ConfResource);
+		}
+
+		if(keytabResource != null) {
+			taskManagerLocalResources.put(Utils.KEYTAB_FILE_NAME, keytabResource);
+		}
+
 		// prepare additional files to be shipped
 		for (String pathStr : shipListString.split(",")) {
 			if (!pathStr.isEmpty()) {
@@ -575,7 +708,7 @@ public class YarnApplicationMasterRunner {
 
 		String launchCommand = BootstrapTools.getTaskManagerShellCommand(
 			flinkConfig, tmParams, ".", ApplicationConstants.LOG_DIR_EXPANSION_VAR,
-			hasLogback, hasLog4j, taskManagerMainClass);
+			hasLogback, hasLog4j, hasKrb5, taskManagerMainClass);
 
 		log.info("Starting TaskManagers with command: " + launchCommand);
 
@@ -590,14 +723,19 @@ public class YarnApplicationMasterRunner {
 		containerEnv.put(ENV_FLINK_CLASSPATH, classPathString);
 		Utils.setupYarnClassPath(yarnConfig, containerEnv);
 
-		containerEnv.put(YarnConfigKeys.ENV_CLIENT_USERNAME, yarnClientUsername);
+		containerEnv.put(YarnConfigKeys.ENV_HADOOP_USER_NAME, UserGroupInformation.getCurrentUser().getUserName());
+
+		if(remoteKeytabPath != null && remoteKeytabPrincipal != null) {
+			containerEnv.put(YarnConfigKeys.KEYTAB_PATH, remoteKeytabPath);
+			containerEnv.put(YarnConfigKeys.KEYTAB_PRINCIPAL, remoteKeytabPrincipal);
+		}
 
 		ctx.setEnvironment(containerEnv);
 
-		try {
+		try (DataOutputBuffer dob = new DataOutputBuffer()) {
+			LOG.debug("Adding security tokens to Task Manager Container launch Context....");
 			UserGroupInformation user = UserGroupInformation.getCurrentUser();
 			Credentials credentials = user.getCredentials();
-			DataOutputBuffer dob = new DataOutputBuffer();
 			credentials.writeTokenStorageToStream(dob);
 			ByteBuffer securityTokens = ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
 			ctx.setTokens(securityTokens);

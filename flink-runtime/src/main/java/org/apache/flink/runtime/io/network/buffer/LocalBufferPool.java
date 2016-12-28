@@ -111,6 +111,11 @@ class LocalBufferPool implements BufferPool {
 	}
 
 	@Override
+	public int bestEffortGetNumOfUsedBuffers() {
+		return Math.max(0, numberOfRequestedMemorySegments - availableMemorySegments.size());
+	}
+
+	@Override
 	public void setBufferPoolOwner(BufferPoolOwner owner) {
 		synchronized (availableMemorySegments) {
 			checkState(this.owner == null, "Buffer pool owner has already been set.");

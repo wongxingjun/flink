@@ -23,6 +23,8 @@ import akka.actor.ActorSystem;
 import akka.actor.Address;
 import com.typesafe.config.Config;
 
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.Option;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.akka.AkkaUtils;
@@ -290,6 +292,40 @@ public class BootstrapTools {
 		config.addAll(replacement);
 	}
 
+	private static final String DYNAMIC_PROPERTIES_OPT = "D";
+
+	/**
+	 * Get an instance of the dynamic properties option.
+	 *
+	 * Dynamic properties allow the user to specify additional configuration values with -D, such as
+	 *  -Dfs.overwrite-files=true  -Dtaskmanager.network.numberOfBuffers=16368
+     */
+	public static Option newDynamicPropertiesOption() {
+		return new Option(DYNAMIC_PROPERTIES_OPT, true, "Dynamic properties");
+	}
+
+	/**
+	 * Parse the dynamic properties (passed on the command line).
+	 */
+	public static Configuration parseDynamicProperties(CommandLine cmd) {
+		final Configuration config = new Configuration();
+
+		String[] values = cmd.getOptionValues(DYNAMIC_PROPERTIES_OPT);
+		if(values != null) {
+			for(String value : values) {
+				String[] pair = value.split("=", 2);
+				if(pair.length == 1) {
+					config.setString(pair[0], Boolean.TRUE.toString());
+				}
+				else if(pair.length == 2) {
+					config.setString(pair[0], pair[1]);
+				}
+			}
+		}
+
+		return config;
+	}
+
 	/**
 	 * Generates the shell command to start a task manager.
 	 * @param flinkConfig The Flink configuration.
@@ -308,6 +344,7 @@ public class BootstrapTools {
 			String logDirectory,
 			boolean hasLogback,
 			boolean hasLog4j,
+			boolean hasKrb5,
 			Class<?> mainClass) {
 
 		StringBuilder tmCommand = new StringBuilder("$JAVA_HOME/bin/java");
@@ -327,6 +364,12 @@ public class BootstrapTools {
 			if (hasLog4j) {
 				tmCommand.append(" -Dlog4j.configuration=file:")
 						.append(configDirectory).append("/log4j.properties");
+			}
+
+			//applicable only for YarnMiniCluster secure test run
+			//krb5.conf file will be available as local resource in JM/TM container
+			if(hasKrb5) {
+				tmCommand.append(" -Djava.security.krb5.conf=krb5.conf");
 			}
 		}
 

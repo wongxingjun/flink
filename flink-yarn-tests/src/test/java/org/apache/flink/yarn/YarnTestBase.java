@@ -18,13 +18,21 @@
 
 package org.apache.flink.yarn;
 
+import akka.actor.Identify;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.flink.client.CliFrontend;
+import org.apache.flink.client.cli.CommandLineOptions;
+import org.apache.flink.client.program.ClusterClient;
+import org.apache.flink.client.program.PackagedProgram;
 import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.yarn.cli.FlinkYarnSessionCli;
 import org.apache.flink.test.util.TestBaseUtils;
 import org.apache.flink.util.TestLogger;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.service.Service;
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -43,10 +51,13 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.rules.TemporaryFolder;
+import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Marker;
 import org.slf4j.MarkerFactory;
+import scala.concurrent.Await;
+import scala.concurrent.duration.FiniteDuration;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -55,12 +66,15 @@ import java.io.FileWriter;
 import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.BufferedWriter;
+import java.io.PrintWriter;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 
@@ -115,6 +129,11 @@ public abstract class YarnTestBase extends TestLogger {
 	 */
 	protected static File flinkLibFolder;
 
+	/**
+	 * Temporary folder where Flink configurations will be kept for secure run
+	 */
+	protected static File tempConfPathForSecureRun = null;
+
 	static {
 		yarnConfiguration = new YarnConfiguration();
 		yarnConfiguration.setInt(YarnConfiguration.RM_SCHEDULER_MINIMUM_ALLOCATION_MB, 512);
@@ -132,6 +151,23 @@ public abstract class YarnTestBase extends TestLogger {
 	}
 
 
+	public static void populateYarnSecureConfigurations(Configuration conf, String principal, String keytab) {
+
+		conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHENTICATION, "kerberos");
+		conf.set(CommonConfigurationKeysPublic.HADOOP_SECURITY_AUTHORIZATION, "true");
+
+		conf.set(YarnConfiguration.RM_KEYTAB, keytab);
+		conf.set(YarnConfiguration.RM_PRINCIPAL, principal);
+		conf.set(YarnConfiguration.NM_KEYTAB, keytab);
+		conf.set(YarnConfiguration.NM_PRINCIPAL, principal);
+
+		conf.set(YarnConfiguration.RM_WEBAPP_SPNEGO_USER_NAME_KEY, principal);
+		conf.set(YarnConfiguration.RM_WEBAPP_SPNEGO_KEYTAB_FILE_KEY,keytab);
+		conf.set(YarnConfiguration.NM_WEBAPP_SPNEGO_USER_NAME_KEY, principal);
+		conf.set(YarnConfiguration.NM_WEBAPP_SPNEGO_KEYTAB_FILE_KEY,keytab);
+
+		conf.set("hadoop.security.auth_to_local","RULE:[1:$1] RULE:[2:$1]");
+	}
 
 	/**
 	 * Sleep a bit between the tests (we are re-using the YARN cluster for the tests)
@@ -238,10 +274,10 @@ public abstract class YarnTestBase extends TestLogger {
 		tmp.create();
 		File yarnSiteXML = new File(tmp.newFolder().getAbsolutePath() + "/yarn-site.xml");
 
-		FileWriter writer = new FileWriter(yarnSiteXML);
-		yarnConf.writeXml(writer);
-		writer.flush();
-		writer.close();
+		try (FileWriter writer = new FileWriter(yarnSiteXML)) {
+			yarnConf.writeXml(writer);
+			writer.flush();
+		}
 		return yarnSiteXML;
 	}
 
@@ -328,8 +364,16 @@ public abstract class YarnTestBase extends TestLogger {
 		return count;
 	}
 
+	public static void startYARNSecureMode(Configuration conf, String principal, String keytab) {
+		start(conf, principal, keytab);
+	}
+
 	public static void startYARNWithConfig(Configuration conf) {
-		// set the home directory to a tmp directory. Flink on YARN is using the home dir to distribute the file
+		start(conf,null,null);
+	}
+
+	private static void start(Configuration conf, String principal, String keytab) {
+		// set the home directory to a temp directory. Flink on YARN is using the home dir to distribute the file
 		File homeDir = null;
 		try {
 			homeDir = tmp.newFolder();
@@ -366,7 +410,38 @@ public abstract class YarnTestBase extends TestLogger {
 			File flinkConfDirPath = findFile(flinkDistRootDir, new ContainsName(new String[]{"flink-conf.yaml"}));
 			Assert.assertNotNull(flinkConfDirPath);
 
-			map.put(ConfigConstants.ENV_FLINK_CONF_DIR, flinkConfDirPath.getParent());
+			if(!StringUtils.isBlank(principal) && !StringUtils.isBlank(keytab)) {
+				//copy conf dir to test temporary workspace location
+				tempConfPathForSecureRun = tmp.newFolder("conf");
+
+				String confDirPath = flinkConfDirPath.getParentFile().getAbsolutePath();
+				FileUtils.copyDirectory(new File(confDirPath), tempConfPathForSecureRun);
+
+				try(FileWriter fw = new FileWriter(new File(tempConfPathForSecureRun,"flink-conf.yaml"), true);
+					BufferedWriter bw = new BufferedWriter(fw);
+					PrintWriter out = new PrintWriter(bw))
+				{
+					LOG.info("writing keytab: " + keytab + " and principal: " + principal + " to config file");
+					out.println("");
+					out.println("#Security Configurations Auto Populated ");
+					out.println(ConfigConstants.SECURITY_KEYTAB_KEY + ": " + keytab);
+					out.println(ConfigConstants.SECURITY_PRINCIPAL_KEY + ": " + principal);
+					out.println("");
+				} catch (IOException e) {
+					throw new RuntimeException("Exception occured while trying to append the security configurations.", e);
+				}
+
+				String configDir = tempConfPathForSecureRun.getAbsolutePath();
+
+				LOG.info("Temporary Flink configuration directory to be used for secure test: {}", configDir);
+
+				Assert.assertNotNull(configDir);
+
+				map.put(ConfigConstants.ENV_FLINK_CONF_DIR, configDir);
+
+			} else {
+				map.put(ConfigConstants.ENV_FLINK_CONF_DIR, flinkConfDirPath.getParent());
+			}
 
 			File yarnConfFile = writeYarnSiteConfigXML(conf);
 			map.put("YARN_CONF_DIR", yarnConfFile.getParentFile().getAbsolutePath());
@@ -384,6 +459,7 @@ public abstract class YarnTestBase extends TestLogger {
 			LOG.error("setup failure", ex);
 			Assert.fail();
 		}
+
 	}
 
 	/**
@@ -413,10 +489,9 @@ public abstract class YarnTestBase extends TestLogger {
 		System.setOut(new PrintStream(outContent));
 		System.setErr(new PrintStream(errContent));
 
-
 		final int START_TIMEOUT_SECONDS = 60;
 
-		Runner runner = new Runner(args, type);
+		Runner runner = new Runner(args, type, 0);
 		runner.setName("Frontend (CLI/YARN Client) runner thread (startWithArgs()).");
 		runner.start();
 
@@ -431,7 +506,10 @@ public abstract class YarnTestBase extends TestLogger {
 			// check if thread died
 			if(!runner.isAlive()) {
 				sendOutput();
-				Assert.fail("Runner thread died before the test was finished. Return value = "+runner.getReturnValue());
+				if(runner.getRunnerError() != null) {
+					throw new RuntimeException("Runner failed with exception.", runner.getRunnerError());
+				}
+				Assert.fail("Runner thread died before the test was finished.");
 			}
 		}
 
@@ -450,10 +528,10 @@ public abstract class YarnTestBase extends TestLogger {
 	 * @param terminateAfterString the runner is searching the stdout and stderr for this string. as soon as it appears, the test has passed
 	 * @param failOnPatterns The runner is searching stdout and stderr for the pattern (regexp) specified here. If one appears, the test has failed
 	 * @param type Set the type of the runner
-	 * @param returnCode Expected return code from the runner.
+	 * @param expectedReturnValue Expected return code from the runner.
 	 * @param checkLogForTerminateString  If true, the runner checks also the log4j logger for the terminate string
 	 */
-	protected void runWithArgs(String[] args, String terminateAfterString, String[] failOnPatterns, RunTypes type, int returnCode, boolean checkLogForTerminateString) {
+	protected void runWithArgs(String[] args, String terminateAfterString, String[] failOnPatterns, RunTypes type, int expectedReturnValue, boolean checkLogForTerminateString) {
 		LOG.info("Running with args {}", Arrays.toString(args));
 
 		outContent = new ByteArrayOutputStream();
@@ -466,7 +544,7 @@ public abstract class YarnTestBase extends TestLogger {
 		final int START_TIMEOUT_SECONDS = 180;
 		final long deadline = System.currentTimeMillis() + (START_TIMEOUT_SECONDS * 1000);
 		
-		Runner runner = new Runner(args, type);
+		Runner runner = new Runner(args, type, expectedReturnValue);
 		runner.start();
 
 		boolean expectedStringSeen = false;
@@ -515,25 +593,22 @@ public abstract class YarnTestBase extends TestLogger {
 			else {
 				// check if thread died
 				if (!runner.isAlive()) {
-					if (runner.getReturnValue() != 0) {
-						Assert.fail("Runner thread died before the test was finished. Return value = "
-								+ runner.getReturnValue());
-					} else {
-						LOG.info("Runner stopped earlier than expected with return value = 0");
-					}
 					// leave loop: the runner died, so we can not expect new strings to show up.
 					break;
 				}
 			}
 		}
-		while (!expectedStringSeen && System.currentTimeMillis() < deadline);
+		while (runner.getRunnerError() == null && !expectedStringSeen && System.currentTimeMillis() < deadline);
 		
 		sendOutput();
+
+		if(runner.getRunnerError() != null) {
+			// this lets the test fail.
+			throw new RuntimeException("Runner failed", runner.getRunnerError());
+		}
 		Assert.assertTrue("During the timeout period of " + START_TIMEOUT_SECONDS + " seconds the " +
 				"expected string did not show up", expectedStringSeen);
 
-		// check for 0 return code
-		Assert.assertEquals("Expected return value", returnCode, runner.getReturnValue());
 		LOG.info("Test was successful");
 	}
 
@@ -547,47 +622,74 @@ public abstract class YarnTestBase extends TestLogger {
 
 	public static class Runner extends Thread {
 		private final String[] args;
-		private int returnValue;
+		private final int expectedReturnValue;
 		private RunTypes type;
 		private FlinkYarnSessionCli yCli;
+		private Throwable runnerError;
 
-		public Runner(String[] args, RunTypes type) {
+		public Runner(String[] args, RunTypes type, int expectedReturnValue) {
 			this.args = args;
 			this.type = type;
+			this.expectedReturnValue = expectedReturnValue;
 		}
 
-		public int getReturnValue() {
-			return returnValue;
-		}
 
 		@Override
 		public void run() {
-			switch(type) {
-				case YARN_SESSION:
-					yCli = new FlinkYarnSessionCli("", "", false);
-					returnValue = yCli.run(args);
-					break;
-				case CLI_FRONTEND:
-					try {
-						CliFrontend cli = new CliFrontend();
-						returnValue = cli.parseParameters(args);
-					} catch (Exception e) {
-						throw new RuntimeException(e);
-					}
-					break;
-				default:
-					throw new RuntimeException("Unknown type " + type);
-			}
+			try {
+				int returnValue;
+				switch (type) {
+					case YARN_SESSION:
+						yCli = new FlinkYarnSessionCli("", "", false);
+						returnValue = yCli.run(args);
+						break;
+					case CLI_FRONTEND:
+						TestingCLI cli;
+						try {
+							cli = new TestingCLI();
+							returnValue = cli.parseParameters(args);
+						} catch (Exception e) {
+							throw new RuntimeException("Failed to execute the following args with CliFrontend: "
+								+ Arrays.toString(args), e);
+						}
 
-			if(returnValue != 0) {
-				Assert.fail("The YARN session returned with non-null value="+returnValue);
+						final ClusterClient client = cli.getClusterClient();
+						try {
+							// check if the JobManager is still alive after running the job
+							final FiniteDuration finiteDuration = new FiniteDuration(10, TimeUnit.SECONDS);
+							ActorGateway jobManagerGateway = client.getJobManagerGateway();
+							Await.ready(jobManagerGateway.ask(new Identify(true), finiteDuration), finiteDuration);
+						} catch (Exception e) {
+							throw new RuntimeException("It seems like the JobManager died although it should still be alive");
+						}
+						// verify we would have shut down anyways and then shutdown
+						Mockito.verify(cli.getSpiedClusterClient()).shutdown();
+						client.shutdown();
+
+						break;
+					default:
+						throw new RuntimeException("Unknown type " + type);
+				}
+
+				if (returnValue != this.expectedReturnValue) {
+					Assert.fail("The YARN session returned with unexpected value=" + returnValue + " expected=" + expectedReturnValue);
+				}
+			} catch (Throwable t) {
+				LOG.info("Runner stopped with exception", t);
+				// save error.
+				this.runnerError = t;
 			}
 		}
 
+		/** Stops the Yarn session */
 		public void sendStop() {
 			if(yCli != null) {
 				yCli.stop();
 			}
+		}
+
+		public Throwable getRunnerError() {
+			return runnerError;
 		}
 	}
 
@@ -595,12 +697,23 @@ public abstract class YarnTestBase extends TestLogger {
 
 	@AfterClass
 	public static void teardown() throws Exception {
+
+		LOG.info("Stopping MiniYarn Cluster");
+		yarnCluster.stop();
+
 		// Unset FLINK_CONF_DIR, as it might change the behavior of other tests
 		Map<String, String> map = new HashMap<>(System.getenv());
 		map.remove(ConfigConstants.ENV_FLINK_CONF_DIR);
+		map.remove("YARN_CONF_DIR");
+		map.remove("IN_TESTS");
 		TestBaseUtils.setEnv(map);
 
-		// When we are on travis, we copy the tmp files of JUnit (containing the MiniYARNCluster log files)
+		if(tempConfPathForSecureRun != null) {
+			FileUtil.fullyDelete(tempConfPathForSecureRun);
+			tempConfPathForSecureRun = null;
+		}
+
+		// When we are on travis, we copy the temp files of JUnit (containing the MiniYARNCluster log files)
 		// to <flinkRoot>/target/flink-yarn-tests-*.
 		// The files from there are picked up by the ./tools/travis_watchdog.sh script
 		// to upload them to Amazon S3.
@@ -617,10 +730,37 @@ public abstract class YarnTestBase extends TestLogger {
 				LOG.warn("Error copying the final files from {} to {}: msg: {}", src.getAbsolutePath(), target.getAbsolutePath(), e.getMessage(), e);
 			}
 		}
+
 	}
 
 	public static boolean isOnTravis() {
 		return System.getenv("TRAVIS") != null && System.getenv("TRAVIS").equals("true");
 	}
 
+	private static class TestingCLI extends CliFrontend {
+
+		private ClusterClient originalClusterClient;
+		private ClusterClient spiedClusterClient;
+
+		public TestingCLI() throws Exception {}
+
+		@Override
+		protected ClusterClient createClient(CommandLineOptions options, PackagedProgram program) throws Exception {
+			// mock the returned ClusterClient to disable shutdown and verify shutdown behavior later on
+			originalClusterClient = super.createClient(options, program);
+			spiedClusterClient = Mockito.spy(originalClusterClient);
+			Mockito.doNothing().when(spiedClusterClient).shutdown();
+			return spiedClusterClient;
+		}
+
+		public ClusterClient getClusterClient() {
+			return originalClusterClient;
+		}
+
+		public ClusterClient getSpiedClusterClient() {
+			return spiedClusterClient;
+		}
+
+
+	}
 }

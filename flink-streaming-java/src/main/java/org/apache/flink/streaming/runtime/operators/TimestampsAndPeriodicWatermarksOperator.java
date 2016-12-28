@@ -23,6 +23,7 @@ import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.ProcessingTimeCallback;
 
 /**
  * A stream operator that extracts timestamps from stream elements and
@@ -32,7 +33,7 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
  */
 public class TimestampsAndPeriodicWatermarksOperator<T>
 		extends AbstractUdfStreamOperator<T, AssignerWithPeriodicWatermarks<T>>
-		implements OneInputStreamOperator<T, T>, Triggerable {
+		implements OneInputStreamOperator<T, T>, ProcessingTimeCallback {
 
 	private static final long serialVersionUID = 1L;
 	
@@ -54,7 +55,8 @@ public class TimestampsAndPeriodicWatermarksOperator<T>
 		watermarkInterval = getExecutionConfig().getAutoWatermarkInterval();
 		
 		if (watermarkInterval > 0) {
-			registerTimer(System.currentTimeMillis() + watermarkInterval, this);
+			long now = getProcessingTimeService().getCurrentProcessingTime();
+			getProcessingTimeService().registerTimer(now + watermarkInterval, this);
 		}
 	}
 
@@ -67,7 +69,7 @@ public class TimestampsAndPeriodicWatermarksOperator<T>
 	}
 
 	@Override
-	public void trigger(long timestamp) throws Exception {
+	public void onProcessingTime(long timestamp) throws Exception {
 		// register next timer
 		Watermark newWatermark = userFunction.getCurrentWatermark();
 		if (newWatermark != null && newWatermark.getTimestamp() > currentWatermark) {
@@ -76,7 +78,8 @@ public class TimestampsAndPeriodicWatermarksOperator<T>
 			output.emitWatermark(newWatermark);
 		}
 
-		registerTimer(System.currentTimeMillis() + watermarkInterval, this);
+		long now = getProcessingTimeService().getCurrentProcessingTime();
+		getProcessingTimeService().registerTimer(now + watermarkInterval, this);
 	}
 
 	@Override

@@ -1,9 +1,8 @@
 ---
 title: "Monitoring the Wikipedia Edit Stream"
-# Top navigation
-sub-nav-group: streaming
-sub-nav-pos: 2
-sub-nav-title: "Example: Wikipedia Edits"
+nav-title: Monitoring Wikipedia Edits
+nav-parent_id: examples
+nav-pos: 10
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -27,12 +26,12 @@ under the License.
 * This will be replaced by the TOC
 {:toc}
 
-In this guide we will start from scratch and go from setting up a Flink project and running
+In this guide we will start from scratch and go from setting up a Flink project to running
 a streaming analysis program on a Flink cluster.
 
 Wikipedia provides an IRC channel where all edits to the wiki are logged. We are going to
 read this channel in Flink and count the number of bytes that each user edits within
-a given window of time. This is easy enough to implement in a few minutes using Flink but it will
+a given window of time. This is easy enough to implement in a few minutes using Flink, but it will
 give you a good foundation from which to start building more complex analysis programs on your own.
 
 ## Setting up a Maven Project
@@ -42,15 +41,16 @@ see [Java API Quickstart]({{ site.baseurl }}/quickstart/java_api_quickstart.html
 about this. For our purposes, the command to run is this:
 
 {% highlight bash %}
-$ mvn archetype:generate\
-    -DarchetypeGroupId=org.apache.flink\
-    -DarchetypeArtifactId=flink-quickstart-java\
-    -DarchetypeVersion=1.0.0\
-    -DgroupId=wiki-edits\
-    -DartifactId=wiki-edits\
-    -Dversion=0.1\
-    -Dpackage=wikiedits\
-    -DinteractiveMode=false\
+$ mvn archetype:generate \
+    -DarchetypeGroupId=org.apache.flink \
+    -DarchetypeArtifactId=flink-quickstart-java \{% unless site.is_stable %}
+    -DarchetypeCatalog=https://repository.apache.org/content/repositories/snapshots/ \{% endunless %}
+    -DarchetypeVersion={{ site.version }} \
+    -DgroupId=wiki-edits \
+    -DartifactId=wiki-edits \
+    -Dversion=0.1 \
+    -Dpackage=wikiedits \
+    -DinteractiveMode=false
 {% endhighlight %}
 
 You can edit the `groupId`, `artifactId` and `package` if you like. With the above parameters,
@@ -64,8 +64,9 @@ wiki-edits/
     └── main
         ├── java
         │   └── wikiedits
-        │       ├── Job.java
+        │       ├── BatchJob.java
         │       ├── SocketTextStreamWordCount.java
+        │       ├── StreamingJob.java
         │       └── WordCount.java
         └── resources
             └── log4j.properties
@@ -80,7 +81,7 @@ $ rm wiki-edits/src/main/java/wikiedits/*.java
 {% endhighlight %}
 
 As a last step we need to add the Flink Wikipedia connector as a dependency so that we can
-use it in our program. Edit the `dependencies` section so that it looks like this:
+use it in our program. Edit the `dependencies` section of the `pom.xml` so that it looks like this:
 
 {% highlight xml %}
 <dependencies>
@@ -91,23 +92,23 @@ use it in our program. Edit the `dependencies` section so that it looks like thi
     </dependency>
     <dependency>
         <groupId>org.apache.flink</groupId>
-        <artifactId>flink-streaming-java_2.10</artifactId>
+        <artifactId>flink-streaming-java_2.11</artifactId>
         <version>${flink.version}</version>
     </dependency>
     <dependency>
         <groupId>org.apache.flink</groupId>
-        <artifactId>flink-clients_2.10</artifactId>
+        <artifactId>flink-clients_2.11</artifactId>
         <version>${flink.version}</version>
     </dependency>
     <dependency>
         <groupId>org.apache.flink</groupId>
-        <artifactId>flink-connector-wikiedits_2.10</artifactId>
+        <artifactId>flink-connector-wikiedits_2.11</artifactId>
         <version>${flink.version}</version>
     </dependency>
 </dependencies>
 {% endhighlight %}
 
-Notice the `flink-connector-wikiedits_2.10` dependency that was added. (This example and
+Notice the `flink-connector-wikiedits_2.11` dependency that was added. (This example and
 the Wikipedia connector were inspired by the *Hello Samza* example of Apache Samza.)
 
 ## Writing a Flink Program
@@ -126,21 +127,21 @@ public class WikipediaAnalysis {
 }
 {% endhighlight %}
 
-I admit it's very bare bones now but we will fill it as we go. Note, that I'll not give
+The program is very basic now, but we will fill it in as we go. Note that I'll not give
 import statements here since IDEs can add them automatically. At the end of this section I'll show
 the complete code with import statements if you simply want to skip ahead and enter that in your
 editor.
 
 The first step in a Flink program is to create a `StreamExecutionEnvironment`
 (or `ExecutionEnvironment` if you are writing a batch job). This can be used to set execution
-parameters and create sources for reading from external systems. So let's go ahead, add
+parameters and create sources for reading from external systems. So let's go ahead and add
 this to the main method:
 
 {% highlight java %}
 StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
 {% endhighlight %}
 
-Next, we will create a source that reads from the Wikipedia IRC log:
+Next we will create a source that reads from the Wikipedia IRC log:
 
 {% highlight java %}
 DataStream<WikipediaEditEvent> edits = see.addSource(new WikipediaEditsSource());
@@ -150,7 +151,7 @@ This creates a `DataStream` of `WikipediaEditEvent` elements that we can further
 the purposes of this example we are interested in determining the number of added or removed
 bytes that each user causes in a certain time window, let's say five seconds. For this we first
 have to specify that we want to key the stream on the user name, that is to say that operations
-on this should take the key into account. In our case the summation of edited bytes in the windows
+on this stream should take the user name into account. In our case the summation of edited bytes in the windows
 should be per unique user. For keying a Stream we have to provide a `KeySelector`, like this:
 
 {% highlight java %}
@@ -166,8 +167,8 @@ KeyedStream<WikipediaEditEvent, String> keyedEdits = edits
 This gives us a Stream of `WikipediaEditEvent` that has a `String` key, the user name.
 We can now specify that we want to have windows imposed on this stream and compute a
 result based on elements in these windows. A window specifies a slice of a Stream
-on which to perform a computation. They are required when performing an aggregation
-computation on an infinite stream of elements. In our example we will say
+on which to perform a computation. Windows are required when computing aggregations
+on an infinite stream of elements. In our example we will say
 that we want to aggregate the sum of edited bytes for every five seconds:
 
 {% highlight java %}
@@ -277,9 +278,10 @@ similar to this:
 The number in front of each line tells you on which parallel instance of the print sink the output
 was produced.
 
-This should get you started with writing your own Flink programs. You can check out our guides
-about [basic concepts]{{{ site.baseurl }}/apis/common/index.html} and the
-[DataStream API]{{{ site.baseurl }}/apis/streaming/index.html} if you want to learn more. Stick
+This should get you started with writing your own Flink programs. To learn more 
+you can check out our guides
+about [basic concepts]({{ site.baseurl }}/dev/api_concepts) and the
+[DataStream API]({{ site.baseurl }}/dev/datastream_api). Stick
 around for the bonus exercise if you want to learn about setting up a Flink cluster on
 your own machine and writing results to [Kafka](http://kafka.apache.org).
 
@@ -295,7 +297,7 @@ use the Kafka sink. Add this to the `pom.xml` file in the dependencies section:
 {% highlight xml %}
 <dependency>
     <groupId>org.apache.flink</groupId>
-    <artifactId>flink-connector-kafka-0.8_2.10</artifactId>
+    <artifactId>flink-connector-kafka-0.8_2.11</artifactId>
     <version>${flink.version}</version>
 </dependency>
 {% endhighlight %}

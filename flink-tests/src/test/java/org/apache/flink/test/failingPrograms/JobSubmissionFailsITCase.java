@@ -25,9 +25,9 @@ import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.client.JobSubmissionException;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobGraph;
-import org.apache.flink.runtime.jobmanager.Tasks;
+import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
-import org.apache.flink.test.util.ForkableFlinkMiniCluster;
+import org.apache.flink.runtime.testtasks.NoOpInvokable;
 
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -47,7 +47,7 @@ public class JobSubmissionFailsITCase {
 	
 	private static final int NUM_SLOTS = 20;
 	
-	private static ForkableFlinkMiniCluster cluster;
+	private static LocalFlinkMiniCluster cluster;
 	private static JobGraph workingJobGraph;
 
 	@BeforeClass
@@ -58,12 +58,12 @@ public class JobSubmissionFailsITCase {
 			config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 2);
 			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, NUM_SLOTS / 2);
 			
-			cluster = new ForkableFlinkMiniCluster(config);
+			cluster = new LocalFlinkMiniCluster(config);
 
 			cluster.start();
 			
 			final JobVertex jobVertex = new JobVertex("Working job vertex.");
-			jobVertex.setInvokableClass(Tasks.NoOpInvokable.class);
+			jobVertex.setInvokableClass(NoOpInvokable.class);
 			workingJobGraph = new JobGraph("Working testing job", jobVertex);
 		}
 		catch (Exception e) {
@@ -113,7 +113,7 @@ public class JobSubmissionFailsITCase {
 	public void testExceptionInInitializeOnMaster() {
 		try {
 			final JobVertex failingJobVertex = new FailingJobVertex("Failing job vertex");
-			failingJobVertex.setInvokableClass(Tasks.NoOpInvokable.class);
+			failingJobVertex.setInvokableClass(NoOpInvokable.class);
 
 			final JobGraph failingJobGraph = new JobGraph("Failing testing job", failingJobVertex);
 

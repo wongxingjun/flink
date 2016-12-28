@@ -25,9 +25,10 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.memory.MemorySegmentFactory;
-import org.apache.flink.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
+import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
+import org.apache.flink.runtime.checkpoint.SubtaskState;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
@@ -43,12 +44,15 @@ import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.memory.MemoryManager;
-import org.apache.flink.runtime.operators.testutils.UnregisteredTaskMetricsGroup;
+import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
+import org.apache.flink.runtime.operators.testutils.UnregisteredTaskMetricsGroup;
 import org.apache.flink.runtime.plugable.DeserializationDelegate;
 import org.apache.flink.runtime.plugable.NonReusingDeserializationDelegate;
-import org.apache.flink.runtime.state.StateHandle;
+import org.apache.flink.runtime.query.KvStateRegistry;
+import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
+import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
@@ -91,13 +95,22 @@ public class StreamMockEnvironment implements Environment {
 
 	private final AccumulatorRegistry accumulatorRegistry;
 
+	private final TaskKvStateRegistry kvStateRegistry;
+
 	private final int bufferSize;
 
 	private final ExecutionConfig executionConfig;
 
+	private volatile boolean wasFailedExternally = false;
+
 	public StreamMockEnvironment(Configuration jobConfig, Configuration taskConfig, ExecutionConfig executionConfig,
-									long memorySize, MockInputSplitProvider inputSplitProvider, int bufferSize) {
-		this.taskInfo = new TaskInfo("", 0, 1, 0);
+								 long memorySize, MockInputSplitProvider inputSplitProvider, int bufferSize) {
+		this.taskInfo = new TaskInfo(
+			"", /* task name */
+			1, /* num key groups / max parallelism */
+			0, /* index of this subtask */
+			1, /* num subtasks */
+			0 /* attempt number */);
 		this.jobConfiguration = jobConfig;
 		this.taskConfiguration = taskConfig;
 		this.inputs = new LinkedList<InputGate>();
@@ -110,11 +123,14 @@ public class StreamMockEnvironment implements Environment {
 
 		this.executionConfig = executionConfig;
 		this.accumulatorRegistry = new AccumulatorRegistry(jobID, getExecutionId());
+
+		KvStateRegistry registry = new KvStateRegistry();
+		this.kvStateRegistry = registry.createTaskRegistry(jobID, getJobVertexId());
 	}
 
 	public StreamMockEnvironment(Configuration jobConfig, Configuration taskConfig, long memorySize,
 								 MockInputSplitProvider inputSplitProvider, int bufferSize) {
-		this(jobConfig, taskConfig, null, memorySize, inputSplitProvider, bufferSize);
+		this(jobConfig, taskConfig, new ExecutionConfig(), memorySize, inputSplitProvider, bufferSize);
 	}
 
 	public void addInputGate(InputGate gate) {
@@ -132,8 +148,8 @@ public class StreamMockEnvironment implements Environment {
 				@Override
 				public Buffer answer(InvocationOnMock invocationOnMock) throws Throwable {
 					return new Buffer(
-							MemorySegmentFactory.allocateUnpooledSegment(bufferSize),
-							mock(BufferRecycler.class));
+						MemorySegmentFactory.allocateUnpooledSegment(bufferSize),
+						mock(BufferRecycler.class));
 				}
 			});
 
@@ -161,7 +177,7 @@ public class StreamMockEnvironment implements Environment {
 						}
 
 						if (result == RecordDeserializer.DeserializationResult.LAST_RECORD_FROM_BUFFER
-								|| result == RecordDeserializer.DeserializationResult.PARTIAL_RECORD) {
+							|| result == RecordDeserializer.DeserializationResult.PARTIAL_RECORD) {
 							break;
 						}
 					}
@@ -294,21 +310,34 @@ public class StreamMockEnvironment implements Environment {
 	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId) {
+	public TaskKvStateRegistry getTaskKvStateRegistry() {
+		return kvStateRegistry;
 	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId, StateHandle<?> state) {
+	public void acknowledgeCheckpoint(CheckpointMetaData checkpointMetaData) {
 	}
+
+	@Override
+	public void acknowledgeCheckpoint(
+		CheckpointMetaData checkpointMetaData, SubtaskState subtaskState) {
+	}
+
+	@Override
+	public void declineCheckpoint(long checkpointId, Throwable cause) {}
 
 	@Override
 	public void failExternally(Throwable cause) {
-		throw new UnsupportedOperationException("StreamMockEnvironment does not support external task failure.");
+		this.wasFailedExternally = true;
+	}
+
+	public boolean wasFailedExternally() {
+		return wasFailedExternally;
 	}
 
 	@Override
 	public TaskManagerRuntimeInfo getTaskManagerInfo() {
-		return new TaskManagerRuntimeInfo("localhost", new Configuration(), System.getProperty("java.io.tmpdir"));
+		return new TestingTaskManagerRuntimeInfo();
 	}
 
 	@Override
@@ -316,4 +345,3 @@ public class StreamMockEnvironment implements Environment {
 		return new UnregisteredTaskMetricsGroup();
 	}
 }
-

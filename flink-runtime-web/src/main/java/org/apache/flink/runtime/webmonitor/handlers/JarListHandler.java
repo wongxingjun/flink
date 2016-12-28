@@ -20,7 +20,6 @@ package org.apache.flink.runtime.webmonitor.handlers;
 
 import com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.flink.client.program.PackagedProgram;
-import org.apache.flink.client.program.ProgramInvocationException;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.webmonitor.RuntimeMonitorHandler;
 
@@ -32,7 +31,7 @@ import java.util.Map;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
-public class JarListHandler implements RequestHandler {
+public class JarListHandler extends AbstractJsonRequestHandler {
 
 	private final File jarDir;
 
@@ -41,7 +40,7 @@ public class JarListHandler implements RequestHandler {
 	}
 
 	@Override
-	public String handleRequest(Map<String, String> pathParams, Map<String, String> queryParams, ActorGateway jobManager) throws Exception {
+	public String handleJsonRequest(Map<String, String> pathParams, Map<String, String> queryParams, ActorGateway jobManager) throws Exception {
 		try {
 			StringWriter writer = new StringWriter();
 			JsonGenerator gen = JsonFactory.jacksonFactory.createGenerator(writer);
@@ -94,20 +93,23 @@ public class JarListHandler implements RequestHandler {
 				} catch (IOException ignored) {
 					// we simply show no entries here
 				}
-				
+
 				// show every entry class that can be loaded later on.
-				PackagedProgram program;
 				for (String clazz : classes) {
 					clazz = clazz.trim();
+
+					PackagedProgram program = null;
 					try {
 						program = new PackagedProgram(f, clazz, new String[0]);
+					} catch (Exception ignored) {
+						// ignore jar files which throw an error upon creating a PackagedProgram
+					}
+					if (program != null) {
 						gen.writeStartObject();
 						gen.writeStringField("name", clazz);
 						String desc = program.getDescription();
 						gen.writeStringField("description", desc == null ? "No description provided" : desc);
 						gen.writeEndObject();
-					} catch (ProgramInvocationException e) {
-						//
 					}
 				}
 				gen.writeEndArray();

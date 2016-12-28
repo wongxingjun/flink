@@ -17,25 +17,28 @@
 
 package org.apache.flink.streaming.api.graph;
 
-import java.io.IOException;
-import java.util.Random;
-
 import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.ExecutionConfigTest;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.tasks.JobSnapshottingSettings;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.util.InstantiationUtil;
-
 import org.apache.flink.util.SerializedValue;
+import org.apache.flink.util.TestLogger;
 import org.junit.Test;
 
-import static org.junit.Assert.*;
+import java.io.IOException;
+import java.util.Random;
 
-public class StreamingJobGraphGeneratorTest {
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+
+@SuppressWarnings("serial")
+public class StreamingJobGraphGeneratorTest extends TestLogger {
 	
 	@Test
 	public void testExecutionConfigSerialization() throws IOException, ClassNotFoundException {
@@ -93,7 +96,7 @@ public class StreamingJobGraphGeneratorTest {
 
 		assertNotNull(serializedExecutionConfig);
 
-		ExecutionConfig executionConfig = ExecutionConfigTest.deserializeConfig(serializedExecutionConfig);
+		ExecutionConfig executionConfig = serializedExecutionConfig.deserializeValue(getClass().getClassLoader());
 
 		assertEquals(closureCleanerEnabled, executionConfig.isClosureCleanerEnabled());
 		assertEquals(forceAvroEnabled, executionConfig.isForceAvroEnabled());
@@ -114,6 +117,8 @@ public class StreamingJobGraphGeneratorTest {
 		DataStream<Tuple2<String, String>> input = env
 				.fromElements("a", "b", "c", "d", "e", "f")
 				.map(new MapFunction<String, Tuple2<String, String>>() {
+					private static final long serialVersionUID = 471891682418382583L;
+
 					@Override
 					public Tuple2<String, String> map(String value) {
 						return new Tuple2<>(value, value);
@@ -124,6 +129,8 @@ public class StreamingJobGraphGeneratorTest {
 				.keyBy(0)
 				.map(new MapFunction<Tuple2<String, String>, Tuple2<String, String>>() {
 
+					private static final long serialVersionUID = 3583760206245136188L;
+
 					@Override
 					public Tuple2<String, String> map(Tuple2<String, String> value) {
 						return value;
@@ -131,6 +138,8 @@ public class StreamingJobGraphGeneratorTest {
 				});
 
 		result.addSink(new SinkFunction<Tuple2<String, String>>() {
+			private static final long serialVersionUID = -5614849094269539342L;
+
 			@Override
 			public void invoke(Tuple2<String, String> value) {}
 		});
@@ -144,5 +153,21 @@ public class StreamingJobGraphGeneratorTest {
 		assertEquals(2, jobGraph.getNumberOfVertices());
 		assertEquals(1, jobGraph.getVerticesAsArray()[0].getParallelism());
 		assertEquals(1, jobGraph.getVerticesAsArray()[1].getParallelism());
+	}
+
+	/**
+	 * Tests that disabled checkpointing sets the checkpointing interval to Long.MAX_VALUE.
+	 */
+	@Test
+	public void testDisabledCheckpointing() throws Exception {
+		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+		StreamGraph streamGraph = new StreamGraph(env);
+		assertFalse("Checkpointing enabled", streamGraph.getCheckpointConfig().isCheckpointingEnabled());
+
+		StreamingJobGraphGenerator jobGraphGenerator = new StreamingJobGraphGenerator(streamGraph);
+		JobGraph jobGraph = jobGraphGenerator.createJobGraph();
+
+		JobSnapshottingSettings snapshottingSettings = jobGraph.getSnapshotSettings();
+		assertEquals(Long.MAX_VALUE, snapshottingSettings.getCheckpointInterval());
 	}
 }

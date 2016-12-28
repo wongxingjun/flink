@@ -22,7 +22,7 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.api.BackgroundCallback;
 import org.apache.curator.utils.ZKPaths;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.runtime.state.StateHandle;
+import org.apache.flink.runtime.state.RetrievableStateHandle;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
@@ -33,16 +33,20 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Executor;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * State handles backed by ZooKeeper.
  *
- * <p>Added state is persisted via {@link StateHandle}s, which in turn are written to
- * ZooKeeper. This level of indirection is necessary to keep the amount of data in ZooKeeper
- * small. ZooKeeper is build for data in the KB range whereas state can grow to multiple MBs.
+ * <p>Added state is persisted via {@link RetrievableStateHandle RetrievableStateHandles},
+ * which in turn are written to ZooKeeper. This level of indirection is necessary to keep the
+ * amount of data in ZooKeeper small. ZooKeeper is build for data in the KB range whereas
+ * state can grow to multiple MBs.
  *
  * <p>State modifications require some care, because it is possible that certain failures bring
  * the state handle backend and ZooKeeper out of sync.
@@ -72,7 +76,9 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	/** Curator ZooKeeper client */
 	private final CuratorFramework client;
 
-	private final StateStorageHelper<T> storage;
+	private final RetrievableStateStorageHelper<T> storage;
+
+	private final Executor executor;
 
 	/**
 	 * Creates a {@link ZooKeeperStateHandleStore}.
@@ -81,22 +87,27 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	 *                            expected that the client's namespace ensures that the root
 	 *                            path is exclusive for all state handles managed by this
 	 *                            instance, e.g. <code>client.usingNamespace("/stateHandles")</code>
+	 * @param storage to persist the actual state and whose returned state handle is then written
+	 *                to ZooKeeper
+	 * @param executor to run the ZooKeeper callbacks
 	 */
 	public ZooKeeperStateHandleStore(
 		CuratorFramework client,
-		StateStorageHelper storage) throws IOException {
+		RetrievableStateStorageHelper<T> storage,
+		Executor executor) {
 
 		this.client = checkNotNull(client, "Curator client");
 		this.storage = checkNotNull(storage, "State storage");
+		this.executor = checkNotNull(executor);
 	}
 
 	/**
 	 * Creates a state handle and stores it in ZooKeeper with create mode {@link
 	 * CreateMode#PERSISTENT}.
 	 *
-	 * @see #add(String, Serializable, CreateMode)
+	 * @see #add(String, T, CreateMode)
 	 */
-	public StateHandle<T> add(String pathInZooKeeper, T state) throws Exception {
+	public RetrievableStateHandle<T> add(String pathInZooKeeper, T state) throws Exception {
 		return add(pathInZooKeeper, state, CreateMode.PERSISTENT);
 	}
 
@@ -111,39 +122,39 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	 *                        start with a '/')
 	 * @param state           State to be added
 	 * @param createMode      The create mode for the new path in ZooKeeper
-	 * @return Created {@link StateHandle}
+	 *
+	 * @return The Created {@link RetrievableStateHandle}.
 	 * @throws Exception If a ZooKeeper or state handle operation fails
 	 */
-	public StateHandle<T> add(
+	public RetrievableStateHandle<T> add(
 			String pathInZooKeeper,
 			T state,
 			CreateMode createMode) throws Exception {
 		checkNotNull(pathInZooKeeper, "Path in ZooKeeper");
 		checkNotNull(state, "State");
 
-		StateHandle<T> stateHandle = storage.store(state);
+		RetrievableStateHandle<T> storeHandle = storage.store(state);
 
 		boolean success = false;
 
 		try {
 			// Serialize the state handle. This writes the state to the backend.
-			byte[] serializedStateHandle = InstantiationUtil.serializeObject(stateHandle);
+			byte[] serializedStoreHandle = InstantiationUtil.serializeObject(storeHandle);
 
 			// Write state handle (not the actual state) to ZooKeeper. This is expected to be
 			// smaller than the state itself. This level of indirection makes sure that data in
 			// ZooKeeper is small, because ZooKeeper is designed for data in the KB range, but
 			// the state can be larger.
-			client.create().withMode(createMode).forPath(pathInZooKeeper, serializedStateHandle);
+			client.create().withMode(createMode).forPath(pathInZooKeeper, serializedStoreHandle);
 
 			success = true;
-
-			return stateHandle;
+			return storeHandle;
 		}
 		finally {
 			if (!success) {
 				// Cleanup the state handle if it was not written to ZooKeeper.
-				if (stateHandle != null) {
-					stateHandle.discardState();
+				if (storeHandle != null) {
+					storeHandle.discardState();
 				}
 			}
 		}
@@ -161,31 +172,29 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 		checkNotNull(pathInZooKeeper, "Path in ZooKeeper");
 		checkNotNull(state, "State");
 
-		StateHandle<T> oldStateHandle = get(pathInZooKeeper);
+		RetrievableStateHandle<T> oldStateHandle = get(pathInZooKeeper);
 
-		StateHandle<T> stateHandle = storage.store(state);
+		RetrievableStateHandle<T> newStateHandle = storage.store(state);
 
 		boolean success = false;
 
 		try {
 			// Serialize the new state handle. This writes the state to the backend.
-			byte[] serializedStateHandle = InstantiationUtil.serializeObject(stateHandle);
+			byte[] serializedStateHandle = InstantiationUtil.serializeObject(newStateHandle);
 
 			// Replace state handle in ZooKeeper.
 			client.setData()
 					.withVersion(expectedVersion)
 					.forPath(pathInZooKeeper, serializedStateHandle);
-
 			success = true;
-		}
-		finally {
-			if (success) {
+		} finally {
+			if(success) {
 				oldStateHandle.discardState();
-			}
-			else {
-				stateHandle.discardState();
+			} else {
+				newStateHandle.discardState();
 			}
 		}
+
 	}
 
 	/**
@@ -216,13 +225,48 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	 * @throws Exception If a ZooKeeper or state handle operation fails
 	 */
 	@SuppressWarnings("unchecked")
-	public StateHandle<T> get(String pathInZooKeeper) throws Exception {
+	public RetrievableStateHandle<T> get(String pathInZooKeeper) throws Exception {
 		checkNotNull(pathInZooKeeper, "Path in ZooKeeper");
 
-		byte[] data = client.getData().forPath(pathInZooKeeper);
+		byte[] data;
 
-		return (StateHandle<T>) InstantiationUtil
-				.deserializeObject(data, ClassLoader.getSystemClassLoader());
+		try {
+			data = client.getData().forPath(pathInZooKeeper);
+		} catch (Exception e) {
+			throw new Exception("Failed to retrieve state handle data under " + pathInZooKeeper +
+				" from ZooKeeper.", e);
+		}
+
+		try {
+			return InstantiationUtil.deserializeObject(data, Thread.currentThread().getContextClassLoader());
+		} catch (IOException | ClassNotFoundException e) {
+			throw new Exception("Failed to deserialize state handle from ZooKeeper data from " +
+				pathInZooKeeper + '.', e);
+		}
+	}
+
+	/**
+	 * Return a list of all valid paths for state handles.
+	 *
+	 * @return List of valid state handle paths in ZooKeeper
+	 * @throws Exception if a ZooKeeper operation fails
+	 */
+	public Collection<String> getAllPaths() throws Exception {
+		final String path = "/";
+
+		while(true) {
+			Stat stat = client.checkExists().forPath(path);
+
+			if (stat == null) {
+				return Collections.emptyList();
+			} else {
+				try {
+					return client.getChildren().forPath(path);
+				} catch (KeeperException.NoNodeException ignored) {
+					// Concurrent deletion, retry
+				}
+			}
+		}
 	}
 
 	/**
@@ -234,39 +278,44 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	 * @throws Exception If a ZooKeeper or state handle operation fails
 	 */
 	@SuppressWarnings("unchecked")
-	public List<Tuple2<StateHandle<T>, String>> getAll() throws Exception {
-		final List<Tuple2<StateHandle<T>, String>> stateHandles = new ArrayList<>();
+	public List<Tuple2<RetrievableStateHandle<T>, String>> getAll() throws Exception {
+		final List<Tuple2<RetrievableStateHandle<T>, String>> stateHandles = new ArrayList<>();
 
 		boolean success = false;
 
 		retry:
 		while (!success) {
-			// Initial cVersion (number of changes to the children of this node)
-			int initialCVersion = client.checkExists().forPath("/").getCversion();
+			Stat stat = client.checkExists().forPath("/");
+			if (stat == null) {
+				break; // Node does not exist, done.
+			} else {
+				// Initial cVersion (number of changes to the children of this node)
+				int initialCVersion = stat.getCversion();
 
-			List<String> children = client.getChildren().forPath("/");
+				List<String> children = client.getChildren().forPath("/");
 
-			for (String path : children) {
-				path = "/" + path;
+				for (String path : children) {
+					path = "/" + path;
 
-				try {
-					final StateHandle<T> stateHandle = get(path);
-					stateHandles.add(new Tuple2<>(stateHandle, path));
+					try {
+						final RetrievableStateHandle<T> stateHandle = get(path);
+						stateHandles.add(new Tuple2<>(stateHandle, path));
+					} catch (KeeperException.NoNodeException ignored) {
+						// Concurrent deletion, retry
+						continue retry;
+					}
 				}
-				catch (KeeperException.NoNodeException ignored) {
-					// Concurrent deletion, retry
-					continue retry;
-				}
+
+				int finalCVersion = client.checkExists().forPath("/").getCversion();
+
+				// Check for concurrent modifications
+				success = initialCVersion == finalCVersion;
 			}
-
-			int finalCVersion = client.checkExists().forPath("/").getCversion();
-
-			// Check for concurrent modifications
-			success = initialCVersion == finalCVersion;
 		}
 
 		return stateHandles;
 	}
+
 
 	/**
 	 * Gets all available state handles from ZooKeeper sorted by name (ascending).
@@ -277,37 +326,41 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	 * @throws Exception If a ZooKeeper or state handle operation fails
 	 */
 	@SuppressWarnings("unchecked")
-	public List<Tuple2<StateHandle<T>, String>> getAllSortedByName() throws Exception {
-		final List<Tuple2<StateHandle<T>, String>> stateHandles = new ArrayList<>();
+	public List<Tuple2<RetrievableStateHandle<T>, String>> getAllSortedByName() throws Exception {
+		final List<Tuple2<RetrievableStateHandle<T>, String>> stateHandles = new ArrayList<>();
 
 		boolean success = false;
 
 		retry:
 		while (!success) {
-			// Initial cVersion (number of changes to the children of this node)
-			int initialCVersion = client.checkExists().forPath("/").getCversion();
+			Stat stat = client.checkExists().forPath("/");
+			if (stat == null) {
+				break; // Node does not exist, done.
+			} else {
+				// Initial cVersion (number of changes to the children of this node)
+				int initialCVersion = stat.getCversion();
 
-			List<String> children = ZKPaths.getSortedChildren(
-					client.getZookeeperClient().getZooKeeper(),
-					ZKPaths.fixForNamespace(client.getNamespace(), "/"));
+				List<String> children = ZKPaths.getSortedChildren(
+						client.getZookeeperClient().getZooKeeper(),
+						ZKPaths.fixForNamespace(client.getNamespace(), "/"));
 
-			for (String path : children) {
-				path = "/" + path;
+				for (String path : children) {
+					path = "/" + path;
 
-				try {
-					final StateHandle<T> stateHandle = get(path);
-					stateHandles.add(new Tuple2<>(stateHandle, path));
+					try {
+						final RetrievableStateHandle<T> stateHandle = get(path);
+						stateHandles.add(new Tuple2<>(stateHandle, path));
+					} catch (KeeperException.NoNodeException ignored) {
+						// Concurrent deletion, retry
+						continue retry;
+					}
 				}
-				catch (KeeperException.NoNodeException ignored) {
-					// Concurrent deletion, retry
-					continue retry;
-				}
+
+				int finalCVersion = client.checkExists().forPath("/").getCversion();
+
+				// Check for concurrent modifications
+				success = initialCVersion == finalCVersion;
 			}
-
-			int finalCVersion = client.checkExists().forPath("/").getCversion();
-
-			// Check for concurrent modifications
-			success = initialCVersion == finalCVersion;
 		}
 
 		return stateHandles;
@@ -342,7 +395,7 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 		checkNotNull(pathInZooKeeper, "Path in ZooKeeper");
 		checkNotNull(callback, "Background callback");
 
-		client.delete().deletingChildrenIfNeeded().inBackground(callback).forPath(pathInZooKeeper);
+		client.delete().deletingChildrenIfNeeded().inBackground(callback, executor).forPath(pathInZooKeeper);
 	}
 
 	/**
@@ -356,7 +409,7 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	public void removeAndDiscardState(String pathInZooKeeper) throws Exception {
 		checkNotNull(pathInZooKeeper, "Path in ZooKeeper");
 
-		StateHandle<T> stateHandle = get(pathInZooKeeper);
+		RetrievableStateHandle<T> stateHandle = get(pathInZooKeeper);
 
 		// Delete the state handle from ZooKeeper first
 		client.delete().deletingChildrenIfNeeded().forPath(pathInZooKeeper);
@@ -373,7 +426,7 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 	 * @throws Exception If a ZooKeeper or state handle operation fails
 	 */
 	public void removeAndDiscardAllState() throws Exception {
-		final List<Tuple2<StateHandle<T>, String>> allStateHandles = getAll();
+		final List<Tuple2<RetrievableStateHandle<T>, String>> allStateHandles = getAll();
 
 		ZKPaths.deleteChildren(
 				client.getZookeeperClient().getZooKeeper(),
@@ -381,7 +434,7 @@ public class ZooKeeperStateHandleStore<T extends Serializable> {
 				false);
 
 		// Discard the state handles only after they have been successfully deleted from ZooKeeper.
-		for (Tuple2<StateHandle<T>, String> stateHandleAndPath : allStateHandles) {
+		for (Tuple2<RetrievableStateHandle<T>, String> stateHandleAndPath : allStateHandles) {
 			stateHandleAndPath.f0.discardState();
 		}
 	}

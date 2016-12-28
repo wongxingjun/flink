@@ -35,8 +35,9 @@ import org.apache.flink.streaming.api.graph.StreamNode;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.runtime.partitioner.BroadcastPartitioner;
-import org.apache.flink.streaming.runtime.streamrecord.MultiplexingStreamRecordSerializer;
+import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
+
 import org.junit.Assert;
 
 import java.io.IOException;
@@ -91,7 +92,7 @@ public class StreamTaskTestHarness<OUT> {
 	// input related methods only need to be implemented once, in generic form
 	protected int numInputGates;
 	protected int numInputChannelsPerGate;
-	
+
 	@SuppressWarnings("rawtypes")
 	protected StreamTestSingleInputGate[] inputGates;
 
@@ -110,14 +111,14 @@ public class StreamTaskTestHarness<OUT> {
 		streamConfig.setTimeCharacteristic(TimeCharacteristic.EventTime);
 
 		outputSerializer = outputType.createSerializer(executionConfig);
-		outputStreamRecordSerializer = new MultiplexingStreamRecordSerializer<OUT>(outputSerializer);
+		outputStreamRecordSerializer = new StreamElementSerializer<OUT>(outputSerializer);
 	}
 
-	public long getCurrentProcessingTime() {
+	public ProcessingTimeService getProcessingTimeService() {
 		if (!(task instanceof StreamTask)) {
-			System.currentTimeMillis();
+			throw new UnsupportedOperationException("getProcessingTimeService() only supported on StreamTasks.");
 		}
-		return ((StreamTask) task).getCurrentProcessingTime();
+		return ((StreamTask<?, ?>) task).getProcessingTimeService();
 	}
 
 	/**
@@ -150,21 +151,18 @@ public class StreamTaskTestHarness<OUT> {
 
 	}
 
+	public StreamMockEnvironment createEnvironment() {
+		return new StreamMockEnvironment(
+				jobConfig, taskConfig, executionConfig, memorySize, new MockInputSplitProvider(), bufferSize);
+	}
+
 	/**
 	 * Invoke the Task. This resets the output of any previous invocation. This will start a new
 	 * Thread to execute the Task in. Use {@link #waitForTaskCompletion()} to wait for the
 	 * Task thread to finish running.
 	 */
 	public void invoke() throws Exception {
-		mockEnv = new StreamMockEnvironment(jobConfig, taskConfig, executionConfig,
-			memorySize, new MockInputSplitProvider(), bufferSize);
-		task.setEnvironment(mockEnv);
-
-		initializeInputs();
-		initializeOutput();
-
-		taskThread = new TaskThread(task);
-		taskThread.start();
+		invoke(createEnvironment());
 	}
 
 	/**
@@ -186,18 +184,50 @@ public class StreamTaskTestHarness<OUT> {
 		taskThread.start();
 	}
 
+	/**
+	 * Waits for the task completion.
+	 *
+	 * @throws Exception
+	 */
 	public void waitForTaskCompletion() throws Exception {
+		waitForTaskCompletion(Long.MAX_VALUE);
+	}
+
+	/**
+	 * Waits for the task completion. If this does not happen within the timeout, then a
+	 * TimeoutException is thrown.
+	 *
+	 * @param timeout Timeout for the task completion
+	 * @throws Exception
+	 */
+	public void waitForTaskCompletion(long timeout) throws Exception {
 		if (taskThread == null) {
 			throw new IllegalStateException("Task thread was not started.");
 		}
 
-		taskThread.join();
+		taskThread.join(timeout);
 		if (taskThread.getError() != null) {
 			throw new Exception("error in task", taskThread.getError());
 		}
 	}
 
+	/**
+	 * Waits for the task to be running.
+	 *
+	 * @throws Exception
+	 */
 	public void waitForTaskRunning() throws Exception {
+		waitForTaskRunning(Long.MAX_VALUE);
+	}
+
+	/**
+	 * Waits fro the task to be running. If this does not happen within the timeout, then a
+	 * TimeoutException is thrown.
+	 *
+	 * @param timeout Timeout for the task to be running.
+	 * @throws Exception
+	 */
+	public void waitForTaskRunning(long timeout) throws Exception {
 		if (taskThread == null) {
 			throw new IllegalStateException("Task thread was not started.");
 		}
@@ -205,7 +235,7 @@ public class StreamTaskTestHarness<OUT> {
 			if (taskThread.task instanceof StreamTask) {
 				StreamTask<?, ?> streamTask = (StreamTask<?, ?>) taskThread.task;
 				while (!streamTask.isRunning()) {
-					Thread.sleep(100);
+					Thread.sleep(10);
 					if (!taskThread.isAlive()) {
 						if (taskThread.getError() != null) {
 							throw new Exception("Task Thread failed due to an error.", taskThread.getError());
@@ -232,6 +262,10 @@ public class StreamTaskTestHarness<OUT> {
 
 	public StreamConfig getStreamConfig() {
 		return streamConfig;
+	}
+
+	public ExecutionConfig getExecutionConfig() {
+		return executionConfig;
 	}
 
 	private void shutdownIOManager() throws Exception {
@@ -282,15 +316,14 @@ public class StreamTaskTestHarness<OUT> {
 	/**
 	 * This only returns after all input queues are empty.
 	 */
-	public void waitForInputProcessing() {
+	public void waitForInputProcessing() throws Exception {
 
-
-		// first wait for all input queues to be empty
-		try {
-			Thread.sleep(1);
-		} catch (InterruptedException ignored) {}
-		
 		while (true) {
+			Throwable error = taskThread.getError();
+			if (error != null) {
+				throw new Exception("Exception in the task thread", error);
+			}
+
 			boolean allEmpty = true;
 			for (int i = 0; i < numInputGates; i++) {
 				if (!inputGates[i].allQueuesEmpty()) {
@@ -300,7 +333,7 @@ public class StreamTaskTestHarness<OUT> {
 			try {
 				Thread.sleep(10);
 			} catch (InterruptedException ignored) {}
-			
+
 			if (allEmpty) {
 				break;
 			}
@@ -308,7 +341,7 @@ public class StreamTaskTestHarness<OUT> {
 
 		// then wait for the Task Thread to be in a blocked state
 		// Check whether the state is blocked, this should be the case if it cannot
-		// read more input, i.e. all currently available input has been processed.
+		// notifyNonEmpty more input, i.e. all currently available input has been processed.
 		while (true) {
 			Thread.State state = taskThread.getState();
 			if (state == Thread.State.BLOCKED || state == Thread.State.TERMINATED ||
@@ -331,13 +364,13 @@ public class StreamTaskTestHarness<OUT> {
 			inputGates[i].endInput();
 		}
 	}
-	
+
 	// ------------------------------------------------------------------------
-	
+
 	private class TaskThread extends Thread {
-		
+
 		private final AbstractInvokable task;
-		
+
 		private volatile Throwable error;
 
 		TaskThread(AbstractInvokable task) {

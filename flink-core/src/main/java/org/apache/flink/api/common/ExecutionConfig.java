@@ -19,11 +19,10 @@
 package org.apache.flink.api.common;
 
 import com.esotericsoftware.kryo.Serializer;
-import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.Public;
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.util.Preconditions;
-
+import org.apache.flink.configuration.TaskManagerOptions;
 
 import java.io.Serializable;
 import java.util.Collections;
@@ -31,6 +30,8 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
  * A config to define the behavior of the program execution. It allows to define (among other
@@ -58,7 +59,7 @@ import java.util.Objects;
  * </ul>
  */
 @Public
-public class ExecutionConfig implements Serializable {
+public class ExecutionConfig implements Serializable, Archiveable<ArchivedExecutionConfig> {
 
 	private static final long serialVersionUID = 1L;
 
@@ -74,6 +75,13 @@ public class ExecutionConfig implements Serializable {
 	 */
 	public static final int PARALLELISM_DEFAULT = -1;
 
+	/**
+	 * The flag value indicating an unknown or unset parallelism. This value is
+	 * not a valid parallelism and indicates that the parallelism should remain
+	 * unchanged.
+	 */
+	public static final int PARALLELISM_UNKNOWN = -2;
+
 	private static final long DEFAULT_RESTART_DELAY = 10000L;
 
 	// --------------------------------------------------------------------------------------------
@@ -84,6 +92,13 @@ public class ExecutionConfig implements Serializable {
 	private boolean useClosureCleaner = true;
 
 	private int parallelism = PARALLELISM_DEFAULT;
+
+	/**
+	 * The program wide maximum parallelism used for operators which haven't specified a maximum
+	 * parallelism. The maximum parallelism specifies the upper limit for dynamic scaling and the
+	 * number of key groups used for partitioned state.
+	 */
+	private int maxParallelism = -1;
 
 	/**
 	 * @deprecated Should no longer be used because it is subsumed by RestartStrategyConfiguration
@@ -107,6 +122,11 @@ public class ExecutionConfig implements Serializable {
 	private long autoWatermarkInterval = 0;
 
 	/**
+	 * Interval in milliseconds for sending latency tracking marks from the sources to the sinks.
+	 */
+	private long latencyTrackingInterval = 2000L;
+
+	/**
 	 * @deprecated Should no longer be used because it is subsumed by RestartStrategyConfiguration
 	 */
 	@Deprecated
@@ -115,6 +135,12 @@ public class ExecutionConfig implements Serializable {
 	private RestartStrategies.RestartStrategyConfiguration restartStrategyConfiguration;
 	
 	private long taskCancellationIntervalMillis = -1;
+
+	/**
+	 * Timeout after which an ongoing task cancellation will lead to a fatal
+	 * TaskManager error, usually killing the JVM.
+	 */
+	private long taskCancellationTimeoutMillis = -1;
 
 	// ------------------------------- User code values --------------------------------------------
 
@@ -191,6 +217,40 @@ public class ExecutionConfig implements Serializable {
 	}
 
 	/**
+	 * Interval for sending latency tracking marks from the sources to the sinks.
+	 * Flink will send latency tracking marks from the sources at the specified interval.
+	 *
+	 * Recommended value: 2000 (2 seconds).
+	 *
+	 * Setting a tracking interval <= 0 disables the latency tracking.
+	 *
+	 * @param interval Interval in milliseconds.
+	 */
+	@PublicEvolving
+	public ExecutionConfig setLatencyTrackingInterval(long interval) {
+		this.latencyTrackingInterval = interval;
+		return this;
+	}
+
+	/**
+	 * Returns the latency tracking interval.
+	 * @return The latency tracking interval in milliseconds
+	 */
+	@PublicEvolving
+	public long getLatencyTrackingInterval() {
+		return latencyTrackingInterval;
+	}
+
+	/**
+	 * Returns if latency tracking is enabled
+	 * @return True, if the tracking is enabled, false otherwise.
+	 */
+	@PublicEvolving
+	public boolean isLatencyTrackingEnabled() {
+		return latencyTrackingInterval > 0;
+	}
+
+	/**
 	 * Gets the parallelism with which operation are executed by default. Operations can
 	 * individually override this value to use a specific parallelism.
 	 *
@@ -219,12 +279,41 @@ public class ExecutionConfig implements Serializable {
 	 * @param parallelism The parallelism to use
 	 */
 	public ExecutionConfig setParallelism(int parallelism) {
-		Preconditions.checkArgument(parallelism > 0 || parallelism == PARALLELISM_DEFAULT,
-			"The parallelism of an operator must be at least 1.");
-
-		this.parallelism = parallelism;
-
+		if (parallelism != PARALLELISM_UNKNOWN) {
+			if (parallelism < 1 && parallelism != PARALLELISM_DEFAULT) {
+				throw new IllegalArgumentException(
+					"Parallelism must be at least one, or ExecutionConfig.PARALLELISM_DEFAULT (use system default).");
+			}
+			this.parallelism = parallelism;
+		}
 		return this;
+	}
+
+	/**
+	 * Gets the maximum degree of parallelism defined for the program.
+	 *
+	 * The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
+	 * defines the number of key groups used for partitioned state.
+	 *
+	 * @return Maximum degree of parallelism
+	 */
+	@PublicEvolving
+	public int getMaxParallelism() {
+		return maxParallelism;
+	}
+
+	/**
+	 * Sets the maximum degree of parallelism defined for the program.
+	 *
+	 * The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
+	 * defines the number of key groups used for partitioned state.
+	 *
+	 * @param maxParallelism Maximum degree of parallelism to be used for the program.
+	 */
+	@PublicEvolving
+	public void setMaxParallelism(int maxParallelism) {
+		checkArgument(maxParallelism > 0, "The maximum parallelism must be greater than 0.");
+		this.maxParallelism = maxParallelism;
 	}
 
 	/**
@@ -241,6 +330,36 @@ public class ExecutionConfig implements Serializable {
 	 */
 	public ExecutionConfig setTaskCancellationInterval(long interval) {
 		this.taskCancellationIntervalMillis = interval;
+		return this;
+	}
+
+	/**
+	 * Returns the timeout (in milliseconds) after which an ongoing task
+	 * cancellation leads to a fatal TaskManager error.
+	 *
+	 * <p>The value <code>0</code> means that the timeout is disabled. In
+	 * this case a stuck cancellation will not lead to a fatal error.
+	 */
+	@PublicEvolving
+	public long getTaskCancellationTimeout() {
+		return this.taskCancellationTimeoutMillis;
+	}
+
+	/**
+	 * Sets the timeout (in milliseconds) after which an ongoing task cancellation
+	 * is considered failed, leading to a fatal TaskManager error.
+	 *
+	 * <p>The cluster default is configured via {@link TaskManagerOptions#TASK_CANCELLATION_TIMEOUT}.
+	 *
+	 * <p>The value <code>0</code> disables the timeout. In this case a stuck
+	 * cancellation will not lead to a fatal error.
+	 *
+	 * @param timeout The task cancellation timeout (in milliseconds).
+	 */
+	@PublicEvolving
+	public ExecutionConfig setTaskCancellationTimeout(long timeout) {
+		checkArgument(timeout >= 0, "Timeout needs to be >= 0.");
+		this.taskCancellationTimeoutMillis = timeout;
 		return this;
 	}
 
@@ -268,6 +387,7 @@ public class ExecutionConfig implements Serializable {
 	 * @return The specified restart configuration
 	 */
 	@PublicEvolving
+	@SuppressWarnings("deprecation")
 	public RestartStrategies.RestartStrategyConfiguration getRestartStrategy() {
 		if (restartStrategyConfiguration == null) {
 			// support the old API calls by creating a restart strategy from them
@@ -558,11 +678,15 @@ public class ExecutionConfig implements Serializable {
 	 * @param type The class of the types serialized with the given serializer.
 	 * @param serializerClass The class of the serializer to use.
 	 */
-	public void registerTypeWithKryoSerializer(Class<?> type, Class<? extends Serializer<?>> serializerClass) {
+	@SuppressWarnings("rawtypes")
+	public void registerTypeWithKryoSerializer(Class<?> type, Class<? extends Serializer> serializerClass) {
 		if (type == null || serializerClass == null) {
 			throw new NullPointerException("Cannot register null class or serializer.");
 		}
-		registeredTypesWithKryoSerializerClasses.put(type, serializerClass);
+
+		@SuppressWarnings("unchecked")
+		Class<? extends Serializer<?>> castedSerializerClass = (Class<? extends Serializer<?>>) serializerClass;
+		registeredTypesWithKryoSerializerClasses.put(type, castedSerializerClass);
 	}
 
 	/**
@@ -577,7 +701,7 @@ public class ExecutionConfig implements Serializable {
 		if (type == null) {
 			throw new NullPointerException("Cannot register null type class.");
 		}
-		if(!registeredPojoTypes.contains(type)) {
+		if (!registeredPojoTypes.contains(type)) {
 			registeredPojoTypes.add(type);
 		}
 	}
@@ -721,6 +845,11 @@ public class ExecutionConfig implements Serializable {
 
 	public boolean canEqual(Object obj) {
 		return obj instanceof ExecutionConfig;
+	}
+	
+	@Override
+	public ArchivedExecutionConfig archive() {
+		return new ArchivedExecutionConfig(this);
 	}
 
 

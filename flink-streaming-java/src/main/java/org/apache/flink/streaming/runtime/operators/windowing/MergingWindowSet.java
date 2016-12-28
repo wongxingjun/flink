@@ -58,7 +58,15 @@ public class MergingWindowSet<W extends Window> {
 	 * we are incrementally merging windows starting from some window we keep that starting
 	 * window as the state window to prevent costly state juggling.
 	 */
-	private final Map<W, W> windows;
+	private final Map<W, W> mapping;
+
+	/**
+	 * Mapping when we created the {@code MergingWindowSet}. We use this to decide whether
+	 * we need to persist any changes to state.
+	 */
+	private final Map<W, W> initialMapping;
+
+	private final ListState<Tuple2<W, W>> state;
 
 	/**
 	 * Our window assigner.
@@ -66,28 +74,35 @@ public class MergingWindowSet<W extends Window> {
 	private final MergingWindowAssigner<?, W> windowAssigner;
 
 	/**
-	 * Creates a new {@link MergingWindowSet} that uses the given {@link MergingWindowAssigner}.
-	 */
-	public MergingWindowSet(MergingWindowAssigner<?, W> windowAssigner) {
-		this.windowAssigner = windowAssigner;
-		windows = new HashMap<>();
-	}
-
-	/**
 	 * Restores a {@link MergingWindowSet} from the given state.
 	 */
 	public MergingWindowSet(MergingWindowAssigner<?, W> windowAssigner, ListState<Tuple2<W, W>> state) throws Exception {
 		this.windowAssigner = windowAssigner;
-		windows = new HashMap<>();
+		mapping = new HashMap<>();
 
-		for (Tuple2<W, W> window: state.get()) {
-			windows.put(window.f0, window.f1);
+		Iterable<Tuple2<W, W>> windowState = state.get();
+		if (windowState != null) {
+			for (Tuple2<W, W> window: windowState) {
+				mapping.put(window.f0, window.f1);
+			}
 		}
+
+		this.state = state;
+
+		initialMapping = new HashMap<>();
+		initialMapping.putAll(mapping);
 	}
 
-	public void persist(ListState<Tuple2<W, W>> state) throws Exception {
-		for (Map.Entry<W, W> window: windows.entrySet()) {
-			state.add(new Tuple2<>(window.getKey(), window.getValue()));
+	/**
+	 * Persist the updated mapping to the given state if the mapping changed since
+	 * initialization.
+	 */
+	public void persist() throws Exception {
+		if (!mapping.equals(initialMapping)) {
+			state.clear();
+			for (Map.Entry<W, W> window : mapping.entrySet()) {
+				state.add(new Tuple2<>(window.getKey(), window.getValue()));
+			}
 		}
 	}
 
@@ -100,12 +115,7 @@ public class MergingWindowSet<W extends Window> {
 	 * @param window The window for which to get the state window.
 	 */
 	public W getStateWindow(W window) {
-		W result = windows.get(window);
-		if (result == null) {
-			throw new IllegalStateException("Window " + window + " is not in in-flight window set.");
-		}
-
-		return result;
+		return mapping.get(window);
 	}
 
 	/**
@@ -114,7 +124,7 @@ public class MergingWindowSet<W extends Window> {
 	 * @param window The {@code Window} to remove.
 	 */
 	public void retireWindow(W window) {
-		W removed = this.windows.remove(window);
+		W removed = this.mapping.remove(window);
 		if (removed == null) {
 			throw new IllegalStateException("Window " + window + " is not in in-flight window set.");
 		}
@@ -145,7 +155,7 @@ public class MergingWindowSet<W extends Window> {
 
 		List<W> windows = new ArrayList<>();
 
-		windows.addAll(this.windows.keySet());
+		windows.addAll(this.mapping.keySet());
 		windows.add(newWindow);
 
 		final Map<W, Collection<W>> mergeResults = new HashMap<>();
@@ -175,18 +185,18 @@ public class MergingWindowSet<W extends Window> {
 
 			// pick any of the merged windows and choose that window's state window
 			// as the state window for the merge result
-			W mergedStateWindow = this.windows.get(mergedWindows.iterator().next());
+			W mergedStateWindow = this.mapping.get(mergedWindows.iterator().next());
 
 			// figure out the state windows that we are merging
 			List<W> mergedStateWindows = new ArrayList<>();
 			for (W mergedWindow: mergedWindows) {
-				W res = this.windows.remove(mergedWindow);
+				W res = this.mapping.remove(mergedWindow);
 				if (res != null) {
 					mergedStateWindows.add(res);
 				}
 			}
 
-			this.windows.put(mergeResult, mergedStateWindow);
+			this.mapping.put(mergeResult, mergedStateWindow);
 
 			// don't put the target state window into the merged windows
 			mergedStateWindows.remove(mergedStateWindow);
@@ -197,14 +207,14 @@ public class MergingWindowSet<W extends Window> {
 			if (!(mergedWindows.contains(mergeResult) && mergedWindows.size() == 1)) {
 				mergeFunction.merge(mergeResult,
 						mergedWindows,
-						this.windows.get(mergeResult),
+						this.mapping.get(mergeResult),
 						mergedStateWindows);
 			}
 		}
 
 		// the new window created a new, self-contained window without merging
-		if (resultWindow.equals(newWindow)) {
-			this.windows.put(resultWindow, resultWindow);
+		if (resultWindow.equals(newWindow) && mergeResults.isEmpty()) {
+			this.mapping.put(resultWindow, resultWindow);
 		}
 
 		return resultWindow;
@@ -226,5 +236,12 @@ public class MergingWindowSet<W extends Window> {
 		 * @throws Exception
 		 */
 		void merge(W mergeResult, Collection<W> mergedWindows, W stateWindowResult, Collection<W> mergedStateWindows) throws Exception;
+	}
+
+	@Override
+	public String toString() {
+		return "MergingWindowSet{" +
+				"windows=" + mapping +
+				'}';
 	}
 }

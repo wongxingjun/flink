@@ -22,17 +22,17 @@ import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
-import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
 import org.apache.flink.cep.nfa.NFA;
 import org.apache.flink.cep.nfa.compiler.NFACompiler;
+import org.apache.flink.core.fs.FSDataInputStream;
+import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.memory.DataInputView;
+import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.runtime.state.AbstractStateBackend;
-import org.apache.flink.runtime.state.StateHandle;
+import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecordSerializer;
-import org.apache.flink.streaming.runtime.tasks.StreamTaskState;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -92,6 +92,8 @@ abstract public class AbstractKeyedCEPPatternOperator<IN, KEY, OUT> extends Abst
 	@Override
 	@SuppressWarnings("unchecked")
 	public void open() throws Exception {
+		super.open();
+
 		if (keys == null) {
 			keys = new HashSet<>();
 		}
@@ -100,17 +102,21 @@ abstract public class AbstractKeyedCEPPatternOperator<IN, KEY, OUT> extends Abst
 			nfaOperatorState = getPartitionedState(
 					new ValueStateDescriptor<NFA<IN>>(
 						NFA_OPERATOR_STATE_NAME,
-						new KryoSerializer<NFA<IN>>((Class<NFA<IN>>) (Class<?>) NFA.class, getExecutionConfig()),
+						new NFA.Serializer<IN>(),
 						null));
 		}
 
+		@SuppressWarnings("unchecked,rawtypes")
+		TypeSerializer<StreamRecord<IN>> streamRecordSerializer =
+				(TypeSerializer) new StreamElementSerializer<>(getInputSerializer());
+
 		if (priorityQueueOperatorState == null) {
 			priorityQueueOperatorState = getPartitionedState(
-					new ValueStateDescriptor<PriorityQueue<StreamRecord<IN>>>(
+					new ValueStateDescriptor<>(
 						PRIORIRY_QUEUE_STATE_NAME,
-						new PriorityQueueSerializer<StreamRecord<IN>>(
-							new StreamRecordSerializer<IN>(getInputSerializer()),
-							new PriorityQueueStreamRecordFactory<IN>()),
+						new PriorityQueueSerializer<>(
+								streamRecordSerializer,
+								new PriorityQueueStreamRecordFactory<IN>()),
 						null));
 		}
 	}
@@ -129,6 +135,11 @@ abstract public class AbstractKeyedCEPPatternOperator<IN, KEY, OUT> extends Abst
 	}
 
 	@Override
+	protected void updateNFA(NFA<IN> nfa) throws IOException {
+		nfaOperatorState.update(nfa);
+	}
+
+	@Override
 	protected PriorityQueue<StreamRecord<IN>> getPriorityQueue() throws IOException {
 		PriorityQueue<StreamRecord<IN>> priorityQueue = priorityQueueOperatorState.value();
 
@@ -142,6 +153,11 @@ abstract public class AbstractKeyedCEPPatternOperator<IN, KEY, OUT> extends Abst
 	}
 
 	@Override
+	protected void updatePriorityQueue(PriorityQueue<StreamRecord<IN>> queue) throws IOException {
+		priorityQueueOperatorState.update(queue);
+	}
+
+	@Override
 	public void processElement(StreamRecord<IN> element) throws Exception {
 		keys.add(keySelector.getKey(element.getValue()));
 
@@ -150,49 +166,46 @@ abstract public class AbstractKeyedCEPPatternOperator<IN, KEY, OUT> extends Abst
 
 	@Override
 	public void processWatermark(Watermark mark) throws Exception {
+		// we do our own watermark handling, no super call. we will never be able to use
+		// the timer service like this, however.
+
 		// iterate over all keys to trigger the execution of the buffered elements
 		for (KEY key: keys) {
-			setKeyContext(key);
+			setCurrentKey(key);
 
 			PriorityQueue<StreamRecord<IN>> priorityQueue = getPriorityQueue();
-
 			NFA<IN> nfa = getNFA();
 
-			while (!priorityQueue.isEmpty() && priorityQueue.peek().getTimestamp() <= mark.getTimestamp()) {
-				StreamRecord<IN> streamRecord = priorityQueue.poll();
+			if (priorityQueue.isEmpty()) {
+					advanceTime(nfa, mark.getTimestamp());
+			} else {
+				while (!priorityQueue.isEmpty() && priorityQueue.peek().getTimestamp() <= mark.getTimestamp()) {
+					StreamRecord<IN> streamRecord = priorityQueue.poll();
 
-				processEvent(nfa, streamRecord.getValue(), streamRecord.getTimestamp());
+					processEvent(nfa, streamRecord.getValue(), streamRecord.getTimestamp());
+				}
 			}
+
+			updateNFA(nfa);
+			updatePriorityQueue(priorityQueue);
 		}
 
 		output.emitWatermark(mark);
 	}
 
 	@Override
-	public StreamTaskState snapshotOperatorState(long checkpointId, long timestamp) throws Exception {
-		StreamTaskState taskState = super.snapshotOperatorState(checkpointId, timestamp);
-
-		AbstractStateBackend.CheckpointStateOutputView ov = getStateBackend().createCheckpointStateOutputView(checkpointId, timestamp);
-
+	public void snapshotState(FSDataOutputStream out, long checkpointId, long timestamp) throws Exception {
+		DataOutputView ov = new DataOutputViewStreamWrapper(out);
 		ov.writeInt(keys.size());
 
 		for (KEY key: keys) {
 			keySerializer.serialize(key, ov);
 		}
-
-		taskState.setOperatorState(ov.closeAndGetHandle());
-
-		return taskState;
 	}
 
 	@Override
-	public void restoreState(StreamTaskState state, long recoveryTimestamp) throws Exception {
-		super.restoreState(state, recoveryTimestamp);
-
-		@SuppressWarnings("unchecked")
-		StateHandle<DataInputView> stateHandle = (StateHandle<DataInputView>) state;
-
-		DataInputView inputView = stateHandle.getState(getUserCodeClassloader());
+	public void restoreState(FSDataInputStream state) throws Exception {
+		DataInputView inputView = new DataInputViewStreamWrapper(state);
 
 		if (keys == null) {
 			keys = new HashSet<>();
@@ -332,6 +345,16 @@ abstract public class AbstractKeyedCEPPatternOperator<IN, KEY, OUT> extends Abst
 		@Override
 		public PriorityQueue<StreamRecord<T>> createPriorityQueue() {
 			return new PriorityQueue<StreamRecord<T>>(INITIAL_PRIORITY_QUEUE_CAPACITY, new StreamRecordComparator<T>());
+		}
+
+		@Override
+		public boolean equals(Object obj) {
+			return obj instanceof PriorityQueueStreamRecordFactory;
+		}
+
+		@Override
+		public int hashCode() {
+			return getClass().hashCode();
 		}
 	}
 }

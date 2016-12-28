@@ -23,7 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.1-SNAPSHOT</version>
+		<version>1.3-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
@@ -38,12 +38,22 @@ under the License.
 	<packaging>jar</packaging>
 
 	<dependencies>
+		
+		<!-- test dependencies -->
+		
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-test-utils_2.10</artifactId>
 			<version>${project.version}</version>
-			<type>test-jar</type>
 			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-runtime_2.10</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+			<type>test-jar</type>
 		</dependency>
 
 		<!-- Needed for the streaming wordcount example -->
@@ -51,18 +61,29 @@ under the License.
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-streaming-java_2.10</artifactId>
 			<version>${project.version}</version>
+			<scope>test</scope>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-yarn_2.10</artifactId>
 			<version>${project.version}</version>
+			<scope>test</scope>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>${shading-artifact.name}</artifactId>
+			<artifactId>flink-yarn_2.10</artifactId>
 			<version>${project.version}</version>
+			<type>test-jar</type>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-hadoop2</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
 		</dependency>
 
 		<dependency>
@@ -78,10 +99,17 @@ under the License.
 		</dependency>
 		
 		<dependency>
-			<groupId>com.typesafe.akka</groupId>
-			<artifactId>akka-testkit_${scala.binary.version}</artifactId>
-			<scope>compile</scope>
+			<groupId>com.data-artisans</groupId>
+			<artifactId>flakka-testkit_${scala.binary.version}</artifactId>
+			<scope>test</scope>
 		</dependency>
+
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-minikdc</artifactId>
+			<version>${minikdc.version}</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>
@@ -277,6 +305,19 @@ under the License.
 					<skip>true</skip>
 				</configuration>
 			</plugin>
+
+			<!--
+            https://issues.apache.org/jira/browse/DIRSHARED-134
+            Required to pull the Mini-KDC transitive dependency
+            -->
+			<plugin>
+				<groupId>org.apache.felix</groupId>
+				<artifactId>maven-bundle-plugin</artifactId>
+				<version>3.0.1</version>
+				<inherited>true</inherited>
+				<extensions>true</extensions>
+			</plugin>
+			
 		</plugins>
 	</build>
 </project>

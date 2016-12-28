@@ -24,6 +24,7 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.flink.client.CliFrontend;
+import org.apache.flink.configuration.ConfigConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,7 +36,6 @@ import org.slf4j.LoggerFactory;
 public class CliFrontendParser {
 
 	private static final Logger LOG = LoggerFactory.getLogger(CliFrontendParser.class);
-
 
 	static final Option HELP_OPTION = new Option("h", "help", false,
 			"Show the help message for the CLI Frontend or the action.");
@@ -57,7 +57,7 @@ public class CliFrontendParser {
 			"specified in the configuration.");
 
 	static final Option LOGGING_OPTION = new Option("q", "sysoutLogging", false, "If present, " +
-			"supress logging output to standard out.");
+			"suppress logging output to standard out.");
 
 	public static final Option DETACHED_OPTION = new Option("d", "detached", false, "If present, runs " +
 			"the job in detached mode");
@@ -70,10 +70,15 @@ public class CliFrontendParser {
 			"Use this flag to connect to a different JobManager than the one specified in the configuration.");
 
 	static final Option SAVEPOINT_PATH_OPTION = new Option("s", "fromSavepoint", true,
-			"Path to a savepoint to reset the job back to (for example file:///flink/savepoint-1537).");
+			"Path to a savepoint to restore the job from (for example hdfs:///flink/savepoint-1537).");
+
+	static final Option SAVEPOINT_ALLOW_NON_RESTORED_OPTION = new Option("n", "allowNonRestoredState", false,
+			"Allow to skip savepoint state that cannot be restored. " +
+					"You need to allow this if you removed an operator from your " +
+					"program that was part of the program when the savepoint was triggered.");
 
 	static final Option SAVEPOINT_DISPOSE_OPTION = new Option("d", "dispose", true,
-			"Disposes an existing savepoint.");
+			"Path of savepoint to dispose.");
 
 	// list specific options
 	static final Option RUNNING_OPTION = new Option("r", "running", false,
@@ -81,6 +86,14 @@ public class CliFrontendParser {
 
 	static final Option SCHEDULED_OPTION = new Option("s", "scheduled", false,
 			"Show only scheduled programs and their JobIDs");
+
+	static final Option ZOOKEEPER_NAMESPACE_OPTION = new Option("z", "zookeeperNamespace", true,
+			"Namespace to create the Zookeeper sub-paths for high availability mode");
+
+	static final Option CANCEL_WITH_SAVEPOINT_OPTION = new Option(
+			"s", "withSavepoint", true, "Trigger savepoint and cancel job. The target " +
+			"directory is optional. If no directory is specified, the configured default " +
+			"directory (" + ConfigConstants.SAVEPOINT_DIRECTORY_KEY + ") is used.");
 
 	static {
 		HELP_OPTION.setRequired(false);
@@ -113,8 +126,14 @@ public class CliFrontendParser {
 		SAVEPOINT_PATH_OPTION.setRequired(false);
 		SAVEPOINT_PATH_OPTION.setArgName("savepointPath");
 
-		SAVEPOINT_DISPOSE_OPTION.setRequired(false);
-		SAVEPOINT_DISPOSE_OPTION.setArgName("savepointPath");
+		SAVEPOINT_ALLOW_NON_RESTORED_OPTION.setRequired(false);
+
+		ZOOKEEPER_NAMESPACE_OPTION.setRequired(false);
+		ZOOKEEPER_NAMESPACE_OPTION.setArgName("zookeeperNamespace");
+
+		CANCEL_WITH_SAVEPOINT_OPTION.setRequired(false);
+		CANCEL_WITH_SAVEPOINT_OPTION.setArgName("targetDirectory");
+		CANCEL_WITH_SAVEPOINT_OPTION.setOptionalArg(true);
 	}
 
 	private static final Options RUN_OPTIONS = getRunOptions(buildGeneralOptions(new Options()));
@@ -143,7 +162,7 @@ public class CliFrontendParser {
 		options.addOption(ARGS_OPTION);
 		options.addOption(LOGGING_OPTION);
 		options.addOption(DETACHED_OPTION);
-		options.addOption(SAVEPOINT_PATH_OPTION);
+		options.addOption(ZOOKEEPER_NAMESPACE_OPTION);
 		return options;
 	}
 
@@ -153,12 +172,15 @@ public class CliFrontendParser {
 		options.addOption(PARALLELISM_OPTION);
 		options.addOption(LOGGING_OPTION);
 		options.addOption(DETACHED_OPTION);
-		options.addOption(SAVEPOINT_PATH_OPTION);
+		options.addOption(ZOOKEEPER_NAMESPACE_OPTION);
 		return options;
 	}
 
 	private static Options getRunOptions(Options options) {
 		options = getProgramSpecificOptions(options);
+		options.addOption(SAVEPOINT_PATH_OPTION);
+		options.addOption(SAVEPOINT_ALLOW_NON_RESTORED_OPTION);
+
 		options = getJobManagerAddressOption(options);
 		return addCustomCliOptions(options, true);
 	}
@@ -183,6 +205,7 @@ public class CliFrontendParser {
 	}
 
 	private static Options getCancelOptions(Options options) {
+		options.addOption(CANCEL_WITH_SAVEPOINT_OPTION);
 		options = getJobManagerAddressOption(options);
 		return addCustomCliOptions(options, false);
 	}
@@ -195,6 +218,7 @@ public class CliFrontendParser {
 	private static Options getSavepointOptions(Options options) {
 		options = getJobManagerAddressOption(options);
 		options.addOption(SAVEPOINT_DISPOSE_OPTION);
+		options.addOption(JAR_OPTION);
 		return addCustomCliOptions(options, false);
 	}
 
@@ -204,9 +228,11 @@ public class CliFrontendParser {
 
 	private static Options getRunOptionsWithoutDeprecatedOptions(Options options) {
 		Options o = getProgramSpecificOptionsWithoutDeprecatedOptions(options);
+		o.addOption(SAVEPOINT_PATH_OPTION);
+		o.addOption(SAVEPOINT_ALLOW_NON_RESTORED_OPTION);
+
 		return getJobManagerAddressOption(o);
 	}
-
 
 	private static Options getInfoOptionsWithoutDeprecatedOptions(Options options) {
 		options.addOption(CLASS_OPTION);
@@ -222,6 +248,7 @@ public class CliFrontendParser {
 	}
 
 	private static Options getCancelOptionsWithoutDeprecatedOptions(Options options) {
+		options.addOption(CANCEL_WITH_SAVEPOINT_OPTION);
 		options = getJobManagerAddressOption(options);
 		return options;
 	}
@@ -234,6 +261,7 @@ public class CliFrontendParser {
 	private static Options getSavepointOptionsWithoutDeprecatedOptions(Options options) {
 		options = getJobManagerAddressOption(options);
 		options.addOption(SAVEPOINT_DISPOSE_OPTION);
+		options.addOption(JAR_OPTION);
 		return options;
 	}
 
@@ -336,7 +364,7 @@ public class CliFrontendParser {
 		formatter.setWidth(80);
 
 		System.out.println("\nAction \"savepoint\" triggers savepoints for a running job or disposes existing ones.");
-		System.out.println("\n  Syntax: savepoint [OPTIONS] <Job ID>");
+		System.out.println("\n  Syntax: savepoint [OPTIONS] <Job ID> [<target directory>]");
 		formatter.setSyntaxPrefix("  \"savepoint\" action options:");
 		formatter.printHelp(" ", getSavepointOptionsWithoutDeprecatedOptions(new Options()));
 

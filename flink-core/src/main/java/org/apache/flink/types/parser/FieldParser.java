@@ -19,9 +19,6 @@
 
 package org.apache.flink.types.parser;
 
-import java.util.HashMap;
-import java.util.Map;
-
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.types.BooleanValue;
 import org.apache.flink.types.ByteValue;
@@ -31,6 +28,13 @@ import org.apache.flink.types.IntValue;
 import org.apache.flink.types.LongValue;
 import org.apache.flink.types.ShortValue;
 import org.apache.flink.types.StringValue;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * A FieldParser is used parse a field from a sequence of bytes. Fields occur in a byte sequence and are terminated
@@ -69,15 +73,17 @@ public abstract class FieldParser<T> {
 		/** The parser found characters between the end of the quoted string and the delimiter. */
 		UNQUOTED_CHARS_AFTER_QUOTED_STRING,
 
-		/** The string is empty. */
-		EMPTY_STRING,
+		/** The column is empty. */
+		EMPTY_COLUMN,
 
 		/** Invalid Boolean value **/
 		BOOLEAN_INVALID
 	}
-	
+
+	private Charset charset = StandardCharsets.UTF_8;
+
 	private ParseErrorState errorState = ParseErrorState.NONE;
-	
+
 	/**
 	 * Parses the value of a field from the byte array, taking care of properly reset
 	 * the state of this parser.
@@ -100,9 +106,7 @@ public abstract class FieldParser<T> {
 
 	/**
 	 * Each parser's logic should be implemented inside this method
-	 *
-	 * @see {@link FieldParser#parseField(byte[], int, int, byte[], Object)}
-	 * */
+	 */
 	protected abstract int parseField(byte[] bytes, int startPos, int limit, byte[] delim, T reuse);
 
 	/**
@@ -172,7 +176,68 @@ public abstract class FieldParser<T> {
 	public ParseErrorState getErrorState() {
 		return this.errorState;
 	}
-	
+
+	/**
+	 * Returns the end position of a string. Sets the error state if the column is empty.
+	 *
+	 * @return the end position of the string or -1 if an error occurred
+	 */
+	protected final int nextStringEndPos(byte[] bytes, int startPos, int limit, byte[] delimiter) {
+		int endPos = startPos;
+
+		final int delimLimit = limit - delimiter.length + 1;
+
+		while (endPos < limit) {
+			if (endPos < delimLimit && delimiterNext(bytes, endPos, delimiter)) {
+				if (endPos == startPos) {
+					setErrorState(ParseErrorState.EMPTY_COLUMN);
+					return -1;
+				}
+				break;
+			}
+			endPos++;
+		}
+
+		return endPos;
+	}
+
+	/**
+	 * Returns the length of a string. Throws an exception if the column is empty.
+	 *
+	 * @return the length of the string
+	 */
+	protected static final int nextStringLength(byte[] bytes, int startPos, int length, char delimiter) {
+		if (length <= 0) {
+			throw new IllegalArgumentException("Invalid input: Empty string");
+		}
+		int limitedLength = 0;
+		final byte delByte = (byte) delimiter;
+
+		while (limitedLength < length && bytes[startPos + limitedLength] != delByte) {
+			limitedLength++;
+		}
+
+		return limitedLength;
+	}
+
+	/**
+	 * Gets the character set used for this parser.
+	 *
+	 * @return the charset used for this parser.
+	 */
+	public Charset getCharset() {
+		return this.charset;
+	}
+
+	/**
+	 * Sets the character set used for this parser.
+	 *
+	 * @param charset charset used for this parser.
+	 */
+	public void setCharset(Charset charset) {
+		this.charset = charset;
+	}
+
 	// --------------------------------------------------------------------------------------------
 	//  Mapping from types to parsers
 	// --------------------------------------------------------------------------------------------
@@ -208,6 +273,8 @@ public abstract class FieldParser<T> {
 		PARSERS.put(Float.class, FloatParser.class);
 		PARSERS.put(Double.class, DoubleParser.class);
 		PARSERS.put(Boolean.class, BooleanParser.class);
+		PARSERS.put(BigDecimal.class, BigDecParser.class);
+		PARSERS.put(BigInteger.class, BigIntParser.class);
 
 		// value types
 		PARSERS.put(ByteValue.class, ByteValueParser.class);
@@ -218,5 +285,10 @@ public abstract class FieldParser<T> {
 		PARSERS.put(FloatValue.class, FloatValueParser.class);
 		PARSERS.put(DoubleValue.class, DoubleValueParser.class);
 		PARSERS.put(BooleanValue.class, BooleanValueParser.class);
+
+		// SQL date/time types
+		PARSERS.put(java.sql.Time.class, SqlTimeParser.class);
+		PARSERS.put(java.sql.Date.class, SqlDateParser.class);
+		PARSERS.put(java.sql.Timestamp.class, SqlTimestampParser.class);
 	}
 }

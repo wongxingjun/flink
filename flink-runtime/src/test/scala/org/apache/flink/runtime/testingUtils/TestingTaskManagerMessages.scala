@@ -18,6 +18,8 @@
 
 package org.apache.flink.runtime.testingUtils
 
+import java.util.UUID
+
 import akka.actor.ActorRef
 import org.apache.flink.api.common.JobID
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor
@@ -38,18 +40,11 @@ object TestingTaskManagerMessages {
     def asJava: java.util.Map[ExecutionAttemptID, Task] = tasks.asJava
   }
   
-  case class ResponseBroadcastVariablesWithReferences(number: Int)
-
-  case object RequestNumActiveConnections
-  case class ResponseNumActiveConnections(number: Int)
-  
   case object RequestRunningTasks
-  
-  case object RequestBroadcastVariablesWithReferences
 
-  case class NotifyWhenJobManagerTerminated(jobManager: ActorRef)
+  case class NotifyWhenJobManagerTerminated(leaderId: UUID)
 
-  case class JobManagerTerminated(jobManager: ActorRef)
+  case class JobManagerTerminated(leaderId: UUID)
 
   case class NotifyWhenRegisteredAtJobManager(resourceManager: ActorRef)
 
@@ -81,14 +76,9 @@ object TestingTaskManagerMessages {
   // --------------------------------------------------------------------------
   // Utility methods to allow simpler case object access from Java
   // --------------------------------------------------------------------------
-  
+
   def getRequestRunningTasksMessage: AnyRef = {
     RequestRunningTasks
   }
-  
-  def getRequestBroadcastVariablesWithReferencesMessage: AnyRef = {
-    RequestBroadcastVariablesWithReferences
-  }
-
 }
 

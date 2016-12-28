@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -6,52 +6,28 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * <p/>
- * http://www.apache.org/licenses/LICENSE-2.0
- * <p/>
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.streaming.runtime.operators;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
-import org.apache.flink.streaming.api.graph.StreamConfig;
-import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.tasks.OneInputStreamTask;
-import org.apache.flink.streaming.runtime.tasks.OneInputStreamTaskTestHarness;
-import org.apache.flink.streaming.runtime.tasks.StreamTaskState;
+import org.apache.flink.streaming.runtime.tasks.OperatorStateHandles;
+import org.apache.flink.streaming.util.AbstractStreamOperatorTestHarness;
+import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
+import org.apache.flink.util.TestLogger;
+
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.powermock.core.classloader.annotations.PowerMockIgnore;
-import org.powermock.core.classloader.annotations.PrepareForTest;
-import org.powermock.modules.junit4.PowerMockRunner;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.util.ArrayList;
-
-@RunWith(PowerMockRunner.class)
-@PrepareForTest(ResultPartitionWriter.class)
-@PowerMockIgnore("javax.management.*")
-public abstract class WriteAheadSinkTestBase<IN, S extends GenericWriteAheadSink<IN>> {
-
-	protected class OperatorExposingTask<INT> extends OneInputStreamTask<INT, INT> {
-		public OneInputStreamOperator<INT, INT> getOperator() {
-			return this.headOperator;
-		}
-	}
-
-	protected OperatorExposingTask<IN> createTask() {
-		return new OperatorExposingTask<>();
-	}
+public abstract class WriteAheadSinkTestBase<IN, S extends GenericWriteAheadSink<IN>> extends TestLogger {
 
 	protected abstract S createSink() throws Exception;
 
@@ -59,173 +35,268 @@ public abstract class WriteAheadSinkTestBase<IN, S extends GenericWriteAheadSink
 
 	protected abstract IN generateValue(int counter, int checkpointID);
 
-	protected abstract void verifyResultsIdealCircumstances(
-		OneInputStreamTaskTestHarness<IN, IN> harness, OneInputStreamTask<IN, IN> task, S sink) throws Exception;
+	protected abstract void verifyResultsIdealCircumstances(S sink) throws Exception;
 
-	protected abstract void verifyResultsDataPersistenceUponMissedNotify(
-		OneInputStreamTaskTestHarness<IN, IN> harness, OneInputStreamTask<IN, IN> task, S sink) throws Exception;
+	protected abstract void verifyResultsDataPersistenceUponMissedNotify(S sink) throws Exception;
 
-	protected abstract void verifyResultsDataDiscardingUponRestore(
-		OneInputStreamTaskTestHarness<IN, IN> harness, OneInputStreamTask<IN, IN> task, S sink) throws Exception;
+	protected abstract void verifyResultsDataDiscardingUponRestore(S sink) throws Exception;
+
+	protected abstract void verifyResultsWhenReScaling(S sink, int startElementCounter, int endElementCounter) throws Exception;
 
 	@Test
 	public void testIdealCircumstances() throws Exception {
-		OperatorExposingTask<IN> task = createTask();
-		TypeInformation<IN> info = createTypeInfo();
-		OneInputStreamTaskTestHarness<IN, IN> testHarness = new OneInputStreamTaskTestHarness<>(task, 1, 1, info, info);
-		StreamConfig streamConfig = testHarness.getStreamConfig();
-		streamConfig.setCheckpointingEnabled(true);
-		streamConfig.setStreamOperator(createSink());
+		S sink = createSink();
+
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness =
+				new OneInputStreamOperatorTestHarness<>(sink);
+
+		testHarness.open();
 
 		int elementCounter = 1;
-
-		testHarness.invoke();
-		testHarness.waitForTaskRunning();
-
-		ArrayList<StreamTaskState> states = new ArrayList<>();
+		int snapshotCount = 0;
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
 
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
+		testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 1)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
 
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
+		testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 2)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
 
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
+		testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
-		testHarness.endInput();
-
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		testHarness.waitForTaskCompletion();
-
-		verifyResultsIdealCircumstances(testHarness, task, (S) task.getOperator());
+		verifyResultsIdealCircumstances(sink);
 	}
 
 	@Test
 	public void testDataPersistenceUponMissedNotify() throws Exception {
 		S sink = createSink();
-		OperatorExposingTask<IN> task = createTask();
-		TypeInformation<IN> info = createTypeInfo();
-		OneInputStreamTaskTestHarness<IN, IN> testHarness = new OneInputStreamTaskTestHarness<>(task, 1, 1, info, info);
-		StreamConfig streamConfig = testHarness.getStreamConfig();
-		streamConfig.setCheckpointingEnabled(true);
-		streamConfig.setStreamOperator(sink);
+
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness =
+				new OneInputStreamOperatorTestHarness<>(sink);
+
+		testHarness.open();
 
 		int elementCounter = 1;
-
-		testHarness.invoke();
-		testHarness.waitForTaskRunning();
-
-		ArrayList<StreamTaskState> states = new ArrayList<>();
+		int snapshotCount = 0;
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
+
+		testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 1)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
+
+		testHarness.snapshot(snapshotCount++, 0);
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 2)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
 
-		testHarness.endInput();
+		testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		testHarness.waitForTaskCompletion();
-
-		verifyResultsDataPersistenceUponMissedNotify(testHarness, task, (S) task.getOperator());
+		verifyResultsDataPersistenceUponMissedNotify(sink);
 	}
 
 	@Test
 	public void testDataDiscardingUponRestore() throws Exception {
 		S sink = createSink();
-		OperatorExposingTask<IN> task = createTask();
-		TypeInformation<IN> info = createTypeInfo();
-		OneInputStreamTaskTestHarness<IN, IN> testHarness = new OneInputStreamTaskTestHarness<>(task, 1, 1, info, info);
-		StreamConfig streamConfig = testHarness.getStreamConfig();
-		streamConfig.setCheckpointingEnabled(true);
-		streamConfig.setStreamOperator(sink);
+
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness =
+				new OneInputStreamOperatorTestHarness<>(sink);
+
+		testHarness.open();
 
 		int elementCounter = 1;
-
-		testHarness.invoke();
-		testHarness.waitForTaskRunning();
-
-		ArrayList<StreamTaskState> states = new ArrayList<>();
+		int snapshotCount = 0;
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
+
+		OperatorStateHandles latestSnapshot = testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 1)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
-		
-		task.getOperator().close();
-		task.getOperator().open();
 
-		task.getOperator().restoreState(states.get(states.size() - 1), 0);
+		testHarness.close();
+
+		sink = createSink();
+
+		testHarness = new OneInputStreamOperatorTestHarness<>(sink);
+
+		testHarness.setup();
+		testHarness.initializeState(latestSnapshot);
+		testHarness.open();
 
 		for (int x = 0; x < 20; x++) {
 			testHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 2)));
 			elementCounter++;
 		}
-		testHarness.waitForInputProcessing();
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		task.notifyCheckpointComplete(states.size() - 1);
 
-		testHarness.endInput();
+		testHarness.snapshot(snapshotCount++, 0);
+		testHarness.notifyOfCompletedCheckpoint(snapshotCount - 1);
 
-		states.add(copyTaskState(task.getOperator().snapshotOperatorState(states.size(), 0)));
-		testHarness.waitForTaskCompletion();
-
-		verifyResultsDataDiscardingUponRestore(testHarness, task, (S) task.getOperator());
+		verifyResultsDataDiscardingUponRestore(sink);
 	}
 
-	private StreamTaskState copyTaskState(StreamTaskState toCopy) throws IOException, ClassNotFoundException {
-		ByteArrayOutputStream baos = new ByteArrayOutputStream();
-		ObjectOutputStream oos = new ObjectOutputStream(baos);
-		oos.writeObject(toCopy);
+	@Test
+	public void testScalingDown() throws Exception {
+		S sink1 = createSink();
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness1 =
+			new OneInputStreamOperatorTestHarness<>(sink1, 10, 2, 0);
+		testHarness1.open();
 
-		ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray());
-		ObjectInputStream ois = new ObjectInputStream(bais);
-		return (StreamTaskState) ois.readObject();
+		S sink2 = createSink();
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness2 =
+			new OneInputStreamOperatorTestHarness<>(sink2, 10, 2, 1);
+		testHarness2.open();
+
+		int elementCounter = 1;
+		int snapshotCount = 0;
+
+		for (int x = 0; x < 10; x++) {
+			testHarness1.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
+			elementCounter++;
+		}
+
+		for (int x = 0; x < 11; x++) {
+			testHarness2.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
+			elementCounter++;
+		}
+
+		// snapshot at checkpoint 0 for testHarness1 and testHarness 2
+		OperatorStateHandles snapshot1 = testHarness1.snapshot(snapshotCount, 0);
+		OperatorStateHandles snapshot2 = testHarness2.snapshot(snapshotCount, 0);
+
+		// merge the two partial states
+		OperatorStateHandles mergedSnapshot = AbstractStreamOperatorTestHarness
+			.repackageState(snapshot1, snapshot2);
+
+		testHarness1.close();
+		testHarness2.close();
+
+		// and create a third instance that operates alone but
+		// has the merged state of the previous 2 instances
+
+		S sink3 = createSink();
+		OneInputStreamOperatorTestHarness<IN, IN> mergedTestHarness =
+			new OneInputStreamOperatorTestHarness<>(sink3, 10, 1, 0);
+
+		mergedTestHarness.setup();
+		mergedTestHarness.initializeState(mergedSnapshot);
+		mergedTestHarness.open();
+
+		for (int x = 0; x < 12; x++) {
+			mergedTestHarness.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
+			elementCounter++;
+		}
+
+		snapshotCount++;
+		mergedTestHarness.snapshot(snapshotCount, 1);
+		mergedTestHarness.notifyOfCompletedCheckpoint(snapshotCount);
+
+		verifyResultsWhenReScaling(sink3, 1, 33);
+		mergedTestHarness.close();
+	}
+
+	@Test
+	public void testScalingUp() throws Exception {
+
+		S sink1 = createSink();
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness1 =
+			new OneInputStreamOperatorTestHarness<>(sink1, 10, 1, 0);
+
+		int elementCounter = 1;
+		int snapshotCount = 0;
+
+		testHarness1.open();
+
+		// put two more checkpoints as pending
+
+		for (int x = 0; x < 10; x++) {
+			testHarness1.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
+			elementCounter++;
+		}
+		testHarness1.snapshot(++snapshotCount, 0);
+
+		for (int x = 0; x < 11; x++) {
+			testHarness1.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
+			elementCounter++;
+		}
+
+		// this will be the state that will be split between the two new operators
+		OperatorStateHandles snapshot = testHarness1.snapshot(++snapshotCount, 0);
+
+		testHarness1.close();
+
+		// verify no elements are in the sink
+		verifyResultsWhenReScaling(sink1, 0, -1);
+
+		// we will create two operator instances, testHarness2 and testHarness3,
+		// that will share the state of testHarness1
+
+		++snapshotCount;
+
+		S sink2 = createSink();
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness2 =
+			new OneInputStreamOperatorTestHarness<>(sink2, 10, 2, 0);
+
+		testHarness2.setup();
+		testHarness2.initializeState(snapshot);
+		testHarness2.open();
+
+		testHarness2.notifyOfCompletedCheckpoint(snapshotCount);
+
+		verifyResultsWhenReScaling(sink2, 1, 10);
+
+		S sink3 = createSink();
+		OneInputStreamOperatorTestHarness<IN, IN> testHarness3 =
+			new OneInputStreamOperatorTestHarness<>(sink3, 10, 2, 1);
+
+		testHarness3.setup();
+		testHarness3.initializeState(snapshot);
+		testHarness3.open();
+
+		// add some more elements to verify that everything functions normally from now on...
+
+		for (int x = 0; x < 10; x++) {
+			testHarness3.processElement(new StreamRecord<>(generateValue(elementCounter, 0)));
+			elementCounter++;
+		}
+
+		testHarness3.snapshot(snapshotCount, 1);
+		testHarness3.notifyOfCompletedCheckpoint(snapshotCount);
+
+		verifyResultsWhenReScaling(sink3, 11, 31);
+
+		testHarness2.close();
+		testHarness3.close();
 	}
 }

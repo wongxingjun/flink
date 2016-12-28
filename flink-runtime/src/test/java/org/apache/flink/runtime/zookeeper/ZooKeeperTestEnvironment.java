@@ -22,9 +22,11 @@ import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.test.TestingCluster;
 import org.apache.curator.test.TestingServer;
 import org.apache.curator.utils.ZKPaths;
-import org.apache.flink.configuration.ConfigConstants;
+
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.runtime.util.ZooKeeperUtils;
+
 import org.apache.zookeeper.KeeperException;
 
 import java.util.List;
@@ -58,7 +60,7 @@ public class ZooKeeperTestEnvironment {
 				zooKeeperServer = new TestingServer(true);
 				zooKeeperCluster = null;
 
-				conf.setString(ConfigConstants.ZOOKEEPER_QUORUM_KEY,
+				conf.setString(HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM,
 						zooKeeperServer.getConnectString());
 			}
 			else {
@@ -67,7 +69,7 @@ public class ZooKeeperTestEnvironment {
 
 				zooKeeperCluster.start();
 
-				conf.setString(ConfigConstants.ZOOKEEPER_QUORUM_KEY,
+				conf.setString(HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM,
 						zooKeeperCluster.getConnectString());
 			}
 
@@ -127,7 +129,7 @@ public class ZooKeeperTestEnvironment {
 	 */
 	public CuratorFramework createClient() {
 		Configuration config = new Configuration();
-		config.setString(ConfigConstants.ZOOKEEPER_QUORUM_KEY, getConnectString());
+		config.setString(HighAvailabilityOptions.HA_ZOOKEEPER_QUORUM, getConnectString());
 		return ZooKeeperUtils.startCuratorFramework(config);
 	}
 
@@ -144,18 +146,22 @@ public class ZooKeeperTestEnvironment {
 		for (int i = 0; i < maxAttempts; i++) {
 			try {
 				ZKPaths.deleteChildren(client.getZookeeperClient().getZooKeeper(), path, false);
-				break;
+				return;
 			}
 			catch (org.apache.zookeeper.KeeperException.NoNodeException e) {
 				// that seems all right. if one of the children we want to delete is
 				// actually already deleted, that's fine.
-				break;
+				return;
 			}
 			catch (KeeperException.ConnectionLossException e) {
 				// Keep retrying
 				Thread.sleep(100);
 			}
 		}
+
+		throw new Exception("Could not clear the ZNodes under " + path + ". ZooKeeper is not in " +
+			"a clean state.");
+
 	}
 
 }

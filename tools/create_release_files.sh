@@ -37,9 +37,9 @@
 #   Can be called like this:
 #
 #    sonatype_user=APACHEID sonatype_pw=APACHEIDPASSWORD \
-#     NEW_VERSION=0.9.0 \
-#     RELEASE_CANDIDATE="rc1" RELEASE_BRANCH=release-0.9.0
-#     OLD_VERSION=0.9-SNAPSHOT \
+#     NEW_VERSION=1.2.0 \
+#     RELEASE_CANDIDATE="rc1" RELEASE_BRANCH=release-1.2.0
+#     OLD_VERSION=1.1-SNAPSHOT \
 #     USER_NAME=APACHEID \
 #     GPG_PASSPHRASE=XXX GPG_KEY=KEYID \
 #     GIT_AUTHOR="`git config --get user.name` <`git config --get user.email`>" \
@@ -66,11 +66,10 @@ fi
 GPG_PASSPHRASE=${GPG_PASSPHRASE:-XXX}
 GPG_KEY=${GPG_KEY:-XXX}
 GIT_AUTHOR=${GIT_AUTHOR:-"Your name <you@apache.org>"}
-OLD_VERSION=${OLD_VERSION:-0.10-SNAPSHOT}
+OLD_VERSION=${OLD_VERSION:-1.1-SNAPSHOT}
 RELEASE_VERSION=${NEW_VERSION}
 RELEASE_CANDIDATE=${RELEASE_CANDIDATE:-rc1}
 RELEASE_BRANCH=${RELEASE_BRANCH:-master}
-NEW_VERSION_HADOOP1=${NEW_VERSION_HADOOP1:-"$RELEASE_VERSION-hadoop1"}
 USER_NAME=${USER_NAME:-yourapacheidhere}
 MVN=${MVN:-mvn}
 GPG=${GPG:-gpg}
@@ -93,9 +92,11 @@ prepare() {
   cd flink
   git checkout -b "release-$RELEASE_VERSION-$RELEASE_CANDIDATE" origin/$RELEASE_BRANCH
   rm -f .gitignore
+  rm -f .gitattributes
   rm -f .travis.yml
   rm -f deploysettings.xml
   rm -f CHANGELOG
+  rm -rf .github
   cd ..
 }
 
@@ -113,7 +114,6 @@ make_source_release() {
   #change version of documentation
   cd docs
   perl -pi -e "s#^version: .*#version: ${NEW_VERSION}#" _config.yml
-  perl -pi -e "s#^version_hadoop1: .*#version_hadoop1: ${NEW_VERSION}-hadoop1#" _config.yml
   perl -pi -e "s#^version_short: .*#version_short: ${NEW_VERSION}#" _config.yml
   cd ..
 
@@ -183,22 +183,17 @@ deploy_to_maven() {
   echo "Deploying Scala 2.10 version"
   cd tools && ./change-scala-version.sh 2.10 && cd ..
   $MVN clean deploy -Dgpg.executable=$GPG -Prelease,docs-and-source --settings deploysettings.xml -DskipTests -Dgpg.keyname=$GPG_KEY -Dgpg.passphrase=$GPG_PASSPHRASE -DretryFailedDeploymentCount=10
-
-
-  echo "Deploying Scala 2.10 / hadoop 1 version"
-  ../generate_specific_pom.sh $NEW_VERSION $NEW_VERSION_HADOOP1 pom.xml
-
-
-  sleep 4
-  $MVN clean deploy -Dgpg.executable=$GPG -Prelease,docs-and-source --settings deploysettings.xml -DskipTests -Dgpg.keyname=$GPG_KEY -Dgpg.passphrase=$GPG_PASSPHRASE -DretryFailedDeploymentCount=10
 }
 
 copy_data() {
   # Copy data
   echo "Copying release tarballs"
   folder=flink-$RELEASE_VERSION-$RELEASE_CANDIDATE
-  ssh $USER_NAME@people.apache.org mkdir -p /home/$USER_NAME/public_html/$folder
-  rsync flink-*.tgz* $USER_NAME@people.apache.org:/home/$USER_NAME/public_html/$folder/
+  sftp $USER_NAME@home.apache.org <<EOF
+mkdir public_html/$folder
+put flink-*.tgz* public_html/$folder
+bye
+EOF
   echo "copy done"
 }
 
@@ -206,7 +201,6 @@ prepare
 
 make_source_release
 
-make_binary_release "hadoop1" "-Dhadoop.profile=1" 2.10
 make_binary_release "hadoop2" "" 2.10
 make_binary_release "hadoop24" "-Dhadoop.version=2.4.1" 2.10
 make_binary_release "hadoop26" "-Dhadoop.version=2.6.3" 2.10

@@ -19,12 +19,16 @@ package org.apache.flink.client.cli;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Options;
+
 import org.apache.flink.client.ClientUtils;
 import org.apache.flink.client.deployment.StandaloneClusterDescriptor;
 import org.apache.flink.client.program.StandaloneClusterClient;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.HighAvailabilityOptions;
 
 import java.net.InetSocketAddress;
+import java.net.URL;
+import java.util.List;
 
 import static org.apache.flink.client.CliFrontend.setJobManagerAddressInConfig;
 
@@ -61,6 +65,11 @@ public class DefaultCLI implements CustomCommandLine<StandaloneClusterClient> {
 			setJobManagerAddressInConfig(config, jobManagerAddress);
 		}
 
+		if (commandLine.hasOption(CliFrontendParser.ZOOKEEPER_NAMESPACE_OPTION.getOpt())) {
+			String zkNamespace = commandLine.getOptionValue(CliFrontendParser.ZOOKEEPER_NAMESPACE_OPTION.getOpt());
+			config.setString(HighAvailabilityOptions.HA_CLUSTER_ID, zkNamespace);
+		}
+
 		StandaloneClusterDescriptor descriptor = new StandaloneClusterDescriptor(config);
 		return descriptor.retrieve(null);
 	}
@@ -69,7 +78,8 @@ public class DefaultCLI implements CustomCommandLine<StandaloneClusterClient> {
 	public StandaloneClusterClient createCluster(
 			String applicationName,
 			CommandLine commandLine,
-			Configuration config) throws UnsupportedOperationException {
+			Configuration config,
+			List<URL> userJarFiles) throws UnsupportedOperationException {
 
 		StandaloneClusterDescriptor descriptor = new StandaloneClusterDescriptor(config);
 		return descriptor.deploy();

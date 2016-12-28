@@ -65,7 +65,7 @@ public final class MathUtils {
 	 * power of two, it remains unchanged.
 	 * 
 	 * @param value The value to round down.
-	 * @return The closest value that is a power of to and less or equal than the given value.
+	 * @return The closest value that is a power of two and less or equal than the given value.
 	 */
 	public static int roundDownToPowerOf2(int value) {
 		return Integer.highestOneBit(value);
@@ -80,12 +80,14 @@ public final class MathUtils {
 	 * 
 	 * @param value The value to be cast to an integer.
 	 * @return The given value as an integer.
+	 * @see Math#toIntExact(long)
 	 */
 	public static int checkedDownCast(long value) {
-		if (value > Integer.MAX_VALUE) {
+		int downCast = (int) value;
+		if (downCast != value) {
 			throw new IllegalArgumentException("Cannot downcast long value " + value + " to integer.");
 		}
-		return (int) value;
+		return downCast;
 	}
 
 	/**
@@ -153,6 +155,21 @@ public final class MathUtils {
 		else {
 			return 0;
 		}
+	}
+
+	/**
+	 * Round the given number to the next power of two
+	 * @param x number to round
+	 * @return x rounded up to the next power of two
+	 */
+	public static int roundUpToPowerOfTwo(int x) {
+		x = x - 1;
+		x |= x >> 1;
+		x |= x >> 2;
+		x |= x >> 4;
+		x |= x >> 8;
+		x |= x >> 16;
+		return x + 1;
 	}
 
 	// ============================================================================================

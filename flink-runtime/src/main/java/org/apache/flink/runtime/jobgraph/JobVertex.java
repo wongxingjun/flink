@@ -18,9 +18,6 @@
 
 package org.apache.flink.runtime.jobgraph;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.io.InputSplitSource;
@@ -30,6 +27,9 @@ import org.apache.flink.runtime.jobgraph.tasks.StoppableTask;
 import org.apache.flink.runtime.jobmanager.scheduler.CoLocationGroup;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
 import org.apache.flink.util.Preconditions;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * The base class for job vertexes.
@@ -48,6 +48,8 @@ public class JobVertex implements java.io.Serializable {
 	/** The ID of the vertex. */
 	private final JobVertexID id;
 
+	private final ArrayList<JobVertexID> idAlternatives = new ArrayList<>();
+
 	/** List of produced data sets, one per writer */
 	private final ArrayList<IntermediateDataSet> results = new ArrayList<IntermediateDataSet>();
 
@@ -56,6 +58,9 @@ public class JobVertex implements java.io.Serializable {
 
 	/** Number of subtasks to split this task into at runtime.*/
 	private int parallelism = ExecutionConfig.PARALLELISM_DEFAULT;
+
+	/** Maximum number of subtasks to split this taks into a runtime. */
+	private int maxParallelism = Short.MAX_VALUE;
 
 	/** Custom configuration passed to the assigned task at runtime. */
 	private Configuration configuration;
@@ -114,6 +119,19 @@ public class JobVertex implements java.io.Serializable {
 		this.id = id == null ? new JobVertexID() : id;
 	}
 
+	/**
+	 * Constructs a new job vertex and assigns it with the given name.
+	 *
+	 * @param name The name of the new job vertex.
+	 * @param primaryId The id of the job vertex.
+	 * @param alternativeIds The alternative ids of the job vertex.
+	 */
+	public JobVertex(String name, JobVertexID primaryId, List<JobVertexID> alternativeIds) {
+		this.name = name == null ? DEFAULT_NAME : name;
+		this.id = primaryId == null ? new JobVertexID() : primaryId;
+		this.idAlternatives.addAll(alternativeIds);
+	}
+
 	// --------------------------------------------------------------------------------------------
 
 	/**
@@ -123,6 +141,15 @@ public class JobVertex implements java.io.Serializable {
 	 */
 	public JobVertexID getID() {
 		return this.id;
+	}
+
+	/**
+	 * Returns a list of all alternative IDs of this job vertex.
+	 *
+	 * @return List of all alternative IDs for this job vertex
+	 */
+	public List<JobVertexID> getIdAlternatives() {
+		return idAlternatives;
 	}
 
 	/**
@@ -232,6 +259,28 @@ public class JobVertex implements java.io.Serializable {
 			throw new IllegalArgumentException("The parallelism must be at least one.");
 		}
 		this.parallelism = parallelism;
+	}
+
+	/**
+	 * Gets the maximum parallelism for the task.
+	 *
+	 * @return The maximum parallelism for the task.
+	 */
+	public int getMaxParallelism() {
+		return maxParallelism;
+	}
+
+	/**
+	 * Sets the maximum parallelism for the task.
+	 *
+	 * @param maxParallelism The maximum parallelism to be set. must be between 1 and Short.MAX_VALUE.
+	 */
+	public void setMaxParallelism(int maxParallelism) {
+		org.apache.flink.util.Preconditions.checkArgument(
+				maxParallelism > 0 && maxParallelism <= (1 << 15),
+				"The max parallelism must be at least 1 and smaller than 2^15.");
+
+		this.maxParallelism = maxParallelism;
 	}
 
 	public InputSplitSource<?> getInputSplitSource() {
@@ -357,7 +406,7 @@ public class JobVertex implements java.io.Serializable {
 	}
 
 	public JobEdge connectNewDataSetAsInput(JobVertex input, DistributionPattern distPattern) {
-		return connectNewDataSetAsInput(input, distPattern, ResultPartitionType.PIPELINED, false);
+		return connectNewDataSetAsInput(input, distPattern, ResultPartitionType.PIPELINED);
 	}
 
 	public JobEdge connectNewDataSetAsInput(
@@ -365,17 +414,7 @@ public class JobVertex implements java.io.Serializable {
 			DistributionPattern distPattern,
 			ResultPartitionType partitionType) {
 
-		return connectNewDataSetAsInput(input, distPattern, partitionType, false);
-	}
-
-	public JobEdge connectNewDataSetAsInput(
-			JobVertex input,
-			DistributionPattern distPattern,
-			ResultPartitionType partitionType,
-			boolean eagerlyDeployConsumers) {
-
 		IntermediateDataSet dataSet = input.createAndAddResultDataSet(partitionType);
-		dataSet.setEagerlyDeployConsumers(eagerlyDeployConsumers);
 
 		JobEdge edge = new JobEdge(dataSet, this, distPattern);
 		this.inputs.add(edge);

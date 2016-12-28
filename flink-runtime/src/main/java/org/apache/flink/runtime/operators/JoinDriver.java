@@ -88,7 +88,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 	public void prepare() throws Exception{
 		final TaskConfig config = this.taskContext.getTaskConfig();
 
-		final Counter numRecordsIn = this.taskContext.getMetricGroup().counter("numRecordsIn");
+		final Counter numRecordsIn = this.taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsInCounter();
 		
 		// obtain task manager's memory manager and I/O manager
 		final MemoryManager memoryManager = this.taskContext.getMemoryManager();
@@ -135,7 +135,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 							serializer1, comparator1,
 							serializer2, comparator2,
 							pairComparatorFactory.createComparator12(comparator1, comparator2),
-							memoryManager, ioManager, numPages, this.taskContext.getOwningNepheleTask());
+							memoryManager, ioManager, numPages, this.taskContext.getContainingTask());
 					break;
 				case HYBRIDHASH_BUILD_FIRST:
 					this.joinIterator = new ReusingBuildFirstHashJoinIterator<>(in1, in2,
@@ -143,7 +143,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 							serializer2, comparator2,
 							pairComparatorFactory.createComparator21(comparator1, comparator2),
 							memoryManager, ioManager,
-							this.taskContext.getOwningNepheleTask(),
+							this.taskContext.getContainingTask(),
 							fractionAvailableMemory,
 							false,
 							false,
@@ -155,7 +155,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 							serializer2, comparator2,
 							pairComparatorFactory.createComparator12(comparator1, comparator2),
 							memoryManager, ioManager,
-							this.taskContext.getOwningNepheleTask(),
+							this.taskContext.getContainingTask(),
 							fractionAvailableMemory,
 							false,
 							false,
@@ -171,7 +171,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 							serializer1, comparator1,
 							serializer2, comparator2,
 							pairComparatorFactory.createComparator12(comparator1, comparator2),
-							memoryManager, ioManager, numPages, this.taskContext.getOwningNepheleTask());
+							memoryManager, ioManager, numPages, this.taskContext.getContainingTask());
 
 					break;
 				case HYBRIDHASH_BUILD_FIRST:
@@ -180,7 +180,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 							serializer2, comparator2,
 							pairComparatorFactory.createComparator21(comparator1, comparator2),
 							memoryManager, ioManager,
-							this.taskContext.getOwningNepheleTask(),
+							this.taskContext.getContainingTask(),
 							fractionAvailableMemory,
 							false,
 							false,
@@ -192,7 +192,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 							serializer2, comparator2,
 							pairComparatorFactory.createComparator12(comparator1, comparator2),
 							memoryManager, ioManager,
-							this.taskContext.getOwningNepheleTask(),
+							this.taskContext.getContainingTask(),
 							fractionAvailableMemory,
 							false,
 							false,
@@ -214,7 +214,7 @@ public class JoinDriver<IT1, IT2, OT> implements Driver<FlatJoinFunction<IT1, IT
 
 	@Override
 	public void run() throws Exception {
-		final Counter numRecordsOut = this.taskContext.getMetricGroup().counter("numRecordsOut");
+		final Counter numRecordsOut = this.taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter();
 		final FlatJoinFunction<IT1, IT2, OT> joinStub = this.taskContext.getStub();
 		final Collector<OT> collector = new CountingCollector<>(this.taskContext.getOutputCollector(), numRecordsOut);
 		final JoinTaskIterator<IT1, IT2, OT> joinIterator = this.joinIterator;

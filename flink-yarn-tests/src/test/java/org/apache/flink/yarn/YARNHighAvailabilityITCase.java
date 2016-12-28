@@ -26,11 +26,12 @@ import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.instance.AkkaActorGateway;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
-import org.apache.flink.runtime.messages.Messages;
+import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.state.filesystem.FsStateBackendFactory;
 import org.apache.flink.runtime.testingUtils.TestingJobManagerMessages;
 import org.apache.flink.runtime.util.LeaderRetrievalUtils;
@@ -50,14 +51,14 @@ import java.util.concurrent.TimeUnit;
 
 public class YARNHighAvailabilityITCase extends YarnTestBase {
 
-	private static TestingServer zkServer;
+	protected static TestingServer zkServer;
 
-	private static ActorSystem actorSystem;
+	protected static ActorSystem actorSystem;
 
-	private static final int numberApplicationAttempts = 10;
+	protected static final int numberApplicationAttempts = 10;
 
 	@Rule
-	public TemporaryFolder tmp = new TemporaryFolder();
+	public TemporaryFolder temp = new TemporaryFolder();
 
 	@BeforeClass
 	public static void setup() {
@@ -89,7 +90,7 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
 
 	/**
 	 * Tests that the application master can be killed multiple times and that the surviving
-	 * TaskManager succesfully reconnects to the newly started JobManager.
+	 * TaskManager successfully reconnects to the newly started JobManager.
 	 * @throws Exception
 	 */
 	@Test
@@ -108,14 +109,18 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
 		String confDirPath = System.getenv(ConfigConstants.ENV_FLINK_CONF_DIR);
 		flinkYarnClient.setConfigurationDirectory(confDirPath);
 
-		String fsStateHandlePath = tmp.getRoot().getPath();
+		String fsStateHandlePath = temp.getRoot().getPath();
 
-		flinkYarnClient.setFlinkConfiguration(GlobalConfiguration.getConfiguration());
+		// load the configuration
+		File configDirectory = new File(confDirPath);
+		GlobalConfiguration.loadConfiguration(configDirectory.getAbsolutePath());
+
+		flinkYarnClient.setFlinkConfiguration(GlobalConfiguration.loadConfiguration());
 		flinkYarnClient.setDynamicPropertiesEncoded("recovery.mode=zookeeper@@recovery.zookeeper.quorum=" +
 			zkServer.getConnectString() + "@@yarn.application-attempts=" + numberApplicationAttempts +
 			"@@" + ConfigConstants.STATE_BACKEND + "=FILESYSTEM" +
 			"@@" + FsStateBackendFactory.CHECKPOINT_DIRECTORY_URI_CONF_KEY + "=" + fsStateHandlePath + "/checkpoints" +
-			"@@" + ConfigConstants.ZOOKEEPER_RECOVERY_PATH + "=" + fsStateHandlePath + "/recovery");
+			"@@" + HighAvailabilityOptions.HA_STORAGE_PATH.key() + "=" + fsStateHandlePath + "/recovery");
 		flinkYarnClient.setConfigurationFilePath(new Path(confDirPath + File.separator + "flink-conf.yaml"));
 
 		ClusterClient yarnCluster = null;
@@ -138,7 +143,7 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
 
 								gateway.tell(new TestingJobManagerMessages.NotifyWhenAtLeastNumTaskManagerAreRegistered(1), selfGateway);
 
-								expectMsgEquals(Messages.getAcknowledge());
+								expectMsgEquals(Acknowledge.get());
 
 								gateway.tell(PoisonPill.getInstance());
 							} catch (Exception e) {
@@ -157,7 +162,7 @@ public class YARNHighAvailabilityITCase extends YarnTestBase {
 							ActorGateway selfGateway = new AkkaActorGateway(getRef(), gateway2.leaderSessionID());
 							gateway2.tell(new TestingJobManagerMessages.NotifyWhenAtLeastNumTaskManagerAreRegistered(1), selfGateway);
 
-							expectMsgEquals(Messages.getAcknowledge());
+							expectMsgEquals(Acknowledge.get());
 						} catch (Exception e) {
 							throw new AssertionError("Could not complete test.", e);
 						}

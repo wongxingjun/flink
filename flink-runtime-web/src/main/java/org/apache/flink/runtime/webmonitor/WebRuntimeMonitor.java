@@ -21,6 +21,7 @@ package org.apache.flink.runtime.webmonitor;
 import akka.actor.ActorSystem;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
@@ -28,11 +29,15 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.router.Handler;
 import io.netty.handler.codec.http.router.Router;
+import io.netty.handler.ssl.SslHandler;
+import io.netty.handler.stream.ChunkedWriteHandler;
 import org.apache.commons.io.FileUtils;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
+import org.apache.flink.runtime.net.SSLUtils;
 import org.apache.flink.runtime.webmonitor.files.StaticFileServerHandler;
 import org.apache.flink.runtime.webmonitor.handlers.ClusterOverviewHandler;
 import org.apache.flink.runtime.webmonitor.handlers.ConstantTextHandler;
@@ -47,6 +52,7 @@ import org.apache.flink.runtime.webmonitor.handlers.JarRunHandler;
 import org.apache.flink.runtime.webmonitor.handlers.JarUploadHandler;
 import org.apache.flink.runtime.webmonitor.handlers.JobAccumulatorsHandler;
 import org.apache.flink.runtime.webmonitor.handlers.JobCancellationHandler;
+import org.apache.flink.runtime.webmonitor.handlers.JobCancellationWithSavepointHandlers;
 import org.apache.flink.runtime.webmonitor.handlers.JobCheckpointsHandler;
 import org.apache.flink.runtime.webmonitor.handlers.JobConfigHandler;
 import org.apache.flink.runtime.webmonitor.handlers.JobDetailsHandler;
@@ -67,6 +73,11 @@ import org.apache.flink.runtime.webmonitor.handlers.SubtasksAllAccumulatorsHandl
 import org.apache.flink.runtime.webmonitor.handlers.SubtasksTimesHandler;
 import org.apache.flink.runtime.webmonitor.handlers.TaskManagerLogHandler;
 import org.apache.flink.runtime.webmonitor.handlers.TaskManagersHandler;
+import org.apache.flink.runtime.webmonitor.metrics.JobManagerMetricsHandler;
+import org.apache.flink.runtime.webmonitor.metrics.JobMetricsHandler;
+import org.apache.flink.runtime.webmonitor.metrics.JobVertexMetricsHandler;
+import org.apache.flink.runtime.webmonitor.metrics.MetricFetcher;
+import org.apache.flink.runtime.webmonitor.metrics.TaskManagerMetricsHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.concurrent.ExecutionContext$;
@@ -74,6 +85,8 @@ import scala.concurrent.ExecutionContextExecutor;
 import scala.concurrent.Promise;
 import scala.concurrent.duration.FiniteDuration;
 
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -113,6 +126,8 @@ public class WebRuntimeMonitor implements WebMonitor {
 
 	private final Router router;
 
+	private final SSLContext serverSSLContext;
+
 	private final ServerBootstrap bootstrap;
 
 	private final Promise<String> jobManagerAddressPromise = new scala.concurrent.impl.Promise.DefaultPromise<>();
@@ -133,6 +148,8 @@ public class WebRuntimeMonitor implements WebMonitor {
 
 	private ExecutorService executorService;
 
+	private MetricFetcher metricFetcher;
+
 	public WebRuntimeMonitor(
 			Configuration config,
 			LeaderRetrievalService leaderRetrievalService,
@@ -143,7 +160,9 @@ public class WebRuntimeMonitor implements WebMonitor {
 		this.retriever = new JobManagerRetriever(this, actorSystem, AkkaUtils.getTimeout(config), timeout);
 		
 		final WebMonitorConfig cfg = new WebMonitorConfig(config);
-		
+
+		final String configuredAddress = cfg.getWebFrontendAddress();
+
 		final int configuredPort = cfg.getWebFrontendPort();
 		if (configuredPort < 0) {
 			throw new IllegalArgumentException("Web frontend port is invalid: " + configuredPort);
@@ -159,10 +178,12 @@ public class WebRuntimeMonitor implements WebMonitor {
 		final boolean webSubmitAllow = cfg.isProgramSubmitEnabled();
 		if (webSubmitAllow) {
 			// create storage for uploads
-			String uploadDirName = "flink-web-upload-" + UUID.randomUUID();
-			this.uploadDir = new File(getBaseDir(config), uploadDirName);
-			if (!uploadDir.mkdir() || !uploadDir.canWrite()) {
-				throw new IOException("Unable to create temporary directory to support jar uploads.");
+			this.uploadDir = getUploadDir(config);
+			// the upload directory should either 1. exist and writable or 2. can be created and writable
+			if (!(uploadDir.exists() && uploadDir.canWrite()) && !(uploadDir.mkdir() && uploadDir.canWrite())) {
+				throw new IOException(
+					String.format("Jar upload directory %s cannot be created or is not writable.",
+						uploadDir.getAbsolutePath()));
 			}
 			LOG.info("Using directory {} for web frontend JAR file uploads", uploadDir);
 		}
@@ -174,7 +195,7 @@ public class WebRuntimeMonitor implements WebMonitor {
 
 		// - Back pressure stats ----------------------------------------------
 
-		stackTraceSamples = new StackTraceSampleCoordinator(actorSystem, 60000);
+		stackTraceSamples = new StackTraceSampleCoordinator(actorSystem.dispatcher(), 60000);
 
 		// Back pressure stats tracker config
 		int cleanUpInterval = config.getInteger(
@@ -193,7 +214,7 @@ public class WebRuntimeMonitor implements WebMonitor {
 				ConfigConstants.JOB_MANAGER_WEB_BACK_PRESSURE_DELAY,
 				ConfigConstants.DEFAULT_JOB_MANAGER_WEB_BACK_PRESSURE_DELAY);
 
-		FiniteDuration delayBetweenSamples = new FiniteDuration(delay, TimeUnit.MILLISECONDS);
+		Time delayBetweenSamples = Time.milliseconds(delay);
 
 		backPressureStatsTracker = new BackPressureStatsTracker(
 				stackTraceSamples, cleanUpInterval, numSamples, delayBetweenSamples);
@@ -203,6 +224,30 @@ public class WebRuntimeMonitor implements WebMonitor {
 		executorService = new ForkJoinPool();
 
 		ExecutionContextExecutor context = ExecutionContext$.MODULE$.fromExecutor(executorService);
+
+		// Config to enable https access to the web-ui
+		boolean enableSSL = config.getBoolean(
+				ConfigConstants.JOB_MANAGER_WEB_SSL_ENABLED,
+				ConfigConstants.DEFAULT_JOB_MANAGER_WEB_SSL_ENABLED) &&
+			SSLUtils.getSSLEnabled(config);
+
+		if (enableSSL) {
+			LOG.info("Enabling ssl for the web frontend");
+			try {
+				serverSSLContext = SSLUtils.createSSLServerContext(config);
+			} catch (Exception e) {
+				throw new IOException("Failed to initialize SSLContext for the web frontend", e);
+			}
+		} else {
+			serverSSLContext = null;
+		}
+		metricFetcher = new MetricFetcher(actorSystem, retriever, context);
+
+		String defaultSavepointDir = config.getString(ConfigConstants.SAVEPOINT_DIRECTORY_KEY, null);
+
+		JobCancellationWithSavepointHandlers cancelWithSavepoint = new JobCancellationWithSavepointHandlers(currentGraphs, context, defaultSavepointDir);
+		RuntimeMonitorHandler triggerHandler = handler(cancelWithSavepoint.getTriggerHandler());
+		RuntimeMonitorHandler inProgressHandler = handler(cancelWithSavepoint.getInProgressHandler());
 
 		router = new Router()
 			// config how to interact with this web server
@@ -221,21 +266,22 @@ public class WebRuntimeMonitor implements WebMonitor {
 
 			.GET("/jobs", handler(new CurrentJobIdsHandler(DEFAULT_REQUEST_TIMEOUT)))
 
-			.GET("/jobs/:jobid", handler(new JobDetailsHandler(currentGraphs)))
-			.GET("/jobs/:jobid/vertices", handler(new JobDetailsHandler(currentGraphs)))
+			.GET("/jobs/:jobid", handler(new JobDetailsHandler(currentGraphs, metricFetcher)))
+			.GET("/jobs/:jobid/vertices", handler(new JobDetailsHandler(currentGraphs, metricFetcher)))
 
-			.GET("/jobs/:jobid/vertices/:vertexid", handler(new JobVertexDetailsHandler(currentGraphs)))
+			.GET("/jobs/:jobid/vertices/:vertexid", handler(new JobVertexDetailsHandler(currentGraphs, metricFetcher)))
 			.GET("/jobs/:jobid/vertices/:vertexid/subtasktimes", handler(new SubtasksTimesHandler(currentGraphs)))
-			.GET("/jobs/:jobid/vertices/:vertexid/taskmanagers", handler(new JobVertexTaskManagersHandler(currentGraphs)))
+			.GET("/jobs/:jobid/vertices/:vertexid/taskmanagers", handler(new JobVertexTaskManagersHandler(currentGraphs, metricFetcher)))
 			.GET("/jobs/:jobid/vertices/:vertexid/accumulators", handler(new JobVertexAccumulatorsHandler(currentGraphs)))
 			.GET("/jobs/:jobid/vertices/:vertexid/checkpoints", handler(new JobVertexCheckpointsHandler(currentGraphs)))
 			.GET("/jobs/:jobid/vertices/:vertexid/backpressure", handler(new JobVertexBackPressureHandler(
 							currentGraphs,
 							backPressureStatsTracker,
 							refreshInterval)))
+			.GET("/jobs/:jobid/vertices/:vertexid/metrics", handler(new JobVertexMetricsHandler(metricFetcher)))
 			.GET("/jobs/:jobid/vertices/:vertexid/subtasks/accumulators", handler(new SubtasksAllAccumulatorsHandler(currentGraphs)))
-			.GET("/jobs/:jobid/vertices/:vertexid/subtasks/:subtasknum", handler(new SubtaskCurrentAttemptDetailsHandler(currentGraphs)))
-			.GET("/jobs/:jobid/vertices/:vertexid/subtasks/:subtasknum/attempts/:attempt", handler(new SubtaskExecutionAttemptDetailsHandler(currentGraphs)))
+			.GET("/jobs/:jobid/vertices/:vertexid/subtasks/:subtasknum", handler(new SubtaskCurrentAttemptDetailsHandler(currentGraphs, metricFetcher)))
+			.GET("/jobs/:jobid/vertices/:vertexid/subtasks/:subtasknum/attempts/:attempt", handler(new SubtaskExecutionAttemptDetailsHandler(currentGraphs, metricFetcher)))
 			.GET("/jobs/:jobid/vertices/:vertexid/subtasks/:subtasknum/attempts/:attempt/accumulators", handler(new SubtaskExecutionAttemptAccumulatorsHandler(currentGraphs)))
 
 			.GET("/jobs/:jobid/plan", handler(new JobPlanHandler(currentGraphs)))
@@ -243,26 +289,38 @@ public class WebRuntimeMonitor implements WebMonitor {
 			.GET("/jobs/:jobid/exceptions", handler(new JobExceptionsHandler(currentGraphs)))
 			.GET("/jobs/:jobid/accumulators", handler(new JobAccumulatorsHandler(currentGraphs)))
 			.GET("/jobs/:jobid/checkpoints", handler(new JobCheckpointsHandler(currentGraphs)))
+			.GET("/jobs/:jobid/metrics", handler(new JobMetricsHandler(metricFetcher)))
 
-			.GET("/taskmanagers", handler(new TaskManagersHandler(DEFAULT_REQUEST_TIMEOUT)))
-			.GET("/taskmanagers/:" + TaskManagersHandler.TASK_MANAGER_ID_KEY + "/metrics", handler(new TaskManagersHandler(DEFAULT_REQUEST_TIMEOUT)))
+			.GET("/taskmanagers", handler(new TaskManagersHandler(DEFAULT_REQUEST_TIMEOUT, metricFetcher)))
+			.GET("/taskmanagers/:" + TaskManagersHandler.TASK_MANAGER_ID_KEY + "/metrics", handler(new TaskManagersHandler(DEFAULT_REQUEST_TIMEOUT, metricFetcher)))
 			.GET("/taskmanagers/:" + TaskManagersHandler.TASK_MANAGER_ID_KEY + "/log", 
-				new TaskManagerLogHandler(retriever, context, jobManagerAddressPromise.future(), timeout, TaskManagerLogHandler.FileMode.LOG, config))
+				new TaskManagerLogHandler(retriever, context, jobManagerAddressPromise.future(), timeout,
+					TaskManagerLogHandler.FileMode.LOG, config, enableSSL))
 			.GET("/taskmanagers/:" + TaskManagersHandler.TASK_MANAGER_ID_KEY + "/stdout", 
-				new TaskManagerLogHandler(retriever, context, jobManagerAddressPromise.future(), timeout, TaskManagerLogHandler.FileMode.STDOUT, config))
+				new TaskManagerLogHandler(retriever, context, jobManagerAddressPromise.future(), timeout,
+					TaskManagerLogHandler.FileMode.STDOUT, config, enableSSL))
+			.GET("/taskmanagers/:" + TaskManagersHandler.TASK_MANAGER_ID_KEY + "/metrics", handler(new TaskManagerMetricsHandler(metricFetcher)))
 
 			// log and stdout
 			.GET("/jobmanager/log", logFiles.logFile == null ? new ConstantTextHandler("(log file unavailable)") :
-				new StaticFileServerHandler(retriever, jobManagerAddressPromise.future(), timeout, logFiles.logFile))
+				new StaticFileServerHandler(retriever, jobManagerAddressPromise.future(), timeout, logFiles.logFile,
+					enableSSL))
 
 			.GET("/jobmanager/stdout", logFiles.stdOutFile == null ? new ConstantTextHandler("(stdout file unavailable)") :
-				new StaticFileServerHandler(retriever, jobManagerAddressPromise.future(), timeout, logFiles.stdOutFile))
+				new StaticFileServerHandler(retriever, jobManagerAddressPromise.future(), timeout, logFiles.stdOutFile,
+					enableSSL))
+
+			.GET("/jobmanager/metrics", handler(new JobManagerMetricsHandler(metricFetcher)))
 
 			// Cancel a job via GET (for proper integration with YARN this has to be performed via GET)
 			.GET("/jobs/:jobid/yarn-cancel", handler(new JobCancellationHandler()))
 
 			// DELETE is the preferred way of canceling a job (Rest-conform)
 			.DELETE("/jobs/:jobid/cancel", handler(new JobCancellationHandler()))
+
+			.GET("/jobs/:jobid/cancel-with-savepoint", triggerHandler)
+			.GET("/jobs/:jobid/cancel-with-savepoint/target-directory/:targetDirectory", triggerHandler)
+			.GET(JobCancellationWithSavepointHandlers.IN_PROGRESS_URL, inProgressHandler)
 
 			// stop a job via GET (for proper integration with YARN this has to be performed via GET)
 			.GET("/jobs/:jobid/yarn-stop", handler(new JobStoppingHandler()))
@@ -279,7 +337,7 @@ public class WebRuntimeMonitor implements WebMonitor {
 				.GET("/jars/:jarid/plan", handler(new JarPlanHandler(uploadDir)))
 
 				// run a jar
-				.POST("/jars/:jarid/run", handler(new JarRunHandler(uploadDir, timeout)))
+				.POST("/jars/:jarid/run", handler(new JarRunHandler(uploadDir, timeout, config)))
 
 				// upload a jar
 				.POST("/jars/upload", handler(new JarUploadHandler(uploadDir)))
@@ -295,7 +353,8 @@ public class WebRuntimeMonitor implements WebMonitor {
 		}
 
 		// this handler serves all the static contents
-		router.GET("/:*", new StaticFileServerHandler(retriever, jobManagerAddressPromise.future(), timeout, webRootDir));
+		router.GET("/:*", new StaticFileServerHandler(retriever, jobManagerAddressPromise.future(), timeout, webRootDir,
+			enableSSL));
 
 		// add shutdown hook for deleting the directories and remaining temp files on shutdown
 		try {
@@ -319,8 +378,16 @@ public class WebRuntimeMonitor implements WebMonitor {
 			protected void initChannel(SocketChannel ch) {
 				Handler handler = new Handler(router);
 
+				// SSL should be the first handler in the pipeline
+				if (serverSSLContext != null) {
+					SSLEngine sslEngine = serverSSLContext.createSSLEngine();
+					sslEngine.setUseClientMode(false);
+					ch.pipeline().addLast("ssl", new SslHandler(sslEngine));
+				}
+
 				ch.pipeline()
 						.addLast(new HttpServerCodec())
+						.addLast(new ChunkedWriteHandler())
 						.addLast(new HttpRequestHandler(uploadDir))
 						.addLast(handler.name(), handler)
 						.addLast(new PipelineErrorHandler(LOG));
@@ -336,10 +403,15 @@ public class WebRuntimeMonitor implements WebMonitor {
 				.channel(NioServerSocketChannel.class)
 				.childHandler(initializer);
 
-		Channel ch = this.bootstrap.bind(configuredPort).sync().channel();
-		this.serverChannel = ch;
+		ChannelFuture ch;
+		if (configuredAddress == null) {
+			ch = this.bootstrap.bind(configuredPort);
+		} else {
+			ch = this.bootstrap.bind(configuredAddress, configuredPort);
+		}
+		this.serverChannel = ch.sync().channel();
 
-		InetSocketAddress bindAddress = (InetSocketAddress) ch.localAddress();
+		InetSocketAddress bindAddress = (InetSocketAddress) serverChannel.localAddress();
 		String address = bindAddress.getAddress().getHostAddress();
 		int port = bindAddress.getPort();
 
@@ -385,6 +457,9 @@ public class WebRuntimeMonitor implements WebMonitor {
 			if (bootstrap != null) {
 				if (bootstrap.group() != null) {
 					bootstrap.group().shutdownGracefully();
+				}
+				if (bootstrap.childGroup() != null) {
+					bootstrap.childGroup().shutdownGracefully();
 				}
 			}
 
@@ -439,10 +514,23 @@ public class WebRuntimeMonitor implements WebMonitor {
 	// ------------------------------------------------------------------------
 
 	private RuntimeMonitorHandler handler(RequestHandler handler) {
-		return new RuntimeMonitorHandler(handler, retriever, jobManagerAddressPromise.future(), timeout);
+		return new RuntimeMonitorHandler(handler, retriever, jobManagerAddressPromise.future(), timeout,
+			serverSSLContext !=  null);
 	}
 
 	File getBaseDir(Configuration configuration) {
-		return new File(configuration.getString(ConfigConstants.JOB_MANAGER_WEB_TMPDIR_KEY, System.getProperty("java.io.tmpdir")));
+		return new File(getBaseDirStr(configuration));
+	}
+
+	private String getBaseDirStr(Configuration configuration) {
+		return configuration.getString(ConfigConstants.JOB_MANAGER_WEB_TMPDIR_KEY, System.getProperty("java.io.tmpdir"));
+	}
+
+	private File getUploadDir(Configuration configuration) {
+		File baseDir = new File(configuration.getString(ConfigConstants.JOB_MANAGER_WEB_UPLOAD_DIR_KEY,
+			getBaseDirStr(configuration)));
+
+		boolean uploadDirSpecified = configuration.containsKey(ConfigConstants.JOB_MANAGER_WEB_UPLOAD_DIR_KEY);
+		return uploadDirSpecified ? baseDir : new File(baseDir, "flink-web-" + UUID.randomUUID());
 	}
 }

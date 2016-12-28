@@ -26,12 +26,16 @@ package org.apache.flink.util;
 
 import org.apache.flink.annotation.Internal;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
 @Internal
 public final class ExceptionUtils {
+	public static final String STRINGIFIED_NULL_EXCEPTION = "(null)";
 
 	/**
 	 * Makes a string representation of the exception's stack trace, or "(null)", if the
@@ -44,7 +48,7 @@ public final class ExceptionUtils {
 	 */
 	public static String stringifyException(final Throwable e) {
 		if (e == null) {
-			return "(null)";
+			return STRINGIFIED_NULL_EXCEPTION;
 		}
 		
 		try {
@@ -58,7 +62,54 @@ public final class ExceptionUtils {
 			return e.getClass().getName() + " (error while printing stack trace)";
 		}
 	}
-	
+
+	/**
+	 * Adds a new exception as a {@link Throwable#addSuppressed(Throwable) suppressed exception}
+	 * to a prior exception, or returns the new exception, if no prior exception exists.
+	 *
+	 * <pre>{@code
+	 *
+	 * public void closeAllThings() throws Exception {
+	 *     Exception ex = null;
+	 *     try {
+	 *         component.shutdown();
+	 *     } catch (Exception e) {
+	 *         ex = firstOrSuppressed(e, ex);
+	 *     }
+	 *     try {
+	 *         anotherComponent.stop();
+	 *     } catch (Exception e) {
+	 *         ex = firstOrSuppressed(e, ex);
+	 *     }
+	 *     try {
+	 *         lastComponent.shutdown();
+	 *     } catch (Exception e) {
+	 *         ex = firstOrSuppressed(e, ex);
+	 *     }
+	 *
+	 *     if (ex != null) {
+	 *         throw ex;
+	 *     }
+	 * }
+	 * }</pre>
+	 *
+	 * @param newException The newly occurred exception
+	 * @param previous     The previously occurred exception, possibly null.
+	 *
+	 * @return The new exception, if no previous exception exists, or the previous exception with the
+	 *         new exception in the list of suppressed exceptions.
+	 */
+	public static <T extends Throwable> T firstOrSuppressed(T newException, @Nullable T previous) {
+		checkNotNull(newException, "newException");
+
+		if (previous == null) {
+			return newException;
+		} else {
+			previous.addSuppressed(newException);
+			return previous;
+		}
+	}
+
 	/**
 	 * Throws the given {@code Throwable} in scenarios where the signatures do not allow you to
 	 * throw an arbitrary Throwable. Errors and RuntimeExceptions are thrown directly, other exceptions
@@ -99,11 +150,31 @@ public final class ExceptionUtils {
 	}
 
 	/**
+	 * Throws the given {@code Throwable} in scenarios where the signatures do allow to
+	 * throw a Exception. Errors and Exceptions are thrown directly, other "exotic"
+	 * subclasses of Throwable are wrapped in an Exception.
+	 *
+	 * @param t The throwable to be thrown.
+	 * @param parentMessage The message for the parent Exception, if one is needed.
+	 */
+	public static void rethrowException(Throwable t, String parentMessage) throws Exception {
+		if (t instanceof Error) {
+			throw (Error) t;
+		}
+		else if (t instanceof Exception) {
+			throw (Exception) t;
+		}
+		else {
+			throw new Exception(parentMessage, t);
+		}
+	}
+
+	/**
 	 * Tries to throw the given {@code Throwable} in scenarios where the signatures allows only IOExceptions
 	 * (and RuntimeException and Error). Throws this exception directly, if it is an IOException,
 	 * a RuntimeException, or an Error. Otherwise does nothing.
 	 *
-	 * @param t The throwable to be thrown.
+	 * @param t The Throwable to be thrown.
 	 */
 	public static void tryRethrowIOException(Throwable t) throws IOException {
 		if (t instanceof IOException) {
@@ -118,9 +189,31 @@ public final class ExceptionUtils {
 	}
 
 	/**
-	 * Private constructor to prevent instantiation.
+	 * Re-throws the given {@code Throwable} in scenarios where the signatures allows only IOExceptions
+	 * (and RuntimeException and Error).
+	 * 
+	 * Throws this exception directly, if it is an IOException, a RuntimeException, or an Error. Otherwise it 
+	 * wraps it in an IOException and throws it.
+	 * 
+	 * @param t The Throwable to be thrown.
 	 */
-	private ExceptionUtils() {
-		throw new RuntimeException();
+	public static void rethrowIOException(Throwable t) throws IOException {
+		if (t instanceof IOException) {
+			throw (IOException) t;
+		}
+		else if (t instanceof RuntimeException) {
+			throw (RuntimeException) t;
+		}
+		else if (t instanceof Error) {
+			throw (Error) t;
+		}
+		else {
+			throw new IOException(t);
+		}
 	}
+
+	// ------------------------------------------------------------------------
+
+	/** Private constructor to prevent instantiation. */
+	private ExceptionUtils() {}
 }

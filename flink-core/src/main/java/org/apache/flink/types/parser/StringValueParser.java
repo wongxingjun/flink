@@ -50,7 +50,7 @@ public class StringValueParser extends FieldParser<StringValue> {
 
 		final int delimLimit = limit - delimiter.length + 1;
 
-		if(quotedStringParsing == true && bytes[i] == quoteCharacter) {
+		if(quotedStringParsing && bytes[i] == quoteCharacter) {
 			// quoted string parsing enabled and first character is a quote
 			i++;
 
@@ -90,10 +90,16 @@ public class StringValueParser extends FieldParser<StringValue> {
 
 			if (i >= delimLimit) {
 				// no delimiter found. Take the full string
+				if (limit == startPos) {
+					setErrorState(ParseErrorState.EMPTY_COLUMN); // mark empty column
+				}
 				reusable.setValueAscii(bytes, startPos, limit - startPos);
 				return limit;
 			} else {
 				// delimiter found.
+				if (i == startPos) {
+					setErrorState(ParseErrorState.EMPTY_COLUMN); // mark empty column
+				}
 				reusable.setValueAscii(bytes, startPos, i - startPos);
 				return i + delimiter.length;
 			}

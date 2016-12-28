@@ -43,7 +43,7 @@ import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
 
 /**
- * The ExecutionEnviroment is the context in which a program is executed. A local environment will
+ * The ExecutionEnvironment is the context in which a program is executed. A local environment will
  * cause execution in the current JVM, a remote environment will cause execution on a remote
  * cluster installation.
  *
@@ -110,7 +110,7 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
     */
   @PublicEvolving
   def getRestartStrategy: RestartStrategyConfiguration = {
-    javaEnv.getRestartStrategy()
+    javaEnv.getRestartStrategy
   }
 
   /**
@@ -381,7 +381,7 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
     require(inputFormat != null, "InputFormat must not be null.")
     require(filePath != null, "File path must not be null.")
     inputFormat.setFilePath(new Path(filePath))
-    createInput(inputFormat, implicitly[TypeInformation[T]])
+    createInput(inputFormat, explicitFirst(inputFormat, implicitly[TypeInformation[T]]))
   }
 
   /**
@@ -392,7 +392,7 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
     if (inputFormat == null) {
       throw new IllegalArgumentException("InputFormat must not be null.")
     }
-    createInput(inputFormat, implicitly[TypeInformation[T]])
+    createInput(inputFormat, explicitFirst(inputFormat, implicitly[TypeInformation[T]]))
   }
 
   /**
@@ -412,7 +412,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapred.FileInputFormat]]. The
    * given inputName is set on the given job.
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def readHadoopFile[K, V](
       mapredInputFormat: MapredFileInputFormat[K, V],
@@ -429,7 +434,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapred.FileInputFormat]]. A
    * [[org.apache.hadoop.mapred.JobConf]] with the given inputPath is created.
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def readHadoopFile[K, V](
       mapredInputFormat: MapredFileInputFormat[K, V],
@@ -443,7 +453,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Creates a [[DataSet]] from [[org.apache.hadoop.mapred.SequenceFileInputFormat]]
    * A [[org.apache.hadoop.mapred.JobConf]] with the given inputPath is created.
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readSequenceFile]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def readSequenceFile[K, V](
       key: Class[K],
@@ -456,7 +471,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
 
   /**
    * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapred.InputFormat]].
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#createHadoopInput]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def createHadoopInput[K, V](
       mapredInputFormat: MapredInputFormat[K, V],
@@ -471,7 +491,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapreduce.lib.input.FileInputFormat]].
    * The given inputName is set on the given job.
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def readHadoopFile[K, V](
       mapreduceInputFormat: MapreduceFileInputFormat[K, V],
@@ -489,7 +514,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
    * Creates a [[DataSet]] from the given
    * [[org.apache.hadoop.mapreduce.lib.input.FileInputFormat]]. A
    * [[org.apache.hadoop.mapreduce.Job]] with the given inputPath will be created.
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def readHadoopFile[K, V](
       mapreduceInputFormat: MapreduceFileInputFormat[K, V],
@@ -502,7 +532,12 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
 
   /**
    * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapreduce.InputFormat]].
+   *
+   * @deprecated Please use
+   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#createHadoopInput]]
+   * from the flink-hadoop-compatibility module.
    */
+  @Deprecated
   @PublicEvolving
   def createHadoopInput[K, V](
       mapreduceInputFormat: MapreduceInputFormat[K, V],
@@ -680,6 +715,27 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
 object ExecutionEnvironment {
 
   /**
+   * Sets the default parallelism that will be used for the local execution
+   * environment created by [[createLocalEnvironment()]].
+   *
+   * @param parallelism The default parallelism to use for local execution.
+   */
+  @PublicEvolving
+  def setDefaultLocalParallelism(parallelism: Int) : Unit =
+    JavaEnv.setDefaultLocalParallelism(parallelism)
+
+  /**
+   * Gets the default parallelism that will be used for the local execution environment created by
+   * [[createLocalEnvironment()]].
+   */
+  @PublicEvolving
+  def getDefaultLocalParallelism: Int = JavaEnv.getDefaultLocalParallelism
+
+  // --------------------------------------------------------------------------
+  //  context environment
+  // --------------------------------------------------------------------------
+
+  /**
    * Creates an execution environment that represents the context in which the program is
    * currently executed. If the program is invoked standalone, this method returns a local
    * execution environment. If the program is invoked from within the command line client
@@ -689,17 +745,20 @@ object ExecutionEnvironment {
     new ExecutionEnvironment(JavaEnv.getExecutionEnvironment)
   }
 
+  // --------------------------------------------------------------------------
+  //  local environment
+  // --------------------------------------------------------------------------
+
   /**
-   * Creates a local execution environment. The local execution environment will run the program in
-   * a multi-threaded fashion in the same JVM as the environment was created in. The parallelism of
-   * the local environment is the number of hardware contexts (CPU cores/threads).
+   * Creates a local execution environment. The local execution environment will run the
+   * program in a multi-threaded fashion in the same JVM as the environment was created in.
+   *
+   * This method sets the environment's default parallelism to given parameter, which
+   * defaults to the value set via [[setDefaultLocalParallelism(Int)]].
    */
-  def createLocalEnvironment(
-      parallelism: Int = Runtime.getRuntime.availableProcessors())
-      : ExecutionEnvironment = {
-    val javaEnv = JavaEnv.createLocalEnvironment()
-    javaEnv.setParallelism(parallelism)
-    new ExecutionEnvironment(javaEnv)
+  def createLocalEnvironment(parallelism: Int = JavaEnv.getDefaultLocalParallelism): 
+      ExecutionEnvironment = {
+    new ExecutionEnvironment(JavaEnv.createLocalEnvironment(parallelism))
   }
 
   /**
@@ -713,16 +772,40 @@ object ExecutionEnvironment {
   }
 
   /**
+   * Creates a [[ExecutionEnvironment]] for local program execution that also starts the
+   * web monitoring UI.
+   *
+   * The local execution environment will run the program in a multi-threaded fashion in
+   * the same JVM as the environment was created in. It will use the parallelism specified in the
+   * parameter.
+   *
+   * If the configuration key 'jobmanager.web.port' was set in the configuration, that particular
+   * port will be used for the web UI. Otherwise, the default port (8081) will be used.
+   *
+   * @param config optional config for the local execution
+   * @return The created StreamExecutionEnvironment
+   */
+  @PublicEvolving
+  def createLocalEnvironmentWithWebUI(config: Configuration = null): ExecutionEnvironment = {
+    val conf: Configuration = if (config == null) new Configuration() else config
+    new ExecutionEnvironment(JavaEnv.createLocalEnvironmentWithWebUI(conf))
+  }
+
+  /**
    * Creates an execution environment that uses Java Collections underneath. This will execute in a
    * single thread in the current JVM. It is very fast but will fail if the data does not fit into
    * memory. This is useful during implementation and for debugging.
- *
+   *
    * @return
    */
   @PublicEvolving
   def createCollectionsEnvironment: ExecutionEnvironment = {
     new ExecutionEnvironment(new CollectionEnvironment)
   }
+
+  // --------------------------------------------------------------------------
+  //  remote environment
+  // --------------------------------------------------------------------------
 
   /**
    * Creates a remote execution environment. The remote environment sends (parts of) the program to

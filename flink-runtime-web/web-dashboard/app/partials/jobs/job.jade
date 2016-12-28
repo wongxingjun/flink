@@ -50,9 +50,8 @@ nav.navbar.navbar-default.navbar-fixed-top.navbar-main(ng-if="job")
 nav.navbar.navbar-default.navbar-fixed-top.navbar-main-additional(ng-if="job")
   ul.nav.nav-tabs
     li(ui-sref-active='active')
-      a(ui-sref=".plan") Plan
+      a(ui-sref=".plan") Overview
 
-    //- li(ui-sref-active='active' ng-if="job['end-time'] > -1")
     li(ui-sref-active='active')
       a(ui-sref=".timeline") Timeline
 
@@ -60,10 +59,7 @@ nav.navbar.navbar-default.navbar-fixed-top.navbar-main-additional(ng-if="job")
       a(ui-sref=".exceptions") Exceptions
 
     li(ui-sref-active='active')
-      a(ui-sref=".properties") Properties
-
-    li(ui-sref-active='active')
       a(ui-sref=".config") Configuration
 
 #content-inner.has-navbar-main-additional
-  div(ui-view="details")
+  #details(ui-view="details")

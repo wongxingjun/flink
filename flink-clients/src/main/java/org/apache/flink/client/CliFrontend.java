@@ -39,11 +39,14 @@ import org.apache.flink.client.cli.StopOptions;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.client.program.PackagedProgram;
 import org.apache.flink.client.program.ProgramInvocationException;
+import org.apache.flink.client.program.ProgramMissingJobException;
+import org.apache.flink.client.program.ProgramParametrizationException;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.fs.Path;
 import org.apache.flink.optimizer.DataStatistics;
 import org.apache.flink.optimizer.Optimizer;
 import org.apache.flink.optimizer.costs.DefaultCostEstimator;
@@ -52,12 +55,16 @@ import org.apache.flink.optimizer.plan.OptimizedPlan;
 import org.apache.flink.optimizer.plan.StreamingPlan;
 import org.apache.flink.optimizer.plandump.PlanJSONDumpGenerator;
 import org.apache.flink.runtime.akka.AkkaUtils;
+import org.apache.flink.runtime.blob.BlobClient;
+import org.apache.flink.runtime.blob.BlobKey;
 import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.messages.JobManagerMessages;
 import org.apache.flink.runtime.messages.JobManagerMessages.CancelJob;
+import org.apache.flink.runtime.messages.JobManagerMessages.CancelJobWithSavepoint;
 import org.apache.flink.runtime.messages.JobManagerMessages.CancellationFailure;
+import org.apache.flink.runtime.messages.JobManagerMessages.CancellationSuccess;
 import org.apache.flink.runtime.messages.JobManagerMessages.RunningJobsStatus;
 import org.apache.flink.runtime.messages.JobManagerMessages.StopJob;
 import org.apache.flink.runtime.messages.JobManagerMessages.StoppingFailure;
@@ -67,10 +74,9 @@ import org.apache.flink.runtime.security.SecurityUtils;
 import org.apache.flink.runtime.util.EnvironmentInformation;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import scala.Option;
 import scala.concurrent.Await;
 import scala.concurrent.Future;
 import scala.concurrent.duration.FiniteDuration;
@@ -91,6 +97,7 @@ import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.runtime.messages.JobManagerMessages.DisposeSavepoint;
@@ -124,6 +131,7 @@ public class CliFrontend {
 		/** command line interface of the YARN session, with a special initialization here
 		 *  to prefix all options with y/yarn. */
 		loadCustomCommandLine("org.apache.flink.yarn.cli.FlinkYarnSessionCli", "y", "yarn");
+		loadCustomCommandLine("org.apache.flink.yarn.cli.FlinkYarnCLI", "y", "yarn");
 		customCommandLine.add(new DefaultCLI());
 	}
 
@@ -151,9 +159,7 @@ public class CliFrontend {
 
 		// load the configuration
 		LOG.info("Trying to load configuration file");
-		GlobalConfiguration.loadConfiguration(configDirectory.getAbsolutePath());
-		System.setProperty(ConfigConstants.ENV_FLINK_CONF_DIR, configDirectory.getAbsolutePath());
-		this.config = GlobalConfiguration.getConfiguration();
+		this.config = GlobalConfiguration.loadConfiguration(configDirectory.getAbsolutePath());
 
 		try {
 			FileSystem.setDefaultScheme(config);
@@ -232,12 +238,12 @@ public class CliFrontend {
 		ClusterClient client = null;
 		try {
 
-			client = createClient(options, program.getMainClassName());
+			client = createClient(options, program);
 			client.setPrintStatusDuringExecution(options.getStdoutLogging());
 			client.setDetached(options.getDetachedMode());
 			LOG.debug("Client slots is set to {}", client.getMaxSlots());
 
-			LOG.debug("Savepoint path is set to {}", options.getSavepointPath());
+			LOG.debug(options.getSavepointRestoreSettings().toString());
 
 			int userParallelism = options.getParallelism();
 			LOG.debug("User parallelism is set to {}", userParallelism);
@@ -556,20 +562,38 @@ public class CliFrontend {
 		}
 
 		String[] cleanedArgs = options.getArgs();
+
+		boolean withSavepoint = options.isWithSavepoint();
+		String targetDirectory = options.getSavepointTargetDirectory();
+
 		JobID jobId;
 
+		// Figure out jobID. This is a little overly complicated, because
+		// we have to figure out whether the optional target directory
+		// is set:
+		// - cancel -s <jobID> => default target dir (JobID parsed as opt arg)
+		// - cancel -s <targetDir> <jobID> => custom target dir (parsed correctly)
 		if (cleanedArgs.length > 0) {
 			String jobIdString = cleanedArgs[0];
 			try {
 				jobId = new JobID(StringUtils.hexStringToByte(jobIdString));
-			}
-			catch (Exception e) {
+			} catch (Exception e) {
 				LOG.error("Error: The value for the Job ID is not a valid ID.");
 				System.out.println("Error: The value for the Job ID is not a valid ID.");
 				return 1;
 			}
-		}
-		else {
+		} else if (targetDirectory != null)  {
+			// Try this for case: cancel -s <jobID> (default savepoint target dir)
+			String jobIdString = targetDirectory;
+			try {
+				jobId = new JobID(StringUtils.hexStringToByte(jobIdString));
+				targetDirectory = null;
+			} catch (Exception e) {
+				LOG.error("Missing JobID in the command line arguments.");
+				System.out.println("Error: Specify a Job ID to cancel a job.");
+				return 1;
+			}
+		} else {
 			LOG.error("Missing JobID in the command line arguments.");
 			System.out.println("Error: Specify a Job ID to cancel a job.");
 			return 1;
@@ -577,13 +601,36 @@ public class CliFrontend {
 
 		try {
 			ActorGateway jobManager = getJobManagerGateway(options);
-			Future<Object> response = jobManager.ask(new CancelJob(jobId), clientTimeout);
 
+			Object cancelMsg;
+			if (withSavepoint) {
+				if (targetDirectory == null) {
+					logAndSysout("Cancelling job " + jobId + " with savepoint to default savepoint directory.");
+				} else {
+					logAndSysout("Cancelling job " + jobId + " with savepoint to " + targetDirectory + ".");
+				}
+				cancelMsg = new CancelJobWithSavepoint(jobId, targetDirectory);
+			} else {
+				logAndSysout("Cancelling job " + jobId + ".");
+				cancelMsg = new CancelJob(jobId);
+			}
+
+			Future<Object> response = jobManager.ask(cancelMsg, clientTimeout);
 			final Object rc = Await.result(response, clientTimeout);
 
-			if (rc instanceof CancellationFailure) {
+			if (rc instanceof CancellationSuccess) {
+				if (withSavepoint) {
+					CancellationSuccess success = (CancellationSuccess) rc;
+					String savepointPath = success.savepointPath();
+					logAndSysout("Cancelled job " + jobId + ". Savepoint stored in " + savepointPath + ".");
+				} else {
+					logAndSysout("Cancelled job " + jobId + ".");
+				}
+			} else if (rc instanceof CancellationFailure) {
 				throw new Exception("Canceling the job with ID " + jobId + " failed.",
 						((CancellationFailure) rc).cause());
+			} else {
+				throw new IllegalStateException("Unexpected response: " + rc);
 			}
 
 			return 0;
@@ -604,11 +651,9 @@ public class CliFrontend {
 		SavepointOptions options;
 		try {
 			options = CliFrontendParser.parseSavepointCommand(args);
-		}
-		catch (CliArgsException e) {
+		} catch (CliArgsException e) {
 			return handleArgException(e);
-		}
-		catch (Throwable t) {
+		} catch (Throwable t) {
 			return handleError(t);
 		}
 
@@ -620,30 +665,37 @@ public class CliFrontend {
 
 		if (options.isDispose()) {
 			// Discard
-			return disposeSavepoint(options, options.getDisposeSavepointPath());
-		}
-		else {
+			return disposeSavepoint(options);
+		} else {
 			// Trigger
 			String[] cleanedArgs = options.getArgs();
 			JobID jobId;
 
-			if (cleanedArgs.length > 0) {
+			if (cleanedArgs.length >= 1) {
 				String jobIdString = cleanedArgs[0];
 				try {
 					jobId = new JobID(StringUtils.hexStringToByte(jobIdString));
-				}
-				catch (Exception e) {
-					return handleError(new IllegalArgumentException(
+				} catch (Exception e) {
+					return handleArgException(new IllegalArgumentException(
 							"Error: The value for the Job ID is not a valid ID."));
 				}
-			}
-			else {
-				return handleError(new IllegalArgumentException(
+			} else {
+				return handleArgException(new IllegalArgumentException(
 						"Error: The value for the Job ID is not a valid ID. " +
 								"Specify a Job ID to trigger a savepoint."));
 			}
 
-			return triggerSavepoint(options, jobId);
+			String savepointDirectory = null;
+			if (cleanedArgs.length >= 2) {
+				savepointDirectory = cleanedArgs[1];
+			}
+
+			// Print superfluous arguments
+			if (cleanedArgs.length >= 3) {
+				logAndSysout("Provided more arguments than required. Ignoring not needed arguments.");
+			}
+
+			return triggerSavepoint(options, jobId, savepointDirectory);
 		}
 	}
 
@@ -651,12 +703,12 @@ public class CliFrontend {
 	 * Sends a {@link org.apache.flink.runtime.messages.JobManagerMessages.TriggerSavepoint}
 	 * message to the job manager.
 	 */
-	private int triggerSavepoint(SavepointOptions options, JobID jobId) {
+	private int triggerSavepoint(SavepointOptions options, JobID jobId, String savepointDirectory) {
 		try {
 			ActorGateway jobManager = getJobManagerGateway(options);
 
 			logAndSysout("Triggering savepoint for job " + jobId + ".");
-			Future<Object> response = jobManager.ask(new TriggerSavepoint(jobId),
+			Future<Object> response = jobManager.ask(new TriggerSavepoint(jobId, Option.apply(savepointDirectory)),
 					new FiniteDuration(1, TimeUnit.HOURS));
 
 			Object result;
@@ -693,35 +745,77 @@ public class CliFrontend {
 	 * Sends a {@link org.apache.flink.runtime.messages.JobManagerMessages.DisposeSavepoint}
 	 * message to the job manager.
 	 */
-	private int disposeSavepoint(SavepointOptions options, String savepointPath) {
+	private int disposeSavepoint(SavepointOptions options) {
 		try {
+			String savepointPath = options.getSavepointPath();
+			if (savepointPath == null) {
+				throw new IllegalArgumentException("Missing required argument: savepoint path. " +
+						"Usage: bin/flink savepoint -d <savepoint-path>");
+			}
+
+			String jarFile = options.getJarFilePath();
+
 			ActorGateway jobManager = getJobManagerGateway(options);
-			logAndSysout("Disposing savepoint '" + savepointPath + "'.");
-			Future<Object> response = jobManager.ask(new DisposeSavepoint(savepointPath), clientTimeout);
+
+			List<BlobKey> blobKeys = null;
+			if (jarFile != null) {
+				logAndSysout("Disposing savepoint '" + savepointPath + "' with JAR " + jarFile + ".");
+
+				List<File> libs = null;
+				try {
+					libs = PackagedProgram.extractContainedLibraries(new File(jarFile).toURI().toURL());
+					if (!libs.isEmpty()) {
+						List<Path> libPaths = new ArrayList<>(libs.size());
+						for (File f : libs) {
+							libPaths.add(new Path(f.toURI()));
+						}
+
+						logAndSysout("Uploading JAR files.");
+						LOG.debug("JAR files: " + libPaths);
+						blobKeys = BlobClient.uploadJarFiles(jobManager, clientTimeout, config, libPaths);
+						LOG.debug("Blob keys: " + blobKeys.toString());
+					}
+				} finally {
+					if (libs != null) {
+						PackagedProgram.deleteExtractedLibraries(libs);
+					}
+				}
+			} else {
+				logAndSysout("Disposing savepoint '" + savepointPath + "'.");
+			}
+
+			Object msg = new DisposeSavepoint(savepointPath);
+			Future<Object> response = jobManager.ask(msg, clientTimeout);
 
 			Object result;
 			try {
 				logAndSysout("Waiting for response...");
 				result = Await.result(response, clientTimeout);
-			}
-			catch (Exception e) {
+			} catch (Exception e) {
 				throw new Exception("Disposing the savepoint with path" + savepointPath + " failed.", e);
 			}
 
 			if (result.getClass() == JobManagerMessages.getDisposeSavepointSuccess().getClass()) {
 				logAndSysout("Savepoint '" + savepointPath + "' disposed.");
 				return 0;
-			}
-			else if (result instanceof DisposeSavepointFailure) {
+			} else if (result instanceof DisposeSavepointFailure) {
 				DisposeSavepointFailure failure = (DisposeSavepointFailure) result;
-				throw failure.cause();
-			}
-			else {
+
+				if (failure.cause() instanceof ClassNotFoundException) {
+					throw new ClassNotFoundException("Savepoint disposal failed, because of a " +
+							"missing class. This is most likely caused by a custom state " +
+							"instance, which cannot be disposed without the user code class " +
+							"loader. Please provide the program jar with which you have created " +
+							"the savepoint via -j <JAR> for disposal.",
+							failure.cause().getCause());
+				} else {
+					throw failure.cause();
+				}
+			} else {
 				throw new IllegalStateException("Unknown JobManager response of type " +
 						result.getClass());
 			}
-		}
-		catch (Throwable t) {
+		} catch (Throwable t) {
 			return handleError(t);
 		}
 	}
@@ -736,13 +830,17 @@ public class CliFrontend {
 		JobSubmissionResult result;
 		try {
 			result = client.run(program, parallelism);
+		} catch (ProgramParametrizationException e) {
+			return handleParametrizationException(e);
+		} catch (ProgramMissingJobException e) {
+			return handleMissingJobException();
 		} catch (ProgramInvocationException e) {
 			return handleError(e);
 		} finally {
 			program.deleteExtractedLibraries();
 		}
 
-		if(result.isJobExecutionResults()) {
+		if (result.isJobExecutionResult()) {
 			logAndSysout("Program execution finished");
 			JobExecutionResult execResult = result.getJobExecutionResult();
 			System.out.println("Job with JobID " + execResult.getJobID() + " has finished.");
@@ -794,7 +892,7 @@ public class CliFrontend {
 				new PackagedProgram(jarFile, classpaths, programArgs) :
 				new PackagedProgram(jarFile, classpaths, entryPointClass, programArgs);
 
-		program.setSavepointPath(options.getSavepointPath());
+		program.setSavepointRestoreSettings(options.getSavepointRestoreSettings());
 
 		return program;
 	}
@@ -808,7 +906,7 @@ public class CliFrontend {
 		CustomCommandLine customCLI = getActiveCustomCommandLine(options.getCommandLine());
 		try {
 			ClusterClient client = customCLI.retrieveCluster(options.getCommandLine(), config);
-			logAndSysout("Using address " + client.getJobManagerAddressFromConfig() + " to connect to JobManager.");
+			logAndSysout("Using address " + client.getJobManagerAddress() + " to connect to JobManager.");
 			return client;
 		} catch (Exception e) {
 			LOG.error("Couldn't retrieve {} cluster.", customCLI.getId(), e);
@@ -832,12 +930,12 @@ public class CliFrontend {
 	/**
 	 * Creates a {@link ClusterClient} object from the given command line options and other parameters.
 	 * @param options Command line options
-	 * @param programName Program name
+	 * @param program The program for which to create the client.
 	 * @throws Exception
 	 */
 	protected ClusterClient createClient(
 			CommandLineOptions options,
-			String programName) throws Exception {
+			PackagedProgram program) throws Exception {
 
 		// Get the custom command-line (e.g. Standalone/Yarn/Mesos)
 		CustomCommandLine<?> activeCommandLine = getActiveCustomCommandLine(options.getCommandLine());
@@ -845,11 +943,15 @@ public class CliFrontend {
 		ClusterClient client;
 		try {
 			client = activeCommandLine.retrieveCluster(options.getCommandLine(), config);
-			logAndSysout("Cluster retrieved: " + client.getClusterIdentifier());
+			logAndSysout("Cluster configuration: " + client.getClusterIdentifier());
 		} catch (UnsupportedOperationException e) {
 			try {
-				String applicationName = "Flink Application: " + programName;
-				client = activeCommandLine.createCluster(applicationName, options.getCommandLine(), config);
+				String applicationName = "Flink Application: " + program.getMainClassName();
+				client = activeCommandLine.createCluster(
+					applicationName,
+					options.getCommandLine(),
+					config,
+					program.getAllLibraries());
 				logAndSysout("Cluster started: " + client.getClusterIdentifier());
 			} catch (UnsupportedOperationException e2) {
 				throw new IllegalConfigurationException(
@@ -859,7 +961,7 @@ public class CliFrontend {
 		}
 
 		// Avoid resolving the JobManager Gateway here to prevent blocking until we invoke the user's program.
-		final InetSocketAddress jobManagerAddress = client.getJobManagerAddressFromConfig();
+		final InetSocketAddress jobManagerAddress = client.getJobManagerAddress();
 		logAndSysout("Using address " + jobManagerAddress.getHostString() + ":" + jobManagerAddress.getPort() + " to connect to JobManager.");
 		logAndSysout("JobManager web interface address " + client.getWebInterfaceURL());
 		return client;
@@ -881,6 +983,29 @@ public class CliFrontend {
 		System.out.println(e.getMessage());
 		System.out.println();
 		System.out.println("Use the help option (-h or --help) to get help on the command.");
+		return 1;
+	}
+
+	/**
+	 * Displays an optional exception message for incorrect program parametrization.
+	 *
+	 * @param e The exception to display.
+	 * @return The return code for the process.
+	 */
+	private int handleParametrizationException(ProgramParametrizationException e) {
+		System.err.println(e.getMessage());
+		return 1;
+	}
+
+	/**
+	 * Displays a message for a program without a job to execute.
+	 *
+	 * @return The return code for the process.
+	 */
+	private int handleMissingJobException() {
+		System.err.println();
+		System.err.println("The program didn't contain a Flink job. " +
+			"Perhaps you forgot to call execute() on the execution environment.");
 		return 1;
 	}
 
@@ -946,25 +1071,7 @@ public class CliFrontend {
 		// do action
 		switch (action) {
 			case ACTION_RUN:
-				// run() needs to run in a secured environment for the optimizer.
-				if (SecurityUtils.isSecurityEnabled()) {
-					String message = "Secure Hadoop environment setup detected. Running in secure context.";
-					LOG.info(message);
-
-					try {
-						return SecurityUtils.runSecured(new SecurityUtils.FlinkSecuredRunner<Integer>() {
-							@Override
-							public Integer run() throws Exception {
-								return CliFrontend.this.run(params);
-							}
-						});
-					}
-					catch (Exception e) {
-						return handleError(e);
-					}
-				} else {
-					return run(params);
-				}
+				return CliFrontend.this.run(params);
 			case ACTION_LIST:
 				return list(params);
 			case ACTION_INFO:
@@ -989,7 +1096,7 @@ public class CliFrontend {
 			default:
 				System.out.printf("\"%s\" is not a valid action.\n", action);
 				System.out.println();
-				System.out.println("Valid actions are \"run\", \"list\", \"info\", \"stop\", or \"cancel\".");
+				System.out.println("Valid actions are \"run\", \"list\", \"info\", \"savepoint\", \"stop\", or \"cancel\".");
 				System.out.println();
 				System.out.println("Specify the version option (-v or --version) to print Flink version.");
 				System.out.println();
@@ -1001,12 +1108,19 @@ public class CliFrontend {
 	/**
 	 * Submits the job based on the arguments
 	 */
-	public static void main(String[] args) {
+	public static void main(final String[] args) {
 		EnvironmentInformation.logEnvironmentInfo(LOG, "Command Line Client", args);
 
 		try {
-			CliFrontend cli = new CliFrontend();
-			int retCode = cli.parseParameters(args);
+			final CliFrontend cli = new CliFrontend();
+			SecurityUtils.install(new SecurityUtils.SecurityConfiguration(cli.config));
+			int retCode = SecurityUtils.getInstalledContext()
+					.runSecured(new Callable<Integer>() {
+						@Override
+						public Integer call() {
+							return cli.parseParameters(args);
+						}
+					});
 			System.exit(retCode);
 		}
 		catch (Throwable t) {
@@ -1021,8 +1135,7 @@ public class CliFrontend {
 	// --------------------------------------------------------------------------------------------
 
 	public static String getConfigurationDirectoryFromEnv() {
-		String envLocation = System.getenv(ConfigConstants.ENV_FLINK_CONF_DIR);
-		String location = envLocation != null ? envLocation : System.getProperty(ConfigConstants.ENV_FLINK_CONF_DIR);
+		String location = System.getenv(ConfigConstants.ENV_FLINK_CONF_DIR);
 
 		if (location != null) {
 			if (new File(location).exists()) {

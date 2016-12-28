@@ -20,7 +20,7 @@ package org.apache.flink.streaming.api.scala
 
 import java.util.concurrent.TimeUnit
 
-import org.apache.flink.api.common.functions.{ReduceFunction, FoldFunction}
+import org.apache.flink.api.common.functions.ReduceFunction
 import org.apache.flink.api.java.tuple.Tuple
 import org.apache.flink.streaming.api.TimeCharacteristic
 import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks
@@ -128,7 +128,7 @@ class WindowReduceITCase extends StreamingMultipleProgramsTestBase {
     source1
       .keyBy(0)
       .window(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
-      .apply(
+      .reduce(
         reduceFunc,
         new CheckingIdentityRichWindowFunction[(String, Int), Tuple, TimeWindow]())
       .addSink(new SinkFunction[(String, Int)]() {
@@ -230,7 +230,7 @@ class WindowReduceITCase extends StreamingMultipleProgramsTestBase {
 
     source1
       .windowAll(TumblingEventTimeWindows.of(Time.of(3, TimeUnit.MILLISECONDS)))
-      .apply(
+      .reduce(
         reduceFunc,
         new CheckingIdentityRichAllWindowFunction[(String, Int), TimeWindow]())
       .addSink(new SinkFunction[(String, Int)]() {

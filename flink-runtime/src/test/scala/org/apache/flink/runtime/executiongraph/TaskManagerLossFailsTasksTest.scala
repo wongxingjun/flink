@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.executiongraph
 
-import org.apache.flink.api.common.{ExecutionConfig, ExecutionConfigTest, JobID}
+import org.apache.flink.api.common.{ExecutionConfig, JobID}
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.runtime.akka.AkkaUtils
 import org.apache.flink.runtime.executiongraph.ExecutionGraphTestUtils.SimpleActorGateway
@@ -26,7 +26,10 @@ import org.apache.flink.runtime.executiongraph.restart.NoRestartStrategy
 import org.apache.flink.runtime.jobgraph.{JobGraph, JobStatus, JobVertex}
 import org.apache.flink.runtime.jobmanager.Tasks
 import org.apache.flink.runtime.jobmanager.scheduler.Scheduler
+import org.apache.flink.runtime.jobmanager.slots.ActorTaskManagerGateway
 import org.apache.flink.runtime.testingUtils.TestingUtils
+import org.apache.flink.runtime.testtasks.NoOpInvokable
+import org.apache.flink.util.SerializedValue
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
 import org.scalatest.{Matchers, WordSpecLike}
@@ -38,26 +41,29 @@ class TaskManagerLossFailsTasksTest extends WordSpecLike with Matchers {
     "fail the assigned tasks" in {
       try {
         val instance1 = ExecutionGraphTestUtils.getInstance(
-          new SimpleActorGateway(TestingUtils.defaultExecutionContext), 10)
+          new ActorTaskManagerGateway(new SimpleActorGateway(TestingUtils.defaultExecutionContext)),
+          10)
         val instance2 = ExecutionGraphTestUtils.getInstance(
-          new SimpleActorGateway(TestingUtils.defaultExecutionContext), 10)
+          new ActorTaskManagerGateway(new SimpleActorGateway(TestingUtils.defaultExecutionContext)),
+          10)
 
         val scheduler = new Scheduler(TestingUtils.defaultExecutionContext)
         scheduler.newInstanceAvailable(instance1)
         scheduler.newInstanceAvailable(instance2)
 
         val sender = new JobVertex("Task")
-        sender.setInvokableClass(classOf[Tasks.NoOpInvokable])
+        sender.setInvokableClass(classOf[NoOpInvokable])
         sender.setParallelism(20)
 
         val jobGraph = new JobGraph("Pointwise job", sender)
 
         val eg = new ExecutionGraph(
           TestingUtils.defaultExecutionContext,
+          TestingUtils.defaultExecutionContext,
           new JobID(),
           "test job",
           new Configuration(),
-          ExecutionConfigTest.getSerializedConfig,
+          new SerializedValue(new ExecutionConfig()),
           AkkaUtils.getDefaultTimeout,
           new NoRestartStrategy())
 

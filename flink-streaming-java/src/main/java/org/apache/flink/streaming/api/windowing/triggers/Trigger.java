@@ -27,7 +27,6 @@ import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.streaming.api.windowing.windows.Window;
-import org.apache.flink.streaming.runtime.tasks.StreamTask;
 
 import java.io.Serializable;
 
@@ -105,7 +104,7 @@ public abstract class Trigger<T, W extends Window> implements Serializable {
 	 * @param window The new window that results from the merge.
 	 * @param ctx A context object that can be used to register timer callbacks and access state.
 	 */
-	public TriggerResult onMerge(W window, OnMergeContext ctx) throws Exception {
+	public void onMerge(W window, OnMergeContext ctx) throws Exception {
 		throw new RuntimeException("This trigger does not support merging.");
 	}
 
@@ -114,10 +113,8 @@ public abstract class Trigger<T, W extends Window> implements Serializable {
 	 * when a window is purged. Timers set using {@link TriggerContext#registerEventTimeTimer(long)}
 	 * and {@link TriggerContext#registerProcessingTimeTimer(long)} should be deleted here as
 	 * well as state acquired using {@link TriggerContext#getPartitionedState(StateDescriptor)}.
-	 * 
-	 * <p>By default, this method does nothing.
 	 */
-	public void clear(W window, TriggerContext ctx) throws Exception {}
+	public abstract void clear(W window, TriggerContext ctx) throws Exception;
 
 	// ------------------------------------------------------------------------
 	
@@ -128,8 +125,7 @@ public abstract class Trigger<T, W extends Window> implements Serializable {
 	public interface TriggerContext {
 
 		/**
-		 * Returns the current processing time, as returned by
-		 * the {@link StreamTask#getCurrentProcessingTime()}.
+		 * Returns the current processing time.
 		 */
 		long getCurrentProcessingTime();
 

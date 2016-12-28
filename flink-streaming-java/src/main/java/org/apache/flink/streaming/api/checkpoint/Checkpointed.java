@@ -36,8 +36,9 @@ import java.io.Serializable;
  * 
  * @param <T> The type of the operator state.
  */
+@Deprecated
 @PublicEvolving
-public interface Checkpointed<T extends Serializable> {
+public interface Checkpointed<T extends Serializable> extends CheckpointedRestoring<T> {
 
 	/**
 	 * Gets the current state of the function of operator. The state must reflect the result of all
@@ -55,14 +56,4 @@ public interface Checkpointed<T extends Serializable> {
 	 *                   and to try again with the next checkpoint attempt.
 	 */
 	T snapshotState(long checkpointId, long checkpointTimestamp) throws Exception;
-
-	/**
-	 * Restores the state of the function or operator to that of a previous checkpoint.
-	 * This method is invoked when a function is executed as part of a recovery run.
-	 *
-	 * Note that restoreState() is called before open().
-	 *
-	 * @param state The state to be restored. 
-	 */
-	void restoreState(T state) throws Exception;
 }

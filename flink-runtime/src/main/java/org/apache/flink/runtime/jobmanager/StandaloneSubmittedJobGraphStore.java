@@ -20,13 +20,12 @@ package org.apache.flink.runtime.jobmanager;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
-import scala.Option;
 
+import java.util.Collection;
 import java.util.Collections;
-import java.util.List;
 
 /**
- * {@link SubmittedJobGraph} instances for JobManagers running in {@link RecoveryMode#STANDALONE}.
+ * {@link SubmittedJobGraph} instances for JobManagers running in {@link HighAvailabilityMode#NONE}.
  *
  * <p>All operations are NoOps, because {@link JobGraph} instances cannot be recovered in this
  * recovery mode.
@@ -54,12 +53,12 @@ public class StandaloneSubmittedJobGraphStore implements SubmittedJobGraphStore 
 	}
 
 	@Override
-	public Option<SubmittedJobGraph> recoverJobGraph(JobID jobId) throws Exception {
-		return Option.empty();
+	public Collection<JobID> getJobIds() throws Exception {
+		return Collections.emptyList();
 	}
 
 	@Override
-	public List<SubmittedJobGraph> recoverJobGraphs() throws Exception {
-		return Collections.emptyList();
+	public SubmittedJobGraph recoverJobGraph(JobID jobId) throws Exception {
+		return null;
 	}
 }

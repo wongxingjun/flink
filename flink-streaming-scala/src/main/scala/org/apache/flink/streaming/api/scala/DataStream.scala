@@ -133,6 +133,17 @@ class DataStream[T](stream: JavaStream[T]) {
     this
   }
 
+  def setMaxParallelism(maxParallelism: Int): DataStream[T] = {
+    stream match {
+      case ds: SingleOutputStreamOperator[T] => ds.setMaxParallelism(maxParallelism)
+      case _ =>
+        throw new UnsupportedOperationException("Operator " + stream + " cannot set the maximum" +
+                                                  "paralllelism")
+    }
+
+    this
+  }
+
   /**
    * Gets the name of the current data stream. This name is
    * used by the visualization and logging during runtime.
@@ -686,7 +697,7 @@ class DataStream[T](stream: JavaStream[T]) {
    * For the second case and when the watermarks are required to lag behind the maximum
    * timestamp seen so far in the elements of the stream by a fixed amount of time, and this
    * amount is known in advance, use the
-   * {@link org.apache.flink.streaming.api.functions.TimestampExtractorWithFixedAllowedLateness}.
+   * [[org.apache.flink.streaming.api.functions.TimestampExtractorWithFixedAllowedLateness]].
    *
    * For cases where watermarks should be created in an irregular fashion, for example
    * based on certain markers that some element carry, use the

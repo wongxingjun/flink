@@ -38,8 +38,8 @@ function getVersion() {
 }
 
 function deploy_to_s3() {
-	CURRENT_FLINK_VERSION=$1
-	HD=$2
+	local CURRENT_FLINK_VERSION=$1
+	local HD=$2
 
 	echo "Installing artifacts deployment script"
 	export ARTIFACTS_DEST="$HOME/bin/artifacts"
@@ -48,7 +48,7 @@ function deploy_to_s3() {
 
 	echo "Deploying flink version $CURRENT_FLINK_VERSION (hadoop=$HD) to s3:"
 	mkdir flink-$CURRENT_FLINK_VERSION
-	cp -r flink-dist/target/flink-*-bin/flink-$CURRENT_FLINK_VERSION*/* flink-$CURRENT_FLINK_VERSION/
+	cp -r flink-dist/target/flink-*-bin/flink-*/* flink-$CURRENT_FLINK_VERSION/
 	tar -czf flink-$CURRENT_FLINK_VERSION-bin-$HD.tgz flink-$CURRENT_FLINK_VERSION
 
 	artifacts upload \
@@ -66,7 +66,7 @@ function deploy_to_s3() {
 pwd
 
 
-echo "install lifecylce mapping fake plugin"
+echo "install lifecycle mapping fake plugin"
 git clone https://github.com/mfriedenhagen/dummy-lifecycle-mapping-plugin.git
 cd dummy-lifecycle-mapping-plugin
 mvn -B install
@@ -75,13 +75,8 @@ rm -rf dummy-lifecycle-mapping-plugin
 
 
 CURRENT_FLINK_VERSION=`getVersion`
-if [[ "$CURRENT_FLINK_VERSION" == *-SNAPSHOT ]]; then
-    CURRENT_FLINK_VERSION_HADOOP1=${CURRENT_FLINK_VERSION/-SNAPSHOT/-hadoop1-SNAPSHOT}
-else
-    CURRENT_FLINK_VERSION_HADOOP1="$CURRENT_FLINK_VERSION-hadoop1"
-fi
 
-echo "detected current version as: '$CURRENT_FLINK_VERSION' ; hadoop1: $CURRENT_FLINK_VERSION_HADOOP1 "
+echo "detected current version as: '$CURRENT_FLINK_VERSION'"
 
 #
 # This script deploys our project to sonatype SNAPSHOTS.
@@ -89,26 +84,18 @@ echo "detected current version as: '$CURRENT_FLINK_VERSION' ; hadoop1: $CURRENT_
 #
 
 if [[ $CURRENT_FLINK_VERSION == *SNAPSHOT* ]] ; then
-    # Deploy hadoop v1 to maven
-    echo "Generating poms for hadoop1"
-    ./tools/generate_specific_pom.sh $CURRENT_FLINK_VERSION $CURRENT_FLINK_VERSION_HADOOP1 pom.hadoop1.xml
-    mvn -B -f pom.hadoop1.xml -DskipTests -Drat.ignoreErrors=true -Pdocs-and-source deploy --settings deploysettings.xml
-
-    # deploy to s3
-    deploy_to_s3 $CURRENT_FLINK_VERSION "hadoop1"
-
-    # deploy hadoop v2 (yarn)
-    echo "deploy standard version (hadoop2) for scala 2.10"
+    MVN_SNAPSHOT_OPTS="-B -Pdocs-and-source -DskipTests -Drat.skip=true -Drat.ignoreErrors=true \
+        -DretryFailedDeploymentCount=10 --settings deploysettings.xml clean deploy"
 
     # hadoop2 scala 2.10
-    mvn -B -DskipTests -Drat.skip=true -Drat.ignoreErrors=true -Pdocs-and-source clean deploy --settings deploysettings.xml
-
+    echo "deploy standard version (hadoop2) for scala 2.10"
+    mvn ${MVN_SNAPSHOT_OPTS}
     deploy_to_s3 $CURRENT_FLINK_VERSION "hadoop2"
 
+    # hadoop2 scala 2.11
     echo "deploy hadoop2 version (standard) for scala 2.11"
     ./tools/change-scala-version.sh 2.11
-    mvn -B -DskipTests -Drat.skip=true -Drat.ignoreErrors=true -Pdocs-and-source clean deploy --settings deploysettings.xml
-
+    mvn ${MVN_SNAPSHOT_OPTS}
     deploy_to_s3 $CURRENT_FLINK_VERSION "hadoop2_2.11"
 
     echo "Changing back to scala 2.10"

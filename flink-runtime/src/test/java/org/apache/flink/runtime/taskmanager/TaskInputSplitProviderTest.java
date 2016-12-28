@@ -24,6 +24,7 @@ import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.instance.BaseTestingActorGateway;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.jobgraph.tasks.InputSplitProviderException;
 import org.apache.flink.runtime.messages.JobManagerMessages;
 import org.apache.flink.runtime.testingUtils.TestingUtils;
 import org.junit.Test;
@@ -36,7 +37,7 @@ import java.util.concurrent.TimeUnit;
 public class TaskInputSplitProviderTest {
 
 	@Test
-	public void testRequestNextInputSplitWithInvalidExecutionID() {
+	public void testRequestNextInputSplitWithInvalidExecutionID() throws InputSplitProviderException {
 
 		final JobID jobID = new JobID();
 		final JobVertexID vertexID = new JobVertexID();
@@ -47,21 +48,21 @@ public class TaskInputSplitProviderTest {
 
 
 		final TaskInputSplitProvider provider = new TaskInputSplitProvider(
-				gateway,
-				jobID,
-				vertexID,
-				executionID,
-				getClass().getClassLoader(),
-				timeout
-		);
+			gateway,
+			jobID,
+			vertexID,
+			executionID,
+			timeout);
 
 		// The jobManager will return a
-		InputSplit nextInputSplit = provider.getNextInputSplit();
+		InputSplit nextInputSplit = provider.getNextInputSplit(getClass().getClassLoader());
 
 		assertTrue(nextInputSplit == null);
 	}
 
 	public static class NullInputSplitGateway extends BaseTestingActorGateway {
+
+		private static final long serialVersionUID = -7733997150554492926L;
 
 		public NullInputSplitGateway() {
 			super(TestingUtils.defaultExecutionContext());

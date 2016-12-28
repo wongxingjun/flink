@@ -35,8 +35,8 @@ import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindo
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.triggers.EventTimeTrigger;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
-import org.apache.flink.streaming.util.StreamingMultipleProgramsTestBase;
 import org.apache.flink.util.Collector;
+
 import org.junit.Assert;
 import org.junit.Ignore;
 import org.junit.Test;
@@ -48,13 +48,14 @@ import java.util.concurrent.TimeUnit;
  * {@link WindowedStream} instantiate
  * the correct window operator.
  */
-public class TimeWindowTranslationTest extends StreamingMultipleProgramsTestBase {
+public class TimeWindowTranslationTest {
 
 	/**
 	 * These tests ensure that the fast aligned time windows operator is used if the
 	 * conditions are right.
 	 */
 	@Test
+	@Ignore
 	public void testFastTimeWindows() throws Exception {
 		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 

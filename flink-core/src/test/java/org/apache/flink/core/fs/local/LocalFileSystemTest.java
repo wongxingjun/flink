@@ -16,9 +16,9 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.core.fs.local;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -29,14 +29,19 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.UUID;
 
 import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.fs.FSDataOutputStream;
 import org.apache.flink.core.fs.FileStatus;
+import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.core.fs.local.LocalFileSystem;
 import org.apache.flink.core.testutils.CommonTestUtils;
+
+import org.apache.flink.util.FileUtils;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 /**
  * This class tests the functionality of the {@link LocalFileSystem} class in its components. In particular,
@@ -44,27 +49,18 @@ import org.junit.Test;
  */
 public class LocalFileSystemTest {
 
+	@Rule
+	public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
 	/**
 	 * This test checks the functionality of the {@link LocalFileSystem} class.
 	 */
 	@Test
 	public void testLocalFilesystem() {
+		final File tempdir = new File(CommonTestUtils.getTempDir(), UUID.randomUUID().toString());
 
-		File tempdir = new File(CommonTestUtils.getTempDir() + File.separator
-			+ CommonTestUtils.getRandomDirectoryName() + File.separator);
-
-		// we must ensure, that this directory does NOT exist yet
-		// probability is extremely low but just to make sure..
-		while (tempdir.exists()) {
-			tempdir = new File(CommonTestUtils.getTempDir() + File.separator + CommonTestUtils.getRandomDirectoryName()
-				+ File.separator);
-		}
-
-		final File testfile1 = new File(tempdir.getAbsolutePath() + File.separator
-			+ CommonTestUtils.getRandomFilename());
-
-		final File testfile2 = new File(tempdir.getAbsolutePath() + File.separator
-			+ CommonTestUtils.getRandomFilename());
+		final File testfile1 = new File(tempdir, UUID.randomUUID().toString());
+		final File testfile2 = new File(tempdir, UUID.randomUUID().toString());
 
 		final Path pathtotestfile1 = new Path(testfile1.toURI().getPath());
 		final Path pathtotestfile2 = new Path(testfile2.toURI().getPath());
@@ -80,7 +76,7 @@ public class LocalFileSystemTest {
 
 			// check that dir is not existent yet
 			assertFalse(lfs.exists(pathtotmpdir));
-			tempdir.mkdirs();
+			assertTrue(tempdir.mkdirs());
 
 			// check that local file system recognizes file..
 			assertTrue(lfs.exists(pathtotmpdir));
@@ -114,7 +110,7 @@ public class LocalFileSystemTest {
 
 			// create files.. one ""natively"", one using lfs
 			final FSDataOutputStream lfsoutput1 = lfs.create(pathtotestfile1, false);
-			testfile2.createNewFile();
+			assertTrue(testfile2.createNewFile());
 
 			// does lfs create files? does lfs recognize created files?
 			assertTrue(testfile1.exists());
@@ -125,16 +121,14 @@ public class LocalFileSystemTest {
 			lfsoutput1.write(testbytes);
 			lfsoutput1.close();
 
-			assertEquals(testfile1.length(), 5l);
+			assertEquals(testfile1.length(), 5L);
 
-			final FileInputStream fisfile1 = new FileInputStream(testfile1);
 			byte[] testbytestest = new byte[5];
-			fisfile1.read(testbytestest);
-			fisfile1.close();
-
-			// assertEquals is not able to compare arrays properly...
-			// assertEquals(testbytes, testbytestest);
-			assertTrue(Arrays.equals(testbytes, testbytestest));
+			try (FileInputStream fisfile1 = new FileInputStream(testfile1)) {
+				assertEquals(testbytestest.length, fisfile1.read(testbytestest));
+			}
+			
+			assertArrayEquals(testbytes, testbytestest);
 
 			// does lfs see the correct file length?
 			assertEquals(lfs.getFileStatus(pathtotestfile1).getLen(), testfile1.length());
@@ -171,11 +165,51 @@ public class LocalFileSystemTest {
 
 		} catch (IOException e) {
 			fail(e.getMessage());
-		} finally {
+		}
+		finally {
 			// clean up!
 			testfile1.delete();
 			testfile2.delete();
 			tempdir.delete();
 		}
+	}
+
+	/**
+	 * Test that {@link FileUtils#deletePathIfEmpty(FileSystem, Path)} deletes the path if it is
+	 * empty. A path can only be empty if it is a directory which does not contain any
+	 * files/directories.
+	 */
+	@Test
+	public void testDeletePathIfEmpty() throws IOException {
+		File file = temporaryFolder.newFile();
+		File directory = temporaryFolder.newFolder();
+		File directoryFile = new File(directory, UUID.randomUUID().toString());
+
+		assertTrue(directoryFile.createNewFile());
+
+		Path filePath = new Path(file.toURI());
+		Path directoryPath = new Path(directory.toURI());
+		Path directoryFilePath = new Path(directoryFile.toURI());
+
+		FileSystem fs = FileSystem.getLocalFileSystem();
+
+		// verify that the files have been created
+		assertTrue(fs.exists(filePath));
+		assertTrue(fs.exists(directoryFilePath));
+
+		// delete the single file
+		assertFalse(FileUtils.deletePathIfEmpty(fs, filePath));
+		assertTrue(fs.exists(filePath));
+
+		// try to delete the non-empty directory
+		assertFalse(FileUtils.deletePathIfEmpty(fs, directoryPath));
+		assertTrue(fs.exists(directoryPath));
+
+		// delete the file contained in the directory
+		assertTrue(fs.delete(directoryFilePath, false));
+
+		// now the deletion should work
+		assertTrue(FileUtils.deletePathIfEmpty(fs, directoryPath));
+		assertFalse(fs.exists(directoryPath));
 	}
 }

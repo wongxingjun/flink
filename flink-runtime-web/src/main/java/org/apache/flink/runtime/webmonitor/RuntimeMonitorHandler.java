@@ -23,12 +23,14 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.FullHttpResponse;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.router.KeepAliveWrite;
 import io.netty.handler.codec.http.router.Routed;
 
+import java.net.URLDecoder;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.webmonitor.handlers.RequestHandler;
 import org.apache.flink.util.ExceptionUtils;
@@ -59,21 +61,22 @@ public class RuntimeMonitorHandler extends RuntimeMonitorHandlerBase {
 	private static final Charset ENCODING = Charset.forName("UTF-8");
 
 	public static final String WEB_MONITOR_ADDRESS_KEY = "web.monitor.address";
-	
-	private final RequestHandler handler;	
+
+	private final RequestHandler handler;
 
 	public RuntimeMonitorHandler(
 			RequestHandler handler,
 			JobManagerRetriever retriever,
 			Future<String> localJobManagerAddressFuture,
-			FiniteDuration timeout) {
-		super(retriever, localJobManagerAddressFuture, timeout);
+			FiniteDuration timeout,
+			boolean httpsEnabled) {
+		super(retriever, localJobManagerAddressFuture, timeout, httpsEnabled);
 		this.handler = checkNotNull(handler);
 	}
 
 	@Override
 	protected void respondAsLeader(ChannelHandlerContext ctx, Routed routed, ActorGateway jobManager) {
-		DefaultFullHttpResponse response;
+		FullHttpResponse response;
 
 		try {
 			// we only pass the first element in the list to the handlers.
@@ -82,17 +85,16 @@ public class RuntimeMonitorHandler extends RuntimeMonitorHandlerBase {
 				queryParams.put(key, routed.queryParam(key));
 			}
 
+			Map<String, String> pathParams = new HashMap<>(routed.pathParams().size());
+			for (String key : routed.pathParams().keySet()) {
+				pathParams.put(key, URLDecoder.decode(routed.pathParams().get(key), ENCODING.toString()));
+			}
+
 			InetSocketAddress address = (InetSocketAddress) ctx.channel().localAddress();
-			queryParams.put(WEB_MONITOR_ADDRESS_KEY, address.getHostName() + ":" + address.getPort());
+			queryParams.put(WEB_MONITOR_ADDRESS_KEY,
+				(httpsEnabled ? "https://" : "http://") + address.getHostName() + ":" + address.getPort());
 
-			String result = handler.handleRequest(routed.pathParams(), queryParams, jobManager);
-			byte[] bytes = result.getBytes(ENCODING);
-
-			response = new DefaultFullHttpResponse(
-					HttpVersion.HTTP_1_1, HttpResponseStatus.OK, Unpooled.wrappedBuffer(bytes));
-
-			response.headers().set(HttpHeaders.Names.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-			response.headers().set(HttpHeaders.Names.CONTENT_TYPE, "application/json");
+			response = handler.handleRequest(pathParams, queryParams, jobManager);
 		}
 		catch (NotFoundException e) {
 			// this should result in a 404 error code (not found)
@@ -100,18 +102,21 @@ public class RuntimeMonitorHandler extends RuntimeMonitorHandlerBase {
 					: Unpooled.wrappedBuffer(e.getMessage().getBytes(ENCODING));
 			response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND, message);
 			response.headers().set(HttpHeaders.Names.CONTENT_TYPE, "text/plain");
-			LOG.warn("Error while handling request", e);
+			response.headers().set(HttpHeaders.Names.CONTENT_LENGTH, response.content().readableBytes());
+			LOG.debug("Error while handling request", e);
 		}
 		catch (Exception e) {
 			byte[] bytes = ExceptionUtils.stringifyException(e).getBytes(ENCODING);
 			response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
 					HttpResponseStatus.INTERNAL_SERVER_ERROR, Unpooled.wrappedBuffer(bytes));
 			response.headers().set(HttpHeaders.Names.CONTENT_TYPE, "text/plain");
-			LOG.warn("Error while handling request", e);
+			response.headers().set(HttpHeaders.Names.CONTENT_LENGTH, response.content().readableBytes());
+
+			LOG.debug("Error while handling request", e);
 		}
 
-		response.headers().set(HttpHeaders.Names.CONTENT_ENCODING, "utf-8");
-		response.headers().set(HttpHeaders.Names.CONTENT_LENGTH, response.content().readableBytes());
+		response.headers().set(HttpHeaders.Names.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+
 		KeepAliveWrite.flush(ctx, routed.request(), response);
 	}
 }

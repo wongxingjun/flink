@@ -42,7 +42,7 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
 		if (ctx.getParallelism() > 0) {
 			setParallelism(ctx.getParallelism());
 		} else {
-			setParallelism(GlobalConfiguration.getInteger(
+			setParallelism(GlobalConfiguration.loadConfiguration().getInteger(
 					ConfigConstants.DEFAULT_PARALLELISM_KEY,
 					ConfigConstants.DEFAULT_PARALLELISM));
 		}
@@ -65,7 +65,7 @@ public class StreamContextEnvironment extends StreamExecutionEnvironment {
 		} else {
 			return ctx
 				.getClient()
-				.run(streamGraph, ctx.getJars(), ctx.getClasspaths(), ctx.getUserCodeClassLoader(), ctx.getSavepointPath())
+				.run(streamGraph, ctx.getJars(), ctx.getClasspaths(), ctx.getUserCodeClassLoader(), ctx.getSavepointRestoreSettings())
 				.getJobExecutionResult();
 		}
 	}

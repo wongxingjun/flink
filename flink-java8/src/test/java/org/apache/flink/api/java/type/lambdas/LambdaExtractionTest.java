@@ -18,6 +18,8 @@
 
 package org.apache.flink.api.java.type.lambdas;
 
+import org.apache.flink.api.java.typeutils.TypeExtractionUtils;
+import static org.apache.flink.api.java.typeutils.TypeExtractionUtils.checkAndExtractLambda;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
@@ -33,7 +35,6 @@ import org.apache.flink.api.common.functions.JoinFunction;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.MapPartitionFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.common.functions.util.FunctionUtils;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
@@ -70,14 +71,18 @@ public class LambdaExtractionTest {
 				}
 			};
 
-			MapFunction<String, Integer> lambda = Integer::parseInt;
+			MapFunction<String, Integer> staticLambda = Integer::parseInt;
+			MapFunction<Integer, String> instanceLambda = Object::toString;
+			MapFunction<String, Integer> constructorLambda = Integer::new;
 
-			assertNull(FunctionUtils.checkAndExtractLambdaMethod(anonymousFromInterface));
-			assertNull(FunctionUtils.checkAndExtractLambdaMethod(anonymousFromClass));
-			assertNull(FunctionUtils.checkAndExtractLambdaMethod(fromProperClass));
-			assertNull(FunctionUtils.checkAndExtractLambdaMethod(fromDerived));
-			assertNotNull(FunctionUtils.checkAndExtractLambdaMethod(lambda));
-			assertNotNull(FunctionUtils.checkAndExtractLambdaMethod(STATIC_LAMBDA));
+			assertNull(checkAndExtractLambda(anonymousFromInterface));
+			assertNull(checkAndExtractLambda(anonymousFromClass));
+			assertNull(checkAndExtractLambda(fromProperClass));
+			assertNull(checkAndExtractLambda(fromDerived));
+			assertNotNull(checkAndExtractLambda(staticLambda));
+			assertNotNull(checkAndExtractLambda(instanceLambda));
+			assertNotNull(checkAndExtractLambda(constructorLambda));
+			assertNotNull(checkAndExtractLambda(STATIC_LAMBDA));
 		}
 		catch (Exception e) {
 			e.printStackTrace();
@@ -246,6 +251,54 @@ public class LambdaExtractionTest {
 		MapFunction<Tuple1, Tuple1> f = (i) -> null;
 		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(f, TypeInfoParser.parse("Tuple1<String>"), null, true);
 		Assert.assertTrue(ti instanceof MissingTypeInfo);
+	}
+
+	public static class MyType {
+		private int key;
+
+		public int getKey() {
+			return key;
+		}
+
+		public void setKey(int key) {
+			this.key = key;
+		}
+
+		protected int getKey2() {
+			return 0;
+		}
+	}
+
+	@Test
+	public void testInstanceMethodRefSameType() {
+		MapFunction<MyType, Integer> f = MyType::getKey;
+		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(f, TypeExtractor.createTypeInfo(MyType.class));
+		Assert.assertEquals(BasicTypeInfo.INT_TYPE_INFO, ti);
+	}
+
+	@Test
+	public void testInstanceMethodRefSuperType() {
+		MapFunction<Integer, String> f = Object::toString;
+		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(f, BasicTypeInfo.INT_TYPE_INFO);
+		Assert.assertEquals(BasicTypeInfo.STRING_TYPE_INFO, ti);
+	}
+
+	public static class MySubtype extends MyType {
+		public boolean test;
+	}
+
+	@Test
+	public void testInstanceMethodRefSuperTypeProtected() {
+		MapFunction<MySubtype, Integer> f = MyType::getKey2;
+		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(f, TypeExtractor.createTypeInfo(MySubtype.class));
+		Assert.assertEquals(BasicTypeInfo.INT_TYPE_INFO, ti);
+	}
+
+	@Test
+	public void testConstructorMethodRef() {
+		MapFunction<String, Integer> f = Integer::new;
+		TypeInformation<?> ti = TypeExtractor.getMapReturnTypes(f, BasicTypeInfo.STRING_TYPE_INFO);
+		Assert.assertEquals(BasicTypeInfo.INT_TYPE_INFO, ti);
 	}
 
 }

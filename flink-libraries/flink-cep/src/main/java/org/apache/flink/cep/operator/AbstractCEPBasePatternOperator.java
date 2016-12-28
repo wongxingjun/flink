@@ -20,6 +20,7 @@ package org.apache.flink.cep.operator;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.cep.nfa.NFA;
+import org.apache.flink.streaming.api.operators.StreamCheckpointedOperator;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
@@ -36,7 +37,7 @@ import java.util.PriorityQueue;
  */
 public abstract class AbstractCEPBasePatternOperator<IN, OUT>
 	extends AbstractStreamOperator<OUT>
-	implements OneInputStreamOperator<IN, OUT> {
+	implements OneInputStreamOperator<IN, OUT>, StreamCheckpointedOperator {
 
 	private static final long serialVersionUID = -4166778210774160757L;
 
@@ -58,7 +59,11 @@ public abstract class AbstractCEPBasePatternOperator<IN, OUT>
 
 	protected abstract NFA<IN> getNFA() throws IOException;
 
+	protected abstract void updateNFA(NFA<IN> nfa) throws IOException;
+
 	protected abstract PriorityQueue<StreamRecord<IN>> getPriorityQueue() throws IOException;
+
+	protected abstract void updatePriorityQueue(PriorityQueue<StreamRecord<IN>> queue) throws IOException;
 
 	@Override
 	public void processElement(StreamRecord<IN> element) throws Exception {
@@ -66,6 +71,7 @@ public abstract class AbstractCEPBasePatternOperator<IN, OUT>
 			// there can be no out of order elements in processing time
 			NFA<IN> nfa = getNFA();
 			processEvent(nfa, element.getValue(), System.currentTimeMillis());
+			updateNFA(nfa);
 		} else {
 			PriorityQueue<StreamRecord<IN>> priorityQueue = getPriorityQueue();
 
@@ -77,6 +83,7 @@ public abstract class AbstractCEPBasePatternOperator<IN, OUT>
 			} else {
 				priorityQueue.offer(element);
 			}
+			updatePriorityQueue(priorityQueue);
 		}
 	}
 
@@ -89,4 +96,13 @@ public abstract class AbstractCEPBasePatternOperator<IN, OUT>
 	 * @param timestamp The timestamp of the event
 	 */
 	protected abstract void processEvent(NFA<IN> nfa, IN event, long timestamp);
+
+	/**
+	 * Advances the time for the given NFA to the given timestamp. This can lead to pruning and
+	 * timeouts.
+	 *
+	 * @param nfa to advance the time for
+	 * @param timestamp to advance the time to
+	 */
+	protected abstract void advanceTime(NFA<IN> nfa, long timestamp);
 }

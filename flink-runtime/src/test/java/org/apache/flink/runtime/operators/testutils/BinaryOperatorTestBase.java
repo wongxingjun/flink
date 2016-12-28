@@ -32,12 +32,14 @@ import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.disk.iomanager.IOManagerAsync;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.metrics.groups.OperatorMetricGroup;
 import org.apache.flink.runtime.operators.Driver;
 import org.apache.flink.runtime.operators.ResettableDriver;
 import org.apache.flink.runtime.operators.TaskContext;
 import org.apache.flink.runtime.operators.sort.UnilateralSortMerger;
 import org.apache.flink.runtime.operators.util.TaskConfig;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
+import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.MutableObjectIterator;
 import org.apache.flink.util.TestLogger;
@@ -110,8 +112,7 @@ public class BinaryOperatorTestBase<S extends Function, IN, OUT> extends TestLog
 		this.owner = new DummyInvokable();
 		this.taskConfig = new TaskConfig(new Configuration());
 		this.executionConfig = executionConfig;
-		this.taskManageInfo = new TaskManagerRuntimeInfo(
-				"localhost", new Configuration(), System.getProperty("java.io.tmpdir"));
+		this.taskManageInfo = new TestingTaskManagerRuntimeInfo();
 	}
 	
 	@Parameterized.Parameters
@@ -361,7 +362,7 @@ public class BinaryOperatorTestBase<S extends Function, IN, OUT> extends TestLog
 	}
 	
 	@Override
-	public AbstractInvokable getOwningNepheleTask() {
+	public AbstractInvokable getContainingTask() {
 		return this.owner;
 	}
 	
@@ -371,8 +372,8 @@ public class BinaryOperatorTestBase<S extends Function, IN, OUT> extends TestLog
 	}
 	
 	@Override
-	public MetricGroup getMetricGroup() {
-		return new UnregisteredMetricsGroup();
+	public OperatorMetricGroup getMetricGroup() {
+		return new UnregisteredTaskMetricsGroup.DummyOperatorMetricGroup();
 	}
 
 	// --------------------------------------------------------------------------------------------

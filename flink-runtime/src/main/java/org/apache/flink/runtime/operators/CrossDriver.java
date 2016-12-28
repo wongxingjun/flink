@@ -57,7 +57,7 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 	
 	private BlockResettableMutableObjectIterator<?> blockIter;
 	
-	private int  memPagesForBlockSide;
+	private int memPagesForBlockSide;
 	
 	private int memPagesForSpillingSide;
 
@@ -198,8 +198,8 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 					"First input is outer (blocking) side, second input is inner (spilling) side."));
 		}
 
-		final Counter numRecordsIn = taskContext.getMetricGroup().counter("numRecordsIn");
-		final Counter numRecordsOut = taskContext.getMetricGroup().counter("numRecordsOut");
+		final Counter numRecordsIn = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsInCounter();
+		final Counter numRecordsOut = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter();
 
 		final MutableObjectIterator<T1> in1 = new CountingMutableObjectIterator<>(this.taskContext.<T1>getInput(0), numRecordsIn);
 		final MutableObjectIterator<T2> in2 = new CountingMutableObjectIterator<>(this.taskContext.<T2>getInput(1), numRecordsIn);
@@ -209,12 +209,12 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 		
 		final BlockResettableMutableObjectIterator<T1> blockVals = 
 				new BlockResettableMutableObjectIterator<T1>(this.memManager, in1, serializer1, this.memPagesForBlockSide,
-							this.taskContext.getOwningNepheleTask());
+							this.taskContext.getContainingTask());
 		this.blockIter = blockVals;
 		
 		final SpillingResettableMutableObjectIterator<T2> spillVals = new SpillingResettableMutableObjectIterator<T2>(
 				in2, serializer2, this.memManager, this.taskContext.getIOManager(), this.memPagesForSpillingSide,
-				this.taskContext.getOwningNepheleTask());
+				this.taskContext.getContainingTask());
 		this.spillIter = spillVals;
 		
 
@@ -266,8 +266,8 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 					"First input is inner (spilling) side, second input is outer (blocking) side."));
 		}
 
-		final Counter numRecordsIn = taskContext.getMetricGroup().counter("numRecordsIn");
-		final Counter numRecordsOut = taskContext.getMetricGroup().counter("numRecordsOut");
+		final Counter numRecordsIn = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsInCounter();
+		final Counter numRecordsOut = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter();
 
 		final MutableObjectIterator<T1> in1 = new CountingMutableObjectIterator<>(this.taskContext.<T1>getInput(0), numRecordsIn);
 		final MutableObjectIterator<T2> in2 = new CountingMutableObjectIterator<>(this.taskContext.<T2>getInput(1), numRecordsIn);
@@ -277,12 +277,12 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 		
 		final SpillingResettableMutableObjectIterator<T1> spillVals = new SpillingResettableMutableObjectIterator<T1>(
 				in1, serializer1, this.memManager, this.taskContext.getIOManager(), this.memPagesForSpillingSide,
-				this.taskContext.getOwningNepheleTask());
+				this.taskContext.getContainingTask());
 		this.spillIter = spillVals;
 		
 		final BlockResettableMutableObjectIterator<T2> blockVals = 
 				new BlockResettableMutableObjectIterator<T2>(this.memManager, in2, serializer2, this.memPagesForBlockSide,
-						this.taskContext.getOwningNepheleTask());
+						this.taskContext.getContainingTask());
 		this.blockIter = blockVals;
 		
 		final CrossFunction<T1, T2, OT> crosser = this.taskContext.getStub();
@@ -332,8 +332,8 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 					"First input is outer side, second input is inner (spilling) side."));
 		}
 
-		final Counter numRecordsIn = taskContext.getMetricGroup().counter("numRecordsIn");
-		final Counter numRecordsOut = taskContext.getMetricGroup().counter("numRecordsOut");
+		final Counter numRecordsIn = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsInCounter();
+		final Counter numRecordsOut = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter();
 
 		final MutableObjectIterator<T1> in1 = new CountingMutableObjectIterator<>(this.taskContext.<T1>getInput(0), numRecordsIn);
 		final MutableObjectIterator<T2> in2 = new CountingMutableObjectIterator<>(this.taskContext.<T2>getInput(1), numRecordsIn);
@@ -343,7 +343,7 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 		
 		final SpillingResettableMutableObjectIterator<T2> spillVals = new SpillingResettableMutableObjectIterator<T2>(
 				in2, serializer2, this.memManager, this.taskContext.getIOManager(), this.memPagesForSpillingSide,
-				this.taskContext.getOwningNepheleTask());
+				this.taskContext.getContainingTask());
 		this.spillIter = spillVals;
 		
 		final CrossFunction<T1, T2, OT> crosser = this.taskContext.getStub();
@@ -385,8 +385,8 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 					"First input is inner (spilling) side, second input is outer side."));
 		}
 
-		final Counter numRecordsIn = taskContext.getMetricGroup().counter("numRecordsIn");
-		final Counter numRecordsOut = taskContext.getMetricGroup().counter("numRecordsOut");
+		final Counter numRecordsIn = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsInCounter();
+		final Counter numRecordsOut = taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter();
 
 		final MutableObjectIterator<T1> in1 = new CountingMutableObjectIterator<>(this.taskContext.<T1>getInput(0), numRecordsIn);
 		final MutableObjectIterator<T2> in2 = new CountingMutableObjectIterator<>(this.taskContext.<T2>getInput(1), numRecordsIn);
@@ -396,7 +396,7 @@ public class CrossDriver<T1, T2, OT> implements Driver<CrossFunction<T1, T2, OT>
 		
 		final SpillingResettableMutableObjectIterator<T1> spillVals = new SpillingResettableMutableObjectIterator<T1>(
 				in1, serializer1, this.memManager, this.taskContext.getIOManager(), this.memPagesForSpillingSide,
-				this.taskContext.getOwningNepheleTask());
+				this.taskContext.getContainingTask());
 		this.spillIter = spillVals;
 
 		final CrossFunction<T1, T2, OT> crosser = this.taskContext.getStub();

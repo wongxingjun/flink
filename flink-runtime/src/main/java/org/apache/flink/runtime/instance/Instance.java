@@ -28,14 +28,22 @@ import java.util.Set;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotAvailabilityListener;
+import org.apache.flink.runtime.jobmanager.slots.SlotOwner;
+import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
+import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
+
+import org.apache.flink.util.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
  * An instance represents a {@link org.apache.flink.runtime.taskmanager.TaskManager}
  * registered at a JobManager and ready to receive work.
  */
-public class Instance {
+public class Instance implements SlotOwner {
 
 	private final static Logger LOG = LoggerFactory.getLogger(Instance.class);
 
@@ -43,16 +51,13 @@ public class Instance {
 	private final Object instanceLock = new Object();
 
 	/** The instance gateway to communicate with the instance */
-	private final ActorGateway actorGateway;
+	private final TaskManagerGateway taskManagerGateway;
 
 	/** The instance connection information for the data transfer. */
-	private final InstanceConnectionInfo connectionInfo;
+	private final TaskManagerLocation location;
 
 	/** A description of the resources of the task manager */
 	private final HardwareDescription resources;
-
-	/** The ID identifies the resource the task manager runs on */
-	private final ResourceID resourceId;
 
 	/** The ID identifying the taskManager. */
 	private final InstanceID instanceId;
@@ -72,8 +77,6 @@ public class Instance {
 	/** Time when last heat beat has been received from the task manager running on this taskManager. */
 	private volatile long lastReceivedHeartBeat = System.currentTimeMillis();
 
-	private byte[] lastMetricsReport;
-
 	/** Flag marking the instance as alive or as dead. */
 	private volatile boolean isDead;
 
@@ -83,28 +86,25 @@ public class Instance {
 	/**
 	 * Constructs an instance reflecting a registered TaskManager.
 	 *
-	 * @param actorGateway The actor gateway to communicate with the remote instance
-	 * @param connectionInfo The remote connection where the task manager receives requests.
-	 * @param resourceId The resource id which denotes the resource the task manager uses.
+	 * @param taskManagerGateway The actor gateway to communicate with the remote instance
+	 * @param location The remote connection where the task manager receives requests.
 	 * @param id The id under which the taskManager is registered.
 	 * @param resources The resources available on the machine.
 	 * @param numberOfSlots The number of task slots offered by this taskManager.
 	 */
 	public Instance(
-			ActorGateway actorGateway,
-			InstanceConnectionInfo connectionInfo,
-			ResourceID resourceId,
+			TaskManagerGateway taskManagerGateway,
+			TaskManagerLocation location,
 			InstanceID id,
 			HardwareDescription resources,
 			int numberOfSlots) {
-		this.actorGateway = actorGateway;
-		this.connectionInfo = connectionInfo;
-		this.resourceId = resourceId;
-		this.instanceId = id;
-		this.resources = resources;
+		this.taskManagerGateway = Preconditions.checkNotNull(taskManagerGateway);
+		this.location = Preconditions.checkNotNull(location);
+		this.instanceId = Preconditions.checkNotNull(id);
+		this.resources = Preconditions.checkNotNull(resources);
 		this.numberOfSlots = numberOfSlots;
 
-		this.availableSlots = new ArrayDeque<Integer>(numberOfSlots);
+		this.availableSlots = new ArrayDeque<>(numberOfSlots);
 		for (int i = 0; i < numberOfSlots; i++) {
 			this.availableSlots.add(i);
 		}
@@ -114,8 +114,8 @@ public class Instance {
 	// Properties
 	// --------------------------------------------------------------------------------------------
 
-	public ResourceID getResourceId() {
-		return resourceId;
+	public ResourceID getTaskManagerID() {
+		return location.getResourceID();
 	}
 
 	public InstanceID getId() {
@@ -189,14 +189,6 @@ public class Instance {
 		this.lastReceivedHeartBeat = System.currentTimeMillis();
 	}
 
-	public void setMetricsReport(byte[] lastMetricsReport) {
-		this.lastMetricsReport = lastMetricsReport;
-	}
-
-	public byte[] getLastMetricsReport() {
-		return lastMetricsReport;
-	}
-
 	/**
 	 * Checks whether the last heartbeat occurred within the last {@code n} milliseconds
 	 * before the given timestamp {@code now}.
@@ -240,7 +232,7 @@ public class Instance {
 				return null;
 			}
 			else {
-				SimpleSlot slot = new SimpleSlot(jobID, this, nextSlot);
+				SimpleSlot slot = new SimpleSlot(jobID, this, location, nextSlot, taskManagerGateway);
 				allocatedSlots.add(slot);
 				return slot;
 			}
@@ -277,7 +269,8 @@ public class Instance {
 				return null;
 			}
 			else {
-				SharedSlot slot = new SharedSlot(jobID, this, nextSlot, sharingGroupAssignment);
+				SharedSlot slot = new SharedSlot(
+						jobID, this, location, nextSlot, taskManagerGateway, sharingGroupAssignment);
 				allocatedSlots.add(slot);
 				return slot;
 			}
@@ -294,13 +287,11 @@ public class Instance {
 	 * @param slot The slot to return.
 	 * @return True, if the slot was returned, false if not.
 	 */
+	@Override
 	public boolean returnAllocatedSlot(Slot slot) {
-		if (slot == null || slot.getInstance() != this) {
-			throw new IllegalArgumentException("Slot is null or belongs to the wrong TaskManager.");
-		}
-		if (slot.isAlive()) {
-			throw new IllegalArgumentException("Slot is still alive");
-		}
+		checkNotNull(slot);
+		checkArgument(!slot.isAlive(), "slot is still alive");
+		checkArgument(slot.getOwner() == this, "slot belongs to the wrong TaskManager.");
 
 		if (slot.markReleased()) {
 			LOG.debug("Return allocated slot {}.", slot);
@@ -346,12 +337,12 @@ public class Instance {
 	 *
 	 * @return InstanceGateway associated with this instance
 	 */
-	public ActorGateway getActorGateway() {
-		return actorGateway;
+	public TaskManagerGateway getTaskManagerGateway() {
+		return taskManagerGateway;
 	}
 
-	public InstanceConnectionInfo getInstanceConnectionInfo() {
-		return connectionInfo;
+	public TaskManagerLocation getTaskManagerLocation() {
+		return location;
 	}
 
 	public int getNumberOfAvailableSlots() {
@@ -400,7 +391,7 @@ public class Instance {
 
 	@Override
 	public String toString() {
-		return String.format("%s @ %s - %d slots - URL: %s", instanceId, connectionInfo.getHostname(),
-				numberOfSlots, (actorGateway != null ? actorGateway.path() : "No instance gateway"));
+		return String.format("%s @ %s - %d slots - URL: %s", instanceId, location.getHostname(),
+				numberOfSlots, (taskManagerGateway != null ? taskManagerGateway.getAddress() : "No instance gateway"));
 	}
 }

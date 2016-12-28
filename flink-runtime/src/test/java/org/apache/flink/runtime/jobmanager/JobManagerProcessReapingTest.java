@@ -29,6 +29,7 @@ import akka.actor.PoisonPill;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
+import org.apache.flink.util.NetUtils;
 import org.junit.Test;
 
 import org.apache.flink.configuration.Configuration;
@@ -40,7 +41,6 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringWriter;
-import java.net.InetSocketAddress;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -118,7 +118,8 @@ public class JobManagerProcessReapingTest {
 			if (jobManagerPort != -1) {
 				try {
 					jobManagerRef = JobManager.getJobManagerActorRef(
-						new InetSocketAddress("localhost", jobManagerPort),
+						"akka.tcp",
+						NetUtils.unresolvedHostAndPortToNormalizedString("localhost", jobManagerPort),
 						localSystem, new FiniteDuration(25, TimeUnit.SECONDS));
 				} catch (Throwable t) {
 					// job manager probably not ready yet

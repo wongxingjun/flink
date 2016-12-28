@@ -27,6 +27,8 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.api.common.JobID;
 
+import org.apache.flink.runtime.jobmanager.slots.ActorTaskManagerGateway;
+import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 import org.junit.Test;
 
 import org.mockito.Matchers;
@@ -143,12 +145,18 @@ public class SimpleSlotTest {
 	}
 
 	public static SimpleSlot getSlot() throws Exception {
+		ResourceID resourceID = ResourceID.generate();
 		HardwareDescription hardwareDescription = new HardwareDescription(4, 2L*1024*1024*1024, 1024*1024*1024, 512*1024*1024);
 		InetAddress address = InetAddress.getByName("127.0.0.1");
-		InstanceConnectionInfo connection = new InstanceConnectionInfo(address, 10001);
+		TaskManagerLocation connection = new TaskManagerLocation(resourceID, address, 10001);
 
-		Instance instance = new Instance(DummyActorGateway.INSTANCE, connection,
-			ResourceID.generate(), new InstanceID(), hardwareDescription, 1);
+		Instance instance = new Instance(
+			new ActorTaskManagerGateway(DummyActorGateway.INSTANCE),
+			connection,
+			new InstanceID(),
+			hardwareDescription,
+			1);
+
 		return instance.allocateSimpleSlot(new JobID());
 	}
 }

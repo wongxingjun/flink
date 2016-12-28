@@ -18,9 +18,8 @@
 
 package org.apache.flink.streaming.api.windowing.triggers;
 
-import com.google.common.annotations.VisibleForTesting;
-
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.state.ReducingState;
 import org.apache.flink.api.common.state.ReducingStateDescriptor;
@@ -98,10 +97,9 @@ public class ContinuousProcessingTimeTrigger<W extends Window> extends Trigger<O
 	}
 
 	@Override
-	public TriggerResult onMerge(W window,
+	public void onMerge(W window,
 			OnMergeContext ctx) {
 		ctx.mergePartitionedState(stateDesc);
-		return TriggerResult.CONTINUE;
 	}
 
 	@VisibleForTesting

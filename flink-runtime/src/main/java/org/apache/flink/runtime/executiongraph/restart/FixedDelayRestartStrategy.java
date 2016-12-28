@@ -20,24 +20,16 @@ package org.apache.flink.runtime.executiongraph.restart;
 
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.concurrent.impl.FlinkFuture;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.util.Preconditions;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import scala.concurrent.duration.Duration;
-
-import java.util.concurrent.Callable;
-
-import static akka.dispatch.Futures.future;
 
 /**
  * Restart strategy which tries to restart the given {@link ExecutionGraph} a fixed number of times
  * with a fixed time delay in between.
  */
 public class FixedDelayRestartStrategy implements RestartStrategy {
-	private static final Logger LOG = LoggerFactory.getLogger(FixedDelayRestartStrategy.class);
-
-
 	private final int maxNumberRestartAttempts;
 	private final long delayBetweenRestartAttempts;
 	private int currentRestartAttempt;
@@ -66,21 +58,7 @@ public class FixedDelayRestartStrategy implements RestartStrategy {
 	@Override
 	public void restart(final ExecutionGraph executionGraph) {
 		currentRestartAttempt++;
-
-		future(new Callable<Object>() {
-			@Override
-			public Object call() throws Exception {
-				try {
-					LOG.info("Delaying retry of job execution for {} ms ...", delayBetweenRestartAttempts);
-					// do the delay
-					Thread.sleep(delayBetweenRestartAttempts);
-				} catch(InterruptedException e) {
-					// should only happen on shutdown
-				}
-				executionGraph.restart();
-				return null;
-			}
-		}, executionGraph.getExecutionContext());
+		FlinkFuture.supplyAsync(ExecutionGraphRestarter.restartWithDelay(executionGraph, delayBetweenRestartAttempts), executionGraph.getFutureExecutor());
 	}
 
 	/**
@@ -109,12 +87,12 @@ public class FixedDelayRestartStrategy implements RestartStrategy {
 		} catch (NumberFormatException nfe) {
 			if (delayString.equals(timeoutString)) {
 				throw new Exception("Invalid config value for " +
-					ConfigConstants.AKKA_WATCH_HEARTBEAT_PAUSE + ": " + timeoutString +
-					". Value must be a valid duration (such as '10 s' or '1 min')");
+						ConfigConstants.AKKA_WATCH_HEARTBEAT_PAUSE + ": " + timeoutString +
+						". Value must be a valid duration (such as '10 s' or '1 min')");
 			} else {
 				throw new Exception("Invalid config value for " +
-					ConfigConstants.EXECUTION_RETRY_DELAY_KEY + ": " + delayString +
-					". Value must be a valid duration (such as '100 milli' or '10 s')");
+						ConfigConstants.RESTART_STRATEGY_FIXED_DELAY_DELAY + ": " + delayString +
+						". Value must be a valid duration (such as '100 milli' or '10 s')");
 			}
 		}
 

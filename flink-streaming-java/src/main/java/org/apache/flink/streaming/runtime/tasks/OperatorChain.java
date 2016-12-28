@@ -17,37 +17,40 @@
 
 package org.apache.flink.streaming.runtime.tasks;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.metrics.Counter;
-import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.execution.Environment;
+import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
+import org.apache.flink.runtime.metrics.groups.OperatorMetricGroup;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
 import org.apache.flink.streaming.api.collector.selector.CopyingDirectedOutput;
 import org.apache.flink.streaming.api.collector.selector.DirectedOutput;
 import org.apache.flink.streaming.api.collector.selector.OutputSelector;
-import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.graph.StreamEdge;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.StreamOperator;
+import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
 import org.apache.flink.streaming.runtime.io.StreamRecordWriter;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
+import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-
+import org.apache.flink.util.XORShiftRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
 
 /**
  * The {@code OperatorChain} contains all operators that are executed as one chain within a single
@@ -57,24 +60,24 @@ import org.slf4j.LoggerFactory;
  *              head operator.
  */
 @Internal
-public class OperatorChain<OUT> {
+public class OperatorChain<OUT, OP extends StreamOperator<OUT>> {
 	
 	private static final Logger LOG = LoggerFactory.getLogger(OperatorChain.class);
 	
 	private final StreamOperator<?>[] allOperators;
-	
+
 	private final RecordWriterOutput<?>[] streamOutputs;
 	
 	private final Output<StreamRecord<OUT>> chainEntryPoint;
-	
 
-	public OperatorChain(StreamTask<OUT, ?> containingTask,
-							StreamOperator<OUT> headOperator,
-							AccumulatorRegistry.Reporter reporter) {
+	private final OP headOperator;
+
+	public OperatorChain(StreamTask<OUT, OP> containingTask) {
 		
 		final ClassLoader userCodeClassloader = containingTask.getUserCodeClassLoader();
 		final StreamConfig configuration = containingTask.getConfiguration();
-		final boolean enableTimestamps = containingTask.isSerializingTimestamps();
+
+		headOperator = configuration.getStreamOperator(userCodeClassloader);
 
 		// we read the chained configs, and the order of record writer registrations by output name
 		Map<Integer, StreamConfig> chainedConfigs = configuration.getTransitiveChainedTaskConfigs(userCodeClassloader);
@@ -91,10 +94,9 @@ public class OperatorChain<OUT> {
 		try {
 			for (int i = 0; i < outEdgesInOrder.size(); i++) {
 				StreamEdge outEdge = outEdgesInOrder.get(i);
-				
 				RecordWriterOutput<?> streamOutput = createStreamOutput(
 						outEdge, chainedConfigs.get(outEdge.getSourceId()), i,
-						containingTask.getEnvironment(), enableTimestamps, reporter, containingTask.getName());
+						containingTask.getEnvironment(), containingTask.getName());
 	
 				this.streamOutputs[i] = streamOutput;
 				streamOutputMap.put(outEdge, streamOutput);
@@ -104,11 +106,15 @@ public class OperatorChain<OUT> {
 			List<StreamOperator<?>> allOps = new ArrayList<>(chainedConfigs.size());
 			this.chainEntryPoint = createOutputCollector(containingTask, configuration,
 					chainedConfigs, userCodeClassloader, streamOutputMap, allOps);
-			
-			this.allOperators = allOps.toArray(new StreamOperator<?>[allOps.size() + 1]);
-			
-			// add the head operator to the end of the list
-			this.allOperators[this.allOperators.length - 1] = headOperator;
+
+			if (headOperator != null) {
+				headOperator.setup(containingTask, configuration, getChainEntryPoint());
+			}
+
+			// add head operator to end of chain
+			allOps.add(headOperator);
+
+			this.allOperators = allOps.toArray(new StreamOperator<?>[allOps.size()]);
 			
 			success = true;
 		}
@@ -126,15 +132,32 @@ public class OperatorChain<OUT> {
 		}
 		
 	}
-	
-	
-	public void broadcastCheckpointBarrier(long id, long timestamp) throws IOException, InterruptedException {
-		CheckpointBarrier barrier = new CheckpointBarrier(id, timestamp);
-		for (RecordWriterOutput<?> streamOutput : streamOutputs) {
-			streamOutput.broadcastEvent(barrier);
+
+
+	public void broadcastCheckpointBarrier(long id, long timestamp) throws IOException {
+		try {
+			CheckpointBarrier barrier = new CheckpointBarrier(id, timestamp);
+			for (RecordWriterOutput<?> streamOutput : streamOutputs) {
+				streamOutput.broadcastEvent(barrier);
+			}
+		}
+		catch (InterruptedException e) {
+			throw new IOException("Interrupted while broadcasting checkpoint barrier");
 		}
 	}
-	
+
+	public void broadcastCheckpointCancelMarker(long id) throws IOException {
+		try {
+			CancelCheckpointMarker barrier = new CancelCheckpointMarker(id);
+			for (RecordWriterOutput<?> streamOutput : streamOutputs) {
+				streamOutput.broadcastEvent(barrier);
+			}
+		}
+		catch (InterruptedException e) {
+			throw new IOException("Interrupted while broadcasting checkpoint cancellation");
+		}
+	}
+
 	public RecordWriterOutput<?>[] getStreamOutputs() {
 		return streamOutputs;
 	}
@@ -181,7 +204,15 @@ public class OperatorChain<OUT> {
 			}
 		}
 	}
-	
+
+	public OP getHeadOperator() {
+		return headOperator;
+	}
+
+	public int getChainLength() {
+		return allOperators == null ? 0 : allOperators.length;
+	}
+
 	// ------------------------------------------------------------------------
 	//  initialization utilities
 	// ------------------------------------------------------------------------
@@ -211,7 +242,6 @@ public class OperatorChain<OUT> {
 
 			Output<StreamRecord<T>> output = createChainedOperator(
 					containingTask, chainedOpConfig, chainedConfigs, userCodeClassloader, streamOutputs, allOperators);
-			
 			allOutputs.add(new Tuple2<>(output, outputEdge));
 		}
 		
@@ -288,8 +318,8 @@ public class OperatorChain<OUT> {
 	
 	private static <T> RecordWriterOutput<T> createStreamOutput(
 			StreamEdge edge, StreamConfig upStreamConfig, int outputIndex,
-			Environment taskEnvironment, boolean withTimestamps,
-			AccumulatorRegistry.Reporter reporter, String taskName)
+			Environment taskEnvironment,
+			String taskName)
 	{
 		TypeSerializer<T> outSerializer = upStreamConfig.getTypeSerializerOut(taskEnvironment.getUserClassLoader());
 
@@ -302,10 +332,9 @@ public class OperatorChain<OUT> {
 
 		StreamRecordWriter<SerializationDelegate<StreamRecord<T>>> output = 
 				new StreamRecordWriter<>(bufferWriter, outputPartitioner, upStreamConfig.getBufferTimeout());
-		output.setReporter(reporter);
 		output.setMetricGroup(taskEnvironment.getMetricGroup().getIOMetricGroup());
 		
-		return new RecordWriterOutput<T>(output, outSerializer, withTimestamps);
+		return new RecordWriterOutput<>(output, outSerializer);
 	}
 	
 	// ------------------------------------------------------------------------
@@ -319,7 +348,7 @@ public class OperatorChain<OUT> {
 
 		public ChainingOutput(OneInputStreamOperator<T, ?> operator) {
 			this.operator = operator;
-			this.numRecordsIn = operator.getMetricGroup().counter("numRecordsIn");
+			this.numRecordsIn = ((OperatorMetricGroup) operator.getMetricGroup()).getIOMetricGroup().getNumRecordsInCounter();
 		}
 
 		@Override
@@ -338,6 +367,16 @@ public class OperatorChain<OUT> {
 		public void emitWatermark(Watermark mark) {
 			try {
 				operator.processWatermark(mark);
+			}
+			catch (Exception e) {
+				throw new ExceptionInChainedOperatorException(e);
+			}
+		}
+
+		@Override
+		public void emitLatencyMarker(LatencyMarker latencyMarker) {
+			try {
+				operator.processLatencyMarker(latencyMarker);
 			}
 			catch (Exception e) {
 				throw new ExceptionInChainedOperatorException(e);
@@ -381,6 +420,8 @@ public class OperatorChain<OUT> {
 	private static class BroadcastingOutputCollector<T> implements Output<StreamRecord<T>> {
 		
 		protected final Output<StreamRecord<T>>[] outputs;
+
+		private final Random RNG = new XORShiftRandom();
 		
 		public BroadcastingOutputCollector(Output<StreamRecord<T>>[] outputs) {
 			this.outputs = outputs;
@@ -390,6 +431,18 @@ public class OperatorChain<OUT> {
 		public void emitWatermark(Watermark mark) {
 			for (Output<StreamRecord<T>> output : outputs) {
 				output.emitWatermark(mark);
+			}
+		}
+
+		@Override
+		public void emitLatencyMarker(LatencyMarker latencyMarker) {
+			if(outputs.length <= 0) {
+				// ignore
+			} else if(outputs.length == 1) {
+				outputs[0].emitLatencyMarker(latencyMarker);
+			} else {
+				// randomly select an output
+				outputs[RNG.nextInt(outputs.length)].emitLatencyMarker(latencyMarker);
 			}
 		}
 

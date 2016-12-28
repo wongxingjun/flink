@@ -1,21 +1,19 @@
 /*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
  *
- *  * Licensed to the Apache Software Foundation (ASF) under one
- *  * or more contributor license agreements.  See the NOTICE file
- *  * distributed with this work for additional information
- *  * regarding copyright ownership.  The ASF licenses this file
- *  * to you under the Apache License, Version 2.0 (the
- *  * "License"); you may not use this file except in compliance
- *  * with the License.  You may obtain a copy of the License at
- *  *
- *  *     http://www.apache.org/licenses/LICENSE-2.0
- *  *
- *  * Unless required by applicable law or agreed to in writing, software
- *  * distributed under the License is distributed on an "AS IS" BASIS,
- *  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  * See the License for the specific language governing permissions and
- *  * limitations under the License.
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 
 package org.apache.flink.graph.asm.simple.directed;
@@ -24,7 +22,7 @@ import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.graph.Edge;
 import org.apache.flink.graph.Graph;
-import org.apache.flink.graph.utils.proxy.GraphAlgorithmDelegatingGraph;
+import org.apache.flink.graph.utils.proxy.GraphAlgorithmWrappingGraph;
 import org.apache.flink.types.CopyableValue;
 import org.apache.flink.util.Preconditions;
 
@@ -38,7 +36,7 @@ import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
  * @param <EV> edge value type
  */
 public class Simplify<K extends Comparable<K> & CopyableValue<K>, VV, EV>
-extends GraphAlgorithmDelegatingGraph<K, VV, EV, K, VV, EV> {
+extends GraphAlgorithmWrappingGraph<K, VV, EV, K, VV, EV> {
 
 	// Optional configuration
 	private int parallelism = PARALLELISM_DEFAULT;
@@ -64,7 +62,7 @@ extends GraphAlgorithmDelegatingGraph<K, VV, EV, K, VV, EV> {
 	}
 
 	@Override
-	protected boolean mergeConfiguration(GraphAlgorithmDelegatingGraph other) {
+	protected boolean mergeConfiguration(GraphAlgorithmWrappingGraph other) {
 		Preconditions.checkNotNull(other);
 
 		if (! Simplify.class.isAssignableFrom(other.getClass())) {
@@ -73,7 +71,8 @@ extends GraphAlgorithmDelegatingGraph<K, VV, EV, K, VV, EV> {
 
 		Simplify rhs = (Simplify) other;
 
-		parallelism = Math.min(parallelism, rhs.parallelism);
+		parallelism = (parallelism == PARALLELISM_DEFAULT) ? rhs.parallelism :
+			((rhs.parallelism == PARALLELISM_DEFAULT) ? parallelism : Math.min(parallelism, rhs.parallelism));
 
 		return true;
 	}

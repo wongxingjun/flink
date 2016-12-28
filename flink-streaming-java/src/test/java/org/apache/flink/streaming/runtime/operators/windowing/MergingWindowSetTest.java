@@ -17,10 +17,14 @@
  */
 package org.apache.flink.streaming.runtime.operators.windowing;
 
+import com.google.common.collect.Lists;
+import org.apache.flink.api.common.state.ListState;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.junit.Test;
+import org.mockito.Matchers;
 
 import java.util.Collection;
 
@@ -31,6 +35,8 @@ import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.core.Is.is;
 import static org.hamcrest.core.IsNot.not;
 import static org.junit.Assert.*;
+import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.*;
 
 /**
  * Tests for verifying that {@link MergingWindowSet} correctly merges windows in various situations
@@ -40,7 +46,11 @@ public class MergingWindowSetTest {
 
 	@Test
 	public void testIncrementalMerging() throws Exception {
-		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)));
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+
+		MergingWindowSet<TimeWindow> windowSet =
+				new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
 
 		TestingMergeFunction mergeFunction = new TestingMergeFunction();
 
@@ -133,19 +143,17 @@ public class MergingWindowSetTest {
 		// retire the first batch of windows
 		windowSet.retireWindow(new TimeWindow(0, 6));
 
-		try {
-			windowSet.getStateWindow(new TimeWindow(0, 6));
-			fail("Expected exception");
-		} catch (IllegalStateException e) {
-			//ignore
-		}
+		assertTrue(windowSet.getStateWindow(new TimeWindow(0, 6)) == null);
 
 		assertTrue(windowSet.getStateWindow(new TimeWindow(10, 15)).equals(new TimeWindow(11, 14)));
 	}
 
 	@Test
 	public void testLateMerging() throws Exception {
-		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)));
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+
+		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
 
 		TestingMergeFunction mergeFunction = new TestingMergeFunction();
 
@@ -208,6 +216,132 @@ public class MergingWindowSetTest {
 		assertThat(mergeFunction.mergedStateWindows(), not(hasItem(mergeFunction.mergeTarget())));
 
 		assertThat(windowSet.getStateWindow(new TimeWindow(0, 13)), anyOf(is(new TimeWindow(0, 3)), is(new TimeWindow(5, 8)), is(new TimeWindow(10, 13))));
+	}
+
+	/**
+	 * Test merging of a large new window that covers one existing windows.
+	 */
+	@Test
+	public void testMergeLargeWindowCoveringSingleWindow() throws Exception {
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+
+		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
+
+		TestingMergeFunction mergeFunction = new TestingMergeFunction();
+
+		// add an initial small window
+
+		mergeFunction.reset();
+		assertEquals(new TimeWindow(1, 2), windowSet.addWindow(new TimeWindow(1, 2), mergeFunction));
+		assertFalse(mergeFunction.hasMerged());
+		assertEquals(new TimeWindow(1, 2), windowSet.getStateWindow(new TimeWindow(1, 2)));
+
+		// add a new window that completely covers the existing window
+
+		mergeFunction.reset();
+		assertEquals(new TimeWindow(0, 3), windowSet.addWindow(new TimeWindow(0, 3), mergeFunction));
+		assertTrue(mergeFunction.hasMerged());
+		assertEquals(new TimeWindow(1, 2), windowSet.getStateWindow(new TimeWindow(0, 3)));
+	}
+
+	/**
+	 * Test merging of a large new window that covers multiple existing windows.
+	 */
+	@Test
+	public void testMergeLargeWindowCoveringMultipleWindows() throws Exception {
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+
+		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
+
+		TestingMergeFunction mergeFunction = new TestingMergeFunction();
+
+		// add several non-overlapping initial windoww
+
+		mergeFunction.reset();
+		assertEquals(new TimeWindow(1, 3), windowSet.addWindow(new TimeWindow(1, 3), mergeFunction));
+		assertFalse(mergeFunction.hasMerged());
+		assertEquals(new TimeWindow(1, 3), windowSet.getStateWindow(new TimeWindow(1, 3)));
+
+		mergeFunction.reset();
+		assertEquals(new TimeWindow(5, 8), windowSet.addWindow(new TimeWindow(5, 8), mergeFunction));
+		assertFalse(mergeFunction.hasMerged());
+		assertEquals(new TimeWindow(5, 8), windowSet.getStateWindow(new TimeWindow(5, 8)));
+
+		mergeFunction.reset();
+		assertEquals(new TimeWindow(10, 13), windowSet.addWindow(new TimeWindow(10, 13), mergeFunction));
+		assertFalse(mergeFunction.hasMerged());
+		assertEquals(new TimeWindow(10, 13), windowSet.getStateWindow(new TimeWindow(10, 13)));
+
+		// add a new window that completely covers the existing windows
+
+		mergeFunction.reset();
+		assertEquals(new TimeWindow(0, 13), windowSet.addWindow(new TimeWindow(0, 13), mergeFunction));
+		assertTrue(mergeFunction.hasMerged());
+		assertThat(mergeFunction.mergedStateWindows(), anyOf(
+				containsInAnyOrder(new TimeWindow(0, 3), new TimeWindow(5, 8)),
+				containsInAnyOrder(new TimeWindow(0, 3), new TimeWindow(10, 13)),
+				containsInAnyOrder(new TimeWindow(5, 8), new TimeWindow(10, 13))));
+		assertThat(windowSet.getStateWindow(new TimeWindow(0, 13)), anyOf(is(new TimeWindow(1, 3)), is(new TimeWindow(5, 8)), is(new TimeWindow(10, 13))));
+	}
+
+	@Test
+	public void testRestoreFromState() throws Exception {
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+		when(mockState.get()).thenReturn(Lists.newArrayList(
+				new Tuple2<>(new TimeWindow(17, 42), new TimeWindow(42, 17)),
+				new Tuple2<>(new TimeWindow(1, 2), new TimeWindow(3, 4))
+		));
+
+		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
+
+		assertEquals(new TimeWindow(42, 17), windowSet.getStateWindow(new TimeWindow(17, 42)));
+		assertEquals(new TimeWindow(3, 4), windowSet.getStateWindow(new TimeWindow(1, 2)));
+	}
+
+	@Test
+	public void testPersist() throws Exception {
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+
+		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
+
+		TestingMergeFunction mergeFunction = new TestingMergeFunction();
+
+		windowSet.addWindow(new TimeWindow(1, 2), mergeFunction);
+		windowSet.addWindow(new TimeWindow(17, 42), mergeFunction);
+
+		assertEquals(new TimeWindow(1, 2), windowSet.getStateWindow(new TimeWindow(1, 2)));
+		assertEquals(new TimeWindow(17, 42), windowSet.getStateWindow(new TimeWindow(17, 42)));
+
+		windowSet.persist();
+
+		verify(mockState).add(eq(new Tuple2<>(new TimeWindow(1, 2), new TimeWindow(1, 2))));
+		verify(mockState).add(eq(new Tuple2<>(new TimeWindow(17, 42), new TimeWindow(17, 42))));
+
+		verify(mockState, times(2)).add(Matchers.<Tuple2<TimeWindow, TimeWindow>>anyObject());
+	}
+
+	@Test
+	public void testPersistOnlyIfHaveUpdates() throws Exception {
+		@SuppressWarnings("unchecked")
+		ListState<Tuple2<TimeWindow, TimeWindow>> mockState = mock(ListState.class);
+		when(mockState.get()).thenReturn(Lists.newArrayList(
+				new Tuple2<>(new TimeWindow(17, 42), new TimeWindow(42, 17)),
+				new Tuple2<>(new TimeWindow(1, 2), new TimeWindow(3, 4))
+		));
+
+		MergingWindowSet<TimeWindow> windowSet = new MergingWindowSet<>(EventTimeSessionWindows.withGap(Time.milliseconds(3)), mockState);
+
+		assertEquals(new TimeWindow(42, 17), windowSet.getStateWindow(new TimeWindow(17, 42)));
+		assertEquals(new TimeWindow(3, 4), windowSet.getStateWindow(new TimeWindow(1, 2)));
+
+		windowSet.persist();
+
+		verify(mockState, times(0)).add(Matchers.<Tuple2<TimeWindow, TimeWindow>>anyObject());
+
 	}
 
 	private static class TestingMergeFunction implements MergingWindowSet.MergeFunction<TimeWindow> {

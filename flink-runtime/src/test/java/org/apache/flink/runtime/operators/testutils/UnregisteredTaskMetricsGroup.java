@@ -19,15 +19,16 @@
 package org.apache.flink.runtime.operators.testutils;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.Metric;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.metrics.MetricRegistry;
-import org.apache.flink.metrics.groups.IOMetricGroup;
-import org.apache.flink.metrics.groups.TaskManagerJobMetricGroup;
-import org.apache.flink.metrics.groups.TaskManagerMetricGroup;
-import org.apache.flink.metrics.groups.TaskMetricGroup;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
+import org.apache.flink.runtime.metrics.MetricRegistryConfiguration;
+import org.apache.flink.runtime.metrics.groups.OperatorMetricGroup;
+import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
+import org.apache.flink.runtime.metrics.groups.TaskManagerJobMetricGroup;
+import org.apache.flink.runtime.metrics.groups.TaskManagerMetricGroup;
+import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
+import org.apache.flink.runtime.metrics.MetricRegistry;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 
@@ -35,7 +36,7 @@ import java.util.UUID;
 
 public class UnregisteredTaskMetricsGroup extends TaskMetricGroup {
 	
-	private static final MetricRegistry EMPTY_REGISTRY = new MetricRegistry(new Configuration());
+	private static final MetricRegistry EMPTY_REGISTRY = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
 
 	
 	public UnregisteredTaskMetricsGroup() {
@@ -67,18 +68,15 @@ public class UnregisteredTaskMetricsGroup extends TaskMetricGroup {
 		}
 	}
 	
-	public static class DummyIOMetricGroup extends IOMetricGroup {
-		public DummyIOMetricGroup() {
-			super(EMPTY_REGISTRY, new UnregisteredTaskMetricsGroup());
+	public static class DummyTaskIOMetricGroup extends TaskIOMetricGroup {
+		public DummyTaskIOMetricGroup() {
+			super(new UnregisteredTaskMetricsGroup());
 		}
+	}
 
-		@Override
-		protected void addMetric(String name, Metric metric) {
-		}
-
-		@Override
-		public MetricGroup addGroup(String name) {
-			return new UnregisteredMetricsGroup();
+	public static class DummyOperatorMetricGroup extends OperatorMetricGroup {
+		public DummyOperatorMetricGroup() {
+			super(EMPTY_REGISTRY, new UnregisteredTaskMetricsGroup(), "testoperator");
 		}
 	}
 }

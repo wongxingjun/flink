@@ -28,6 +28,7 @@ import scala.concurrent.Await;
 import scala.concurrent.Future;
 
 import java.io.IOException;
+import java.net.URL;
 import java.util.Collections;
 import java.util.List;
 
@@ -41,10 +42,13 @@ public class StandaloneClusterClient extends ClusterClient {
 		super(config);
 	}
 
+	@Override
+	public void waitForClusterToBeReady() {}
+
 
 	@Override
 	public String getWebInterfaceURL() {
-		String host = this.getJobManagerAddressFromConfig().getHostString();
+		String host = this.getJobManagerAddress().getHostString();
 		int port = getFlinkConfiguration().getInteger(ConfigConstants.JOB_MANAGER_WEB_PORT_KEY,
 			ConfigConstants.DEFAULT_JOB_MANAGER_WEB_FRONTEND_PORT);
 		return "http://" +  host + ":" + port;
@@ -75,12 +79,17 @@ public class StandaloneClusterClient extends ClusterClient {
 	@Override
 	public String getClusterIdentifier() {
 		// Avoid blocking here by getting the address from the config without resolving the address
-		return "Standalone cluster with JobManager at " + this.getJobManagerAddressFromConfig();
+		return "Standalone cluster with JobManager at " + this.getJobManagerAddress();
 	}
 
 	@Override
 	public int getMaxSlots() {
 		return -1;
+	}
+
+	@Override
+	public boolean hasUserJarsInClassPath(List<URL> userJarFiles) {
+		return false;
 	}
 
 	@Override

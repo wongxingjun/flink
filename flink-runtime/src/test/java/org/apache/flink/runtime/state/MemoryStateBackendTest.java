@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.state;
 
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.junit.Test;
 
@@ -26,7 +27,10 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.util.HashMap;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * Tests for the {@link org.apache.flink.runtime.state.memory.MemoryStateBackend}.
@@ -37,9 +41,6 @@ public class MemoryStateBackendTest extends StateBackendTestBase<MemoryStateBack
 	protected MemoryStateBackend getStateBackend() throws Exception {
 		return new MemoryStateBackend();
 	}
-
-	@Override
-	protected void cleanup() throws Exception { }
 
 	// disable these because the verification does not work for this state backend
 	@Override
@@ -55,37 +56,26 @@ public class MemoryStateBackendTest extends StateBackendTestBase<MemoryStateBack
 	public void testReducingStateRestoreWithWrongSerializers() {}
 
 	@Test
-	public void testSerializableState() {
-		try {
-			MemoryStateBackend backend = new MemoryStateBackend();
-
-			HashMap<String, Integer> state = new HashMap<>();
-			state.put("hey there", 2);
-			state.put("the crazy brown fox stumbles over a sentence that does not contain every letter", 77);
-
-			StateHandle<HashMap<String, Integer>> handle = backend.checkpointStateSerializable(state, 12, 459);
-			assertNotNull(handle);
-
-			HashMap<String, Integer> restored = handle.getState(getClass().getClassLoader());
-			assertEquals(state, restored);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
-
-	@Test
 	public void testOversizedState() {
 		try {
 			MemoryStateBackend backend = new MemoryStateBackend(10);
+			CheckpointStreamFactory streamFactory = backend.createStreamFactory(new JobID(), "test_op");
 
 			HashMap<String, Integer> state = new HashMap<>();
 			state.put("hey there", 2);
 			state.put("the crazy brown fox stumbles over a sentence that does not contain every letter", 77);
 
 			try {
-				backend.checkpointStateSerializable(state, 12, 459);
+				CheckpointStreamFactory.CheckpointStateOutputStream outStream =
+						streamFactory.createCheckpointStateOutputStream(12, 459);
+
+				ObjectOutputStream oos = new ObjectOutputStream(outStream);
+				oos.writeObject(state);
+
+				oos.flush();
+
+				outStream.closeAndGetHandle();
+
 				fail("this should cause an exception");
 			}
 			catch (IOException e) {
@@ -102,12 +92,13 @@ public class MemoryStateBackendTest extends StateBackendTestBase<MemoryStateBack
 	public void testStateStream() {
 		try {
 			MemoryStateBackend backend = new MemoryStateBackend();
+			CheckpointStreamFactory streamFactory = backend.createStreamFactory(new JobID(), "test_op");
 
 			HashMap<String, Integer> state = new HashMap<>();
 			state.put("hey there", 2);
 			state.put("the crazy brown fox stumbles over a sentence that does not contain every letter", 77);
 
-			AbstractStateBackend.CheckpointStateOutputStream os = backend.createCheckpointStateOutputStream(1, 2);
+			CheckpointStreamFactory.CheckpointStateOutputStream os = streamFactory.createCheckpointStateOutputStream(1, 2);
 			ObjectOutputStream oos = new ObjectOutputStream(os);
 			oos.writeObject(state);
 			oos.flush();
@@ -115,10 +106,10 @@ public class MemoryStateBackendTest extends StateBackendTestBase<MemoryStateBack
 
 			assertNotNull(handle);
 
-			ObjectInputStream ois = new ObjectInputStream(handle.getState(getClass().getClassLoader()));
-			assertEquals(state, ois.readObject());
-			assertTrue(ois.available() <= 0);
-			ois.close();
+			try (ObjectInputStream ois = new ObjectInputStream(handle.openInputStream())) {
+				assertEquals(state, ois.readObject());
+				assertTrue(ois.available() <= 0);
+			}
 		}
 		catch (Exception e) {
 			e.printStackTrace();
@@ -130,12 +121,13 @@ public class MemoryStateBackendTest extends StateBackendTestBase<MemoryStateBack
 	public void testOversizedStateStream() {
 		try {
 			MemoryStateBackend backend = new MemoryStateBackend(10);
+			CheckpointStreamFactory streamFactory = backend.createStreamFactory(new JobID(), "test_op");
 
 			HashMap<String, Integer> state = new HashMap<>();
 			state.put("hey there", 2);
 			state.put("the crazy brown fox stumbles over a sentence that does not contain every letter", 77);
 
-			AbstractStateBackend.CheckpointStateOutputStream os = backend.createCheckpointStateOutputStream(1, 2);
+			CheckpointStreamFactory.CheckpointStateOutputStream os = streamFactory.createCheckpointStateOutputStream(1, 2);
 			ObjectOutputStream oos = new ObjectOutputStream(os);
 
 			try {
@@ -152,5 +144,10 @@ public class MemoryStateBackendTest extends StateBackendTestBase<MemoryStateBack
 			e.printStackTrace();
 			fail(e.getMessage());
 		}
+	}
+
+	@Test
+	public void testConcurrentMapIfQueryable() throws Exception {
+		super.testConcurrentMapIfQueryable();
 	}
 }

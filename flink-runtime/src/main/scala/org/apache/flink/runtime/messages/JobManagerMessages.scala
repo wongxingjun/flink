@@ -18,13 +18,15 @@
 
 package org.apache.flink.runtime.messages
 
+import java.net.URL
 import java.util.UUID
 
 import akka.actor.ActorRef
 import org.apache.flink.api.common.JobID
 import org.apache.flink.runtime.akka.ListeningBehaviour
+import org.apache.flink.runtime.blob.BlobKey
 import org.apache.flink.runtime.client.{JobStatusMessage, SerializedJobExecutionResult}
-import org.apache.flink.runtime.executiongraph.{ExecutionAttemptID, ExecutionGraph}
+import org.apache.flink.runtime.executiongraph.{AccessExecutionGraph, ExecutionAttemptID, ExecutionGraph}
 import org.apache.flink.runtime.instance.{Instance, InstanceID}
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID
 import org.apache.flink.runtime.jobgraph.{IntermediateDataSetID, JobGraph, JobStatus, JobVertexID}
@@ -68,6 +70,19 @@ object JobManagerMessages {
     extends RequiresLeaderSessionID
 
   /**
+    * Registers the sender of the message as the client for the provided job identifier.
+    * This message is acknowledged by the JobManager with [[RegisterJobClientSuccess]]
+    * or [[JobNotFound]] if the job was not running.
+    * @param jobID The job id of the job
+    * @param listeningBehaviour The types of updates which will be sent to the sender
+    * after registration
+    */
+  case class RegisterJobClient(
+      jobID: JobID,
+      listeningBehaviour: ListeningBehaviour)
+    extends RequiresLeaderSessionID
+
+  /**
    * Triggers the recovery of the job with the given ID.
    *
    * @param jobId ID of the job to recover
@@ -94,6 +109,21 @@ object JobManagerMessages {
    * @param jobID
    */
   case class CancelJob(jobID: JobID) extends RequiresLeaderSessionID
+
+  /**
+    * Cancels the job with the given [[jobID]] at the JobManager. Before cancellation a savepoint
+    * is triggered without any other checkpoints in between. The result of the cancellation is
+    * the path of the triggered savepoint on success or an exception.
+    *
+    * @param jobID ID of the job to cancel
+    * @param savepointDirectory Optional target directory for the savepoint.
+    *                           If no target directory is specified here, the
+    *                           cluster default is used.
+    */
+  case class CancelJobWithSavepoint(
+      jobID: JobID,
+      savepointDirectory: String = null)
+    extends RequiresLeaderSessionID
 
   /**
    * Stops a (streaming) job with the given [[jobID]] at the JobManager. The result of
@@ -127,20 +157,18 @@ object JobManagerMessages {
   case class NextInputSplit(splitData: Array[Byte])
 
   /**
-   * Requests the current state of the partition.
-   *
-   * The state of a partition is currently bound to the state of the producing execution.
-   *
-   * @param jobId The job ID of the job, which produces the partition.
-   * @param partitionId The partition ID of the partition to request the state of.
-   * @param taskExecutionId The execution attempt ID of the task requesting the partition state.
-   * @param taskResultId The input gate ID of the task requesting the partition state.
-   */
-  case class RequestPartitionState(
+    * Requests the execution state of the execution producing a result partition.
+    *
+    * @param jobId                 ID of the job the partition belongs to.
+    * @param intermediateDataSetId ID of the parent intermediate data set.
+    * @param resultPartitionId     ID of the result partition to check. This
+    *                              identifies the producing execution and
+    *                              partition.
+    */
+  case class RequestPartitionProducerState(
       jobId: JobID,
-      partitionId: ResultPartitionID,
-      taskExecutionId: ExecutionAttemptID,
-      taskResultId: IntermediateDataSetID)
+      intermediateDataSetId: IntermediateDataSetID,
+      resultPartitionId: ResultPartitionID)
     extends RequiresLeaderSessionID
 
   /**
@@ -194,6 +222,23 @@ object JobManagerMessages {
   case object RequestTotalNumberOfSlots
 
   /**
+    * Requests all entities necessary for reconstructing a job class loader
+    * May respond with [[ClassloadingProps]] or [[JobNotFound]]
+    * @param jobId The job id of the registered job
+    */
+  case class RequestClassloadingProps(jobId: JobID)
+
+  /**
+    * Response to [[RequestClassloadingProps]]
+    * @param blobManagerPort The port of the blobManager
+    * @param requiredJarFiles The blob keys of the required jar files
+    * @param requiredClasspaths The urls of the required classpaths
+    */
+  case class ClassloadingProps(blobManagerPort: Integer,
+                               requiredJarFiles: java.util.Collection[BlobKey],
+                               requiredClasspaths: java.util.Collection[URL])
+
+  /**
    * Requests the port of the blob manager from the job manager. The result is sent back to the
    * sender as an [[Int]].
    */
@@ -217,16 +262,27 @@ object JobManagerMessages {
   case class JobSubmitSuccess(jobId: JobID)
 
   /**
+    * Denotes a successful registration of a JobClientActor for a running job
+    * @param jobId The job id of the registered job
+    */
+  case class RegisterJobClientSuccess(jobId: JobID)
+
+  /**
+    * Denotes messages which contain the result of a completed job execution
+    */
+  sealed trait JobResultMessage
+
+  /**
    * Denotes a successful job execution.
    * @param result The result of the job execution, in serialized form.
    */
-  case class JobResultSuccess(result: SerializedJobExecutionResult)
+  case class JobResultSuccess(result: SerializedJobExecutionResult) extends JobResultMessage
 
   /**
    * Denotes an unsuccessful job execution.
    * @param cause The exception that caused the job to fail, in serialized form.
    */
-  case class JobResultFailure(cause: SerializedThrowable)
+  case class JobResultFailure(cause: SerializedThrowable) extends JobResultMessage
 
 
   sealed trait CancellationResponse{
@@ -237,7 +293,9 @@ object JobManagerMessages {
    * Denotes a successful job cancellation
    * @param jobID
    */
-  case class CancellationSuccess(jobID: JobID) extends CancellationResponse
+  case class CancellationSuccess(
+    jobID: JobID,
+    savepointPath: String = null) extends CancellationResponse
 
   /**
    * Denotes a failed job cancellation
@@ -311,11 +369,11 @@ object JobManagerMessages {
    * @param jobID
    * @param executionGraph
    */
-  case class JobFound(jobID: JobID, executionGraph: ExecutionGraph) extends JobResponse
+  case class JobFound(jobID: JobID, executionGraph: AccessExecutionGraph) extends JobResponse
 
   /**
    * Denotes that there is no job with [[jobID]] retrievable. This message can be the response of
-   * [[RequestJob]] or [[RequestJobStatus]].
+   * [[RequestJob]], [[RequestJobStatus]] or [[RegisterJobClient]].
    *
    * @param jobID
    */
@@ -424,8 +482,11 @@ object JobManagerMessages {
     * of triggering and acknowledging checkpoints.
     *
     * @param jobId The JobID of the job to trigger the savepoint for.
+    * @param savepointDirectory Optional target directory
     */
-  case class TriggerSavepoint(jobId: JobID) extends RequiresLeaderSessionID
+  case class TriggerSavepoint(
+      jobId: JobID,
+      savepointDirectory : Option[String] = Option.empty) extends RequiresLeaderSessionID
 
   /**
     * Response after a successful savepoint trigger containing the savepoint path.
@@ -448,7 +509,9 @@ object JobManagerMessages {
     *
     * @param savepointPath The path of the savepoint to dispose.
     */
-  case class DisposeSavepoint(savepointPath: String) extends RequiresLeaderSessionID
+  case class DisposeSavepoint(
+      savepointPath: String)
+    extends RequiresLeaderSessionID
 
   /** Response after a successful savepoint dispose. */
   case object DisposeSavepointSuccess

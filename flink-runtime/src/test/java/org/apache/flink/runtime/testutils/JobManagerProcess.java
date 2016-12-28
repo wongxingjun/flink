@@ -25,13 +25,13 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.jobmanager.JobManager;
 import org.apache.flink.runtime.jobmanager.JobManagerMode;
+import org.apache.flink.util.NetUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.Option;
 import scala.concurrent.duration.Deadline;
 import scala.concurrent.duration.FiniteDuration;
 
-import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -147,7 +147,8 @@ public class JobManagerProcess extends TestJvmProcess {
 		int port = getJobManagerPort(timeout);
 
 		return JobManager.getRemoteJobManagerAkkaURL(
-				new InetSocketAddress("localhost", port),
+				AkkaUtils.getAkkaProtocol(config),
+				NetUtils.unresolvedHostAndPortToNormalizedString("localhost", port),
 				Option.<String>empty());
 	}
 
@@ -212,7 +213,7 @@ public class JobManagerProcess extends TestJvmProcess {
 		 * <code>--port PORT</code>.
 		 *
 		 * <p>Other arguments are parsed to a {@link Configuration} and passed to the
-		 * JobManager, for instance: <code>--recovery.mode ZOOKEEPER --recovery.zookeeper.quorum
+		 * JobManager, for instance: <code>--high-availability ZOOKEEPER --high-availability.zookeeper.quorum
 		 * "xyz:123:456"</code>.
 		 */
 		public static void main(String[] args) {

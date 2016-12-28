@@ -68,12 +68,15 @@ public class StreamConfig implements Serializable {
 	private static final String EDGES_IN_ORDER = "edgesInOrder";
 	private static final String OUT_STREAM_EDGES = "outStreamEdges";
 	private static final String IN_STREAM_EDGES = "inStreamEdges";
+	private static final String OPERATOR_NAME = "operatorName";
+	private static final String CHAIN_END = "chainEnd";
 
 	private static final String CHECKPOINTING_ENABLED = "checkpointing";
 	private static final String CHECKPOINT_MODE = "checkpointMode";
 	
 	private static final String STATE_BACKEND = "statebackend";
 	private static final String STATE_PARTITIONER = "statePartitioner";
+
 	private static final String STATE_KEY_SERIALIZER = "statekeyser";
 	
 	private static final String TIME_CHARACTERISTIC = "timechar";
@@ -352,7 +355,6 @@ public class StreamConfig implements Serializable {
 			return DEFAULT_CHECKPOINTING_MODE; 
 		}
 	}
-	
 
 	public void setOutEdgesInOrder(List<StreamEdge> outEdgeList) {
 		try {
@@ -388,6 +390,14 @@ public class StreamConfig implements Serializable {
 			throw new StreamTaskException("Could not instantiate configuration.", e);
 		}
 	}
+	
+	public void setOperatorName(String name) {
+		this.config.setString(OPERATOR_NAME,name);
+	}
+	
+	public String getOperatorName() {
+		return this.config.getString(OPERATOR_NAME, null);
+	}
 
 	public void setChainIndex(int index) {
 		this.config.setInteger(CHAIN_INDEX, index);
@@ -402,10 +412,12 @@ public class StreamConfig implements Serializable {
 	// ------------------------------------------------------------------------
 	
 	public void setStateBackend(AbstractStateBackend backend) {
-		try {
-			InstantiationUtil.writeObjectToConfig(backend, this.config, STATE_BACKEND);
-		} catch (Exception e) {
-			throw new StreamTaskException("Could not serialize stateHandle provider.", e);
+		if (backend != null) {
+			try {
+				InstantiationUtil.writeObjectToConfig(backend, this.config, STATE_BACKEND);
+			} catch (Exception e) {
+				throw new StreamTaskException("Could not serialize stateHandle provider.", e);
+			}
 		}
 	}
 	
@@ -415,6 +427,10 @@ public class StreamConfig implements Serializable {
 		} catch (Exception e) {
 			throw new StreamTaskException("Could not instantiate statehandle provider.", e);
 		}
+	}
+
+	public byte[] getSerializedStateBackend() {
+		return this.config.getBytes(STATE_BACKEND, null);
 	}
 	
 	public void setStatePartitioner(int input, KeySelector<?, ?> partitioner) {
@@ -432,7 +448,7 @@ public class StreamConfig implements Serializable {
 			throw new StreamTaskException("Could not instantiate state partitioner.", e);
 		}
 	}
-	
+
 	public void setStateKeySerializer(TypeSerializer<?> serializer) {
 		try {
 			InstantiationUtil.writeObjectToConfig(serializer, this.config, STATE_KEY_SERIALIZER);
@@ -448,6 +464,8 @@ public class StreamConfig implements Serializable {
 			throw new StreamTaskException("Could not instantiate state key serializer from task config.", e);
 		}
 	}
+
+
 	
 	// ------------------------------------------------------------------------
 	//  Miscellansous
@@ -459,6 +477,14 @@ public class StreamConfig implements Serializable {
 
 	public boolean isChainStart() {
 		return config.getBoolean(IS_CHAINED_VERTEX, false);
+	}
+
+	public void setChainEnd() {
+		config.setBoolean(CHAIN_END, true);
+	}
+
+	public boolean isChainEnd() {
+		return config.getBoolean(CHAIN_END, false);
 	}
 
 	@Override

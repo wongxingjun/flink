@@ -81,12 +81,13 @@ public class FlatMapDriver<IT, OT> implements Driver<FlatMapFunction<IT, OT>, OT
 
 		if (LOG.isDebugEnabled()) {
 			LOG.debug("FlatMapDriver object reuse: " + (this.objectReuseEnabled ? "ENABLED" : "DISABLED") + ".");
-		}	}
+		}
+	}
 
 	@Override
 	public void run() throws Exception {
-		final Counter numRecordsIn = this.taskContext.getMetricGroup().counter("numRecordsIn");
-		final Counter numRecordsOut = this.taskContext.getMetricGroup().counter("numRecordsOut");
+		final Counter numRecordsIn = this.taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsInCounter();
+		final Counter numRecordsOut = this.taskContext.getMetricGroup().getIOMetricGroup().getNumRecordsOutCounter();
 		// cache references on the stack
 		final MutableObjectIterator<IT> input = this.taskContext.getInput(0);
 		final FlatMapFunction<IT, OT> function = this.taskContext.getStub();

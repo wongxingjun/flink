@@ -45,13 +45,9 @@ import java.io.IOException;
  *
  * <p>
  * When Elements or Events are offered to the Task they are put into a queue. The input gates
- * of the Task read from this queue. Use {@link #waitForInputProcessing()} to wait until all
+ * of the Task notifyNonEmpty from this queue. Use {@link #waitForInputProcessing()} to wait until all
  * queues are empty. This must be used after entering some elements before checking the
  * desired output.
- *
- * <p>
- * When using this you need to add the following line to your test class to setup Powermock:
- * {@code {@literal @}PrepareForTest({ResultPartitionWriter.class})}
  */
 public class OneInputStreamTaskTestHarness<IN, OUT> extends StreamTaskTestHarness<OUT> {
 
@@ -62,11 +58,13 @@ public class OneInputStreamTaskTestHarness<IN, OUT> extends StreamTaskTestHarnes
 	 * Creates a test harness with the specified number of input gates and specified number
 	 * of channels per input gate.
 	 */
-	public OneInputStreamTaskTestHarness(OneInputStreamTask<IN, OUT> task,
-			int numInputGates,
-			int numInputChannelsPerGate,
-			TypeInformation<IN> inputType,
-			TypeInformation<OUT> outputType) {
+	public OneInputStreamTaskTestHarness(
+		OneInputStreamTask<IN, OUT> task,
+		int numInputGates,
+		int numInputChannelsPerGate,
+		TypeInformation<IN> inputType,
+		TypeInformation<OUT> outputType) {
+		
 		super(task, outputType);
 
 		this.inputType = inputType;
@@ -79,9 +77,10 @@ public class OneInputStreamTaskTestHarness<IN, OUT> extends StreamTaskTestHarnes
 	/**
 	 * Creates a test harness with one input gate that has one input channel.
 	 */
-	public OneInputStreamTaskTestHarness(OneInputStreamTask<IN, OUT> task,
-			TypeInformation<IN> inputType,
-			TypeInformation<OUT> outputType) {
+	public OneInputStreamTaskTestHarness(
+		OneInputStreamTask<IN, OUT> task,
+		TypeInformation<IN> inputType,
+		TypeInformation<OUT> outputType) {
 		this(task, 1, 1, inputType, outputType);
 	}
 
@@ -91,9 +90,9 @@ public class OneInputStreamTaskTestHarness<IN, OUT> extends StreamTaskTestHarnes
 
 		for (int i = 0; i < numInputGates; i++) {
 			inputGates[i] = new StreamTestSingleInputGate<IN>(
-					numInputChannelsPerGate,
-					bufferSize,
-					inputSerializer);
+				numInputChannelsPerGate,
+				bufferSize,
+				inputSerializer);
 			this.mockEnv.addInputGate(inputGates[i].getInputGate());
 		}
 
@@ -101,7 +100,9 @@ public class OneInputStreamTaskTestHarness<IN, OUT> extends StreamTaskTestHarnes
 		streamConfig.setTypeSerializerIn1(inputSerializer);
 	}
 
-	public <K> void configureForKeyedStream(KeySelector<IN, K> keySelector, TypeInformation<K> keyType) {
+	public <K> void configureForKeyedStream(
+			KeySelector<IN, K> keySelector,
+			TypeInformation<K> keyType) {
 		ClosureCleaner.clean(keySelector, false);
 		streamConfig.setStatePartitioner(0, keySelector);
 		streamConfig.setStateKeySerializer(keyType.createSerializer(executionConfig));

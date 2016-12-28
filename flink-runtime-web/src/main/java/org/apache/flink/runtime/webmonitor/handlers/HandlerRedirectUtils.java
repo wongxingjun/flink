@@ -79,16 +79,16 @@ public class HandlerRedirectUtils {
 		return null;
 	}
 
-	public static HttpResponse getRedirectResponse(String redirectAddress, String path) throws Exception {
+	public static HttpResponse getRedirectResponse(String redirectAddress, String path, boolean httpsEnabled) throws Exception {
 		checkNotNull(redirectAddress, "Redirect address");
 		checkNotNull(path, "Path");
 
-		String newLocation = String.format("http://%s%s", redirectAddress, path);
+		String protocol = httpsEnabled ? "https" : "http";
+		String newLocation = String.format("%s://%s%s", protocol, redirectAddress, path);
 
 		HttpResponse redirectResponse = new DefaultFullHttpResponse(
 				HttpVersion.HTTP_1_1, HttpResponseStatus.TEMPORARY_REDIRECT);
 		redirectResponse.headers().set(HttpHeaders.Names.LOCATION, newLocation);
-		redirectResponse.headers().set(HttpHeaders.Names.CONTENT_ENCODING, "utf-8");
 		redirectResponse.headers().set(HttpHeaders.Names.CONTENT_LENGTH, 0);
 
 		return redirectResponse;
@@ -101,7 +101,6 @@ public class HandlerRedirectUtils {
 		HttpResponse unavailableResponse = new DefaultFullHttpResponse(
 				HttpVersion.HTTP_1_1, HttpResponseStatus.SERVICE_UNAVAILABLE, Unpooled.wrappedBuffer(bytes));
 
-		unavailableResponse.headers().set(HttpHeaders.Names.CONTENT_ENCODING, "utf-8");
 		unavailableResponse.headers().set(HttpHeaders.Names.CONTENT_LENGTH, bytes.length);
 		unavailableResponse.headers().set(HttpHeaders.Names.CONTENT_TYPE, MimeTypes.getMimeTypeForExtension("txt"));
 

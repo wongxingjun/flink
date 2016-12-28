@@ -31,10 +31,10 @@ import org.apache.flink.runtime.instance.AkkaActorGateway;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.JobVertex;
-import org.apache.flink.runtime.jobmanager.Tasks;
 import org.apache.flink.runtime.leaderelection.TestingListener;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.taskmanager.TaskManager;
+import org.apache.flink.runtime.testtasks.BlockingNoOpInvokable;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.runtime.testutils.JobManagerActorTestUtils;
 import org.apache.flink.runtime.testutils.JobManagerProcess;
@@ -97,10 +97,16 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 
 	@AfterClass
 	public static void tearDown() throws Exception {
-		ZooKeeper.shutdown();
+		try {
+			ZooKeeper.shutdown();
+		} catch (Exception ignored) {
+		}
 
-		if (FileStateBackendBasePath != null) {
-			FileUtils.deleteDirectory(FileStateBackendBasePath);
+		try {
+			if (FileStateBackendBasePath != null) {
+				FileUtils.deleteDirectory(FileStateBackendBasePath);
+			}
+		} catch (IOException ignored) {
 		}
 	}
 
@@ -154,7 +160,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 
 		JobGraph jobGraph = env.getStreamGraph().getJobGraph();
 
-		Configuration config = ZooKeeperTestUtils.createZooKeeperRecoveryModeConfig(ZooKeeper
+		Configuration config = ZooKeeperTestUtils.createZooKeeperHAConfig(ZooKeeper
 				.getConnectString(), FileStateBackendBasePath.getAbsoluteFile().toURI().toString());
 		config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, Parallelism);
 
@@ -305,7 +311,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 		final String zooKeeperQuorum = ZooKeeper.getConnectString();
 		final String fileStateBackendPath = FileStateBackendBasePath.getAbsoluteFile().toString();
 
-		Configuration config = ZooKeeperTestUtils.createZooKeeperRecoveryModeConfig(
+		Configuration config = ZooKeeperTestUtils.createZooKeeperHAConfig(
 				zooKeeperQuorum,
 				fileStateBackendPath);
 
@@ -364,9 +370,9 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 				nonLeadingJobManagerProcess = jobManagerProcess[0];
 			}
 
-			// BLocking JobGraph
+			// Blocking JobGraph
 			JobVertex blockingVertex = new JobVertex("Blocking vertex");
-			blockingVertex.setInvokableClass(Tasks.BlockingNoOpInvokable.class);
+			blockingVertex.setInvokableClass(BlockingNoOpInvokable.class);
 			JobGraph jobGraph = new JobGraph(blockingVertex);
 
 			// Submit the job in detached mode
@@ -393,7 +399,7 @@ public class JobManagerHACheckpointRecoveryITCase extends TestLogger {
 				String output = nonLeadingJobManagerProcess.getProcessOutput();
 
 				if (output != null) {
-					if (output.contains("Fatal error: Failed to recover jobs") &&
+					if (output.contains("Failed to recover job") &&
 							output.contains("java.io.FileNotFoundException")) {
 
 						success = true;

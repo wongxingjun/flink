@@ -22,13 +22,14 @@ import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.dispatch.Mapper;
 import akka.dispatch.OnComplete;
+import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.runtime.akka.AkkaUtils;
 import org.apache.flink.runtime.instance.ActorGateway;
 import org.apache.flink.runtime.instance.AkkaActorGateway;
-import org.apache.flink.runtime.jobmanager.RecoveryMode;
+import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalException;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalListener;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
@@ -60,16 +61,30 @@ public class LeaderRetrievalUtils {
 	 */
 	public static LeaderRetrievalService createLeaderRetrievalService(Configuration configuration)
 		throws Exception {
+		return createLeaderRetrievalService(configuration, false);
+	}
 
-		RecoveryMode recoveryMode = getRecoveryMode(configuration);
+	/**
+	 * Creates a {@link LeaderRetrievalService} based on the provided {@link Configuration} object.
+	 *
+	 * @param configuration Configuration containing the settings for the {@link LeaderRetrievalService}
+	 * @param resolveInitialHostName If true, resolves the initial hostname
+	 * @return The {@link LeaderRetrievalService} specified in the configuration object
+	 * @throws Exception
+	 */
+	public static LeaderRetrievalService createLeaderRetrievalService(
+			Configuration configuration, boolean resolveInitialHostName)
+		throws Exception {
 
-		switch (recoveryMode) {
-			case STANDALONE:
-				return StandaloneUtils.createLeaderRetrievalService(configuration);
+		HighAvailabilityMode highAvailabilityMode = getRecoveryMode(configuration);
+
+		switch (highAvailabilityMode) {
+			case NONE:
+				return StandaloneUtils.createLeaderRetrievalService(configuration, resolveInitialHostName);
 			case ZOOKEEPER:
 				return ZooKeeperUtils.createLeaderRetrievalService(configuration);
 			default:
-				throw new Exception("Recovery mode " + recoveryMode + " is not supported.");
+				throw new Exception("Recovery mode " + highAvailabilityMode + " is not supported.");
 		}
 	}
 
@@ -86,16 +101,16 @@ public class LeaderRetrievalUtils {
 	public static LeaderRetrievalService createLeaderRetrievalService(
 				Configuration configuration, ActorRef standaloneRef) throws Exception {
 
-		RecoveryMode recoveryMode = getRecoveryMode(configuration);
+		HighAvailabilityMode highAvailabilityMode = getRecoveryMode(configuration);
 
-		switch (recoveryMode) {
-			case STANDALONE:
+		switch (highAvailabilityMode) {
+			case NONE:
 				String akkaUrl = standaloneRef.path().toSerializationFormat();
 				return new StandaloneLeaderRetrievalService(akkaUrl);
 			case ZOOKEEPER:
 				return ZooKeeperUtils.createLeaderRetrievalService(configuration);
 			default:
-				throw new Exception("Recovery mode " + recoveryMode + " is not supported.");
+				throw new Exception("Recovery mode " + highAvailabilityMode + " is not supported.");
 		}
 	}
 	
@@ -167,6 +182,12 @@ public class LeaderRetrievalUtils {
 				LOG.warn("Could not stop the leader retrieval service.", fe);
 			}
 		}
+	}
+
+	public static InetAddress findConnectingAddress(
+		LeaderRetrievalService leaderRetrievalService,
+		Time timeout) throws LeaderRetrievalException {
+		return findConnectingAddress(leaderRetrievalService, new FiniteDuration(timeout.getSize(), timeout.getUnit()));
 	}
 
 	public static InetAddress findConnectingAddress(
@@ -282,7 +303,7 @@ public class LeaderRetrievalUtils {
 	}
 
 	/**
-	 * Gets the recovery mode as configured, based on the {@link ConfigConstants#RECOVERY_MODE}
+	 * Gets the recovery mode as configured, based on the {@link ConfigConstants#HA_MODE}
 	 * config key.
 	 * 
 	 * @param config The configuration to read the recovery mode from.
@@ -291,20 +312,8 @@ public class LeaderRetrievalUtils {
 	 * @throws IllegalConfigurationException Thrown, if the recovery mode does not correspond
 	 *                                       to a known value.
 	 */
-	public static RecoveryMode getRecoveryMode(Configuration config) {
-		String mode = config.getString(
-			ConfigConstants.RECOVERY_MODE,
-			ConfigConstants.DEFAULT_RECOVERY_MODE).toUpperCase();
-		
-		switch (mode) {
-			case "STANDALONE":
-				return RecoveryMode.STANDALONE;
-			case "ZOOKEEPER":
-				return RecoveryMode.ZOOKEEPER;
-			default:
-				throw new IllegalConfigurationException(
-					"The value for '" + ConfigConstants.RECOVERY_MODE + "' is unknown: " + mode);
-		}
+	public static HighAvailabilityMode getRecoveryMode(Configuration config) {
+		return HighAvailabilityMode.fromConfig(config);
 	}
 	
 	// ------------------------------------------------------------------------

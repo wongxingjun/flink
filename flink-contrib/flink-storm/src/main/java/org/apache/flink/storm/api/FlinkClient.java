@@ -22,6 +22,7 @@ import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
 import akka.pattern.Patterns;
 import akka.util.Timeout;
+
 import backtype.storm.Config;
 import backtype.storm.generated.AlreadyAliveException;
 import backtype.storm.generated.InvalidTopologyException;
@@ -32,7 +33,6 @@ import backtype.storm.utils.NimbusClient;
 import backtype.storm.utils.Utils;
 
 import com.esotericsoftware.kryo.Serializer;
-import com.google.common.collect.Lists;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
@@ -52,6 +52,8 @@ import org.apache.flink.runtime.messages.JobManagerMessages;
 import org.apache.flink.runtime.messages.JobManagerMessages.RunningJobsStatus;
 import org.apache.flink.storm.util.StormConfig;
 import org.apache.flink.streaming.api.graph.StreamGraph;
+
+import org.apache.flink.util.NetUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,7 +64,6 @@ import scala.concurrent.duration.FiniteDuration;
 
 import java.io.File;
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URL;
 import java.util.Collections;
@@ -215,7 +216,7 @@ public class FlinkClient {
 
 		try {
 			ClassLoader classLoader = JobWithJars.buildUserCodeClassLoader(
-					Lists.newArrayList(uploadedJarUrl),
+					Collections.<URL>singletonList(uploadedJarUrl),
 					Collections.<URL>emptyList(),
 					this.getClass().getClassLoader());
 			client.runDetached(jobGraph, classLoader);
@@ -242,7 +243,7 @@ public class FlinkClient {
 			}
 		}
 
-		final Configuration configuration = GlobalConfiguration.getConfiguration();
+		final Configuration configuration = GlobalConfiguration.loadConfiguration();
 		configuration.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, this.jobManagerHost);
 		configuration.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, this.jobManagerPort);
 
@@ -271,7 +272,7 @@ public class FlinkClient {
 	 * @return Flink's internally used {@link JobID}.
 	 */
 	JobID getTopologyJobId(final String id) {
-		final Configuration configuration = GlobalConfiguration.getConfiguration();
+		final Configuration configuration = GlobalConfiguration.loadConfiguration();
 		if (this.timeout != null) {
 			configuration.setString(ConfigConstants.AKKA_ASK_TIMEOUT, this.timeout);
 		}
@@ -311,7 +312,7 @@ public class FlinkClient {
 	}
 
 	private FiniteDuration getTimeout() {
-		final Configuration configuration = GlobalConfiguration.getConfiguration();
+		final Configuration configuration = GlobalConfiguration.loadConfiguration();
 		if (this.timeout != null) {
 			configuration.setString(ConfigConstants.AKKA_ASK_TIMEOUT, this.timeout);
 		}
@@ -320,7 +321,7 @@ public class FlinkClient {
 	}
 
 	private ActorRef getJobManager() throws IOException {
-		final Configuration configuration = GlobalConfiguration.getConfiguration();
+		final Configuration configuration = GlobalConfiguration.loadConfiguration();
 
 		ActorSystem actorSystem;
 		try {
@@ -331,7 +332,8 @@ public class FlinkClient {
 			throw new RuntimeException("Could not start actor system to communicate with JobManager", e);
 		}
 
-		return JobManager.getJobManagerActorRef(new InetSocketAddress(this.jobManagerHost, this.jobManagerPort),
+		return JobManager.getJobManagerActorRef(AkkaUtils.getAkkaProtocol(configuration),
+				NetUtils.unresolvedHostAndPortToNormalizedString(this.jobManagerHost, this.jobManagerPort),
 				actorSystem, AkkaUtils.getLookupTimeout(configuration));
 	}
 

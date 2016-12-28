@@ -18,15 +18,15 @@
 
 package org.apache.flink.api.common.typeutils;
 
-import java.io.IOException;
-import java.io.Serializable;
-
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 
+import java.io.IOException;
+import java.io.Serializable;
+
 /**
- * This interface describes the methods that are required for a data type to be handled by the pact
+ * This interface describes the methods that are required for a data type to be handled by the Flink
  * runtime. Specifically, this interface contains the serialization and copying methods.
  * <p>
  * The methods in this class are assumed to be stateless, such that it is effectively thread safe. Stateful
@@ -160,4 +160,8 @@ public abstract class TypeSerializer<T> implements Serializable {
 	public abstract boolean canEqual(Object obj);
 
 	public abstract int hashCode();
+
+	public boolean isCompatibleWith(TypeSerializer<?> other) {
+		return equals(other);
+	}
 }

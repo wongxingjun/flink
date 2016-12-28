@@ -60,6 +60,14 @@ public final class Utils {
 	
 	private static final Logger LOG = LoggerFactory.getLogger(Utils.class);
 
+	/** Keytab file name populated in YARN container */
+	public static final String KEYTAB_FILE_NAME = "krb5.keytab";
+
+	/** KRB5 file name populated in YARN container for secure IT run */
+	public static final String KRB5_FILE_NAME = "krb5.conf";
+
+	/** Yarn site xml file name populated in YARN container for secure IT run */
+	public static final String YARN_SITE_FILE_NAME = "yarn-site.xml";
 
 	/**
 	 * See documentation
@@ -67,23 +75,23 @@ public final class Utils {
 	public static int calculateHeapSize(int memory, org.apache.flink.configuration.Configuration conf) {
 
 		BootstrapTools.substituteDeprecatedConfigKey(conf,
-			ConfigConstants.YARN_HEAP_CUTOFF_RATIO, ConfigConstants.CONTAINERED_HEAP_CUTOFF_RATIO);
+			ConfigConstants.YARN_HEAP_CUTOFF_RATIO, ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_RATIO);
 		BootstrapTools.substituteDeprecatedConfigKey(conf,
-			ConfigConstants.YARN_HEAP_CUTOFF_MIN, ConfigConstants.CONTAINERED_HEAP_CUTOFF_MIN);
+			ConfigConstants.YARN_HEAP_CUTOFF_MIN, ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_MIN);
 
-		float memoryCutoffRatio = conf.getFloat(ConfigConstants.CONTAINERED_HEAP_CUTOFF_RATIO,
+		float memoryCutoffRatio = conf.getFloat(ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_RATIO,
 			ConfigConstants.DEFAULT_YARN_HEAP_CUTOFF_RATIO);
-		int minCutoff = conf.getInteger(ConfigConstants.CONTAINERED_HEAP_CUTOFF_MIN,
+		int minCutoff = conf.getInteger(ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_MIN,
 			ConfigConstants.DEFAULT_YARN_HEAP_CUTOFF);
 
 		if (memoryCutoffRatio > 1 || memoryCutoffRatio < 0) {
 			throw new IllegalArgumentException("The configuration value '"
-				+ ConfigConstants.CONTAINERED_HEAP_CUTOFF_RATIO
+				+ ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_RATIO
 				+ "' must be between 0 and 1. Value given=" + memoryCutoffRatio);
 		}
 		if (minCutoff > memory) {
 			throw new IllegalArgumentException("The configuration value '"
-				+ ConfigConstants.CONTAINERED_HEAP_CUTOFF_MIN
+				+ ConfigConstants.CONTAINERIZED_HEAP_CUTOFF_MIN
 				+ "' is higher (" + minCutoff + ") than the requested amount of memory " + memory);
 		}
 
@@ -155,15 +163,16 @@ public final class Utils {
 			LOG.info("Adding user token " + id + " with " + token);
 			credentials.addToken(id, token);
 		}
-		DataOutputBuffer dob = new DataOutputBuffer();
-		credentials.writeTokenStorageToStream(dob);
+		try (DataOutputBuffer dob = new DataOutputBuffer()) {
+			credentials.writeTokenStorageToStream(dob);
 
-		if(LOG.isDebugEnabled()) {
-			LOG.debug("Wrote tokens. Credentials buffer length: " + dob.getLength());
+			if(LOG.isDebugEnabled()) {
+				LOG.debug("Wrote tokens. Credentials buffer length: " + dob.getLength());
+			}
+
+			ByteBuffer securityTokens = ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
+			amContainer.setTokens(securityTokens);
 		}
-
-		ByteBuffer securityTokens = ByteBuffer.wrap(dob.getData(), 0, dob.getLength());
-		amContainer.setTokens(securityTokens);
 	}
 
 	/**

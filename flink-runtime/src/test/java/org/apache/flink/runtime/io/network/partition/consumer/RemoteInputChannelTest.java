@@ -70,7 +70,7 @@ public class RemoteInputChannelTest {
 
 		// Need to notify the input gate for the out-of-order buffer as well. Otherwise the
 		// receiving task will not notice the error.
-		verify(inputGate, times(2)).onAvailableBuffer(eq(inputChannel));
+		verify(inputGate, times(2)).notifyChannelNonEmpty(eq(inputChannel));
 	}
 
 	@Test
@@ -249,7 +249,7 @@ public class RemoteInputChannelTest {
 				partitionId,
 				mock(ConnectionID.class),
 				connectionManager,
-				new UnregisteredTaskMetricsGroup.DummyIOMetricGroup());
+				new UnregisteredTaskMetricsGroup.DummyTaskIOMetricGroup());
 
 		ch.onFailedPartitionRequest();
 
@@ -269,7 +269,7 @@ public class RemoteInputChannelTest {
 				new ResultPartitionID(),
 				mock(ConnectionID.class),
 				connManager,
-				new UnregisteredTaskMetricsGroup.DummyIOMetricGroup());
+				new UnregisteredTaskMetricsGroup.DummyTaskIOMetricGroup());
 
 		ch.onError(new ProducerFailedException(new RuntimeException("Expected test exception.")));
 
@@ -299,12 +299,13 @@ public class RemoteInputChannelTest {
 				.thenReturn(partitionRequestClient);
 
 		return new RemoteInputChannel(
-				inputGate,
-				0,
-				new ResultPartitionID(),
-				mock(ConnectionID.class),
-				connectionManager,
-				initialAndMaxRequestBackoff,
-				new UnregisteredTaskMetricsGroup.DummyIOMetricGroup());
+			inputGate,
+			0,
+			new ResultPartitionID(),
+			mock(ConnectionID.class),
+			connectionManager,
+			initialAndMaxRequestBackoff._1(),
+			initialAndMaxRequestBackoff._2(),
+			new UnregisteredTaskMetricsGroup.DummyTaskIOMetricGroup());
 	}
 }

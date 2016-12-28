@@ -36,7 +36,6 @@ import org.apache.flink.types.Either;
 import java.util.Map;
 
 public class CEPOperatorUtils {
-	private static final String PATTERN_OPERATOR_NAME = "AbstractCEPPatternOperator";
 
 	/**
 	 * Creates a data stream containing the fully matching event patterns of the NFA computation.
@@ -64,7 +63,7 @@ public class CEPOperatorUtils {
 			TypeSerializer<K> keySerializer = keyedStream.getKeyType().createSerializer(keyedStream.getExecutionConfig());
 
 			patternStream = keyedStream.transform(
-				PATTERN_OPERATOR_NAME,
+				"KeyedCEPPatternOperator",
 				(TypeInformation<Map<String, T>>) (TypeInformation<?>) TypeExtractor.getForClass(Map.class),
 				new KeyedCEPPatternOperator<>(
 					inputSerializer,
@@ -74,13 +73,13 @@ public class CEPOperatorUtils {
 					nfaFactory));
 		} else {
 			patternStream = inputStream.transform(
-				PATTERN_OPERATOR_NAME,
+				"CEPPatternOperator",
 				(TypeInformation<Map<String, T>>) (TypeInformation<?>) TypeExtractor.getForClass(Map.class),
-				new CEPPatternOperator<T>(
+				new CEPPatternOperator<>(
 					inputSerializer,
 					isProcessingTime,
 					nfaFactory
-				)).setParallelism(1);
+				)).forceNonParallel();
 		}
 
 		return patternStream;
@@ -119,7 +118,7 @@ public class CEPOperatorUtils {
 			TypeSerializer<K> keySerializer = keyedStream.getKeyType().createSerializer(keyedStream.getExecutionConfig());
 
 			patternStream = keyedStream.transform(
-				PATTERN_OPERATOR_NAME,
+				"TimeoutKeyedCEPPatternOperator",
 				eitherTypeInformation,
 				new TimeoutKeyedCEPPatternOperator<T, K>(
 					inputSerializer,
@@ -129,13 +128,13 @@ public class CEPOperatorUtils {
 					nfaFactory));
 		} else {
 			patternStream = inputStream.transform(
-				PATTERN_OPERATOR_NAME,
+				"TimeoutCEPPatternOperator",
 				eitherTypeInformation,
-				new TimeoutCEPPatternOperator<T>(
+				new TimeoutCEPPatternOperator<>(
 					inputSerializer,
 					isProcessingTime,
 					nfaFactory
-				)).setParallelism(1);
+				)).forceNonParallel();
 		}
 
 		return patternStream;

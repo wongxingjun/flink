@@ -21,7 +21,7 @@ package org.apache.flink.runtime.execution.librarycache;
 import java.io.File;
 import java.io.IOException;
 import java.net.URL;
-import java.net.URLClassLoader;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -77,7 +77,7 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 
 		// Initializing the clean up task
 		this.cleanupTimer = new Timer(true);
-		this.cleanupTimer.schedule(this, cleanupInterval);
+		this.cleanupTimer.schedule(this, cleanupInterval, cleanupInterval);
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -138,8 +138,7 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 					count++;
 				}
 
-				URLClassLoader classLoader = new FlinkUserCodeClassLoader(urls);
-				cacheEntries.put(jobId, new LibraryCacheEntry(requiredJarFiles, classLoader, task));
+				cacheEntries.put(jobId, new LibraryCacheEntry(requiredJarFiles, urls, task));
 			}
 			else {
 				entry.register(task, requiredJarFiles);
@@ -156,14 +155,16 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 	public void unregisterTask(JobID jobId, ExecutionAttemptID task) {
 		Preconditions.checkNotNull(jobId, "The JobId must not be null.");
 		Preconditions.checkNotNull(task, "The task execution id must not be null.");
-		
+
 		synchronized (lockObject) {
 			LibraryCacheEntry entry = cacheEntries.get(jobId);
-			
+
 			if (entry != null) {
 				if (entry.unregister(task)) {
 					cacheEntries.remove(jobId);
-					
+
+					entry.releaseClassLoader();
+
 					for (BlobKey key : entry.getLibraries()) {
 						unregisterReferenceToBlobKey(key);
 					}
@@ -200,6 +201,12 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 
 	@Override
 	public void shutdown() throws IOException{
+		try {
+			run();
+		} catch (Throwable t) {
+			LOG.warn("Failed to run clean up task before shutdown", t);
+		}
+
 		blobService.shutdown();
 		cleanupTimer.cancel();
 	}
@@ -210,7 +217,6 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 	@Override
 	public void run() {
 		synchronized (lockObject) {
-			
 			Iterator<Map.Entry<BlobKey, Integer>> entryIter = blobKeyReferenceCounters.entrySet().iterator();
 			
 			while (entryIter.hasNext()) {
@@ -281,17 +287,17 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 	 */
 	private static class LibraryCacheEntry {
 		
-		private final ClassLoader classLoader;
+		private final FlinkUserCodeClassLoader classLoader;
 		
 		private final Set<ExecutionAttemptID> referenceHolders;
 		
 		private final Set<BlobKey> libraries;
 		
 		
-		public LibraryCacheEntry(Collection<BlobKey> libraries, ClassLoader classLoader, ExecutionAttemptID initialReference) {
-			this.classLoader = classLoader;
-			this.libraries = new HashSet<BlobKey>(libraries);
-			this.referenceHolders = new HashSet<ExecutionAttemptID>();
+		public LibraryCacheEntry(Collection<BlobKey> libraries, URL[] libraryURLs, ExecutionAttemptID initialReference) {
+			this.classLoader = new FlinkUserCodeClassLoader(libraryURLs);
+			this.libraries = new HashSet<>(libraries);
+			this.referenceHolders = new HashSet<>();
 			this.referenceHolders.add(initialReference);
 		}
 		
@@ -321,15 +327,18 @@ public final class BlobLibraryCacheManager extends TimerTask implements LibraryC
 		public int getNumberOfReferenceHolders() {
 			return referenceHolders.size();
 		}
-	}
 
-	/**
-	 * Give the URLClassLoader a nicer name for debugging purposes.
-	 */
-	private static class FlinkUserCodeClassLoader extends URLClassLoader {
-
-		public FlinkUserCodeClassLoader(URL[] urls) {
-			super(urls, FlinkUserCodeClassLoader.class.getClassLoader());
+		/**
+		 * Release the class loader to ensure any file descriptors are closed
+		 * and the cached libraries are deleted immediately.
+		 */
+		void releaseClassLoader() {
+			try {
+				classLoader.close();
+			} catch (IOException e) {
+				LOG.warn("Failed to release user code class loader for " + Arrays.toString(libraries.toArray()));
+			}
 		}
 	}
+
 }

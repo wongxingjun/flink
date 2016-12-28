@@ -18,11 +18,11 @@
 
 package org.apache.flink.runtime.messages
 
+import java.util
+
 import org.apache.flink.runtime.deployment.{InputChannelDeploymentDescriptor, TaskDeploymentDescriptor}
-import org.apache.flink.runtime.execution.ExecutionState
-import org.apache.flink.runtime.executiongraph.ExecutionAttemptID
-import org.apache.flink.runtime.jobgraph.{IntermediateDataSetID, IntermediateResultPartitionID}
-import org.apache.flink.runtime.messages.JobManagerMessages.RequestPartitionState
+import org.apache.flink.runtime.executiongraph.{ExecutionAttemptID, PartitionInfo}
+import org.apache.flink.runtime.jobgraph.IntermediateDataSetID
 import org.apache.flink.runtime.taskmanager.TaskExecutionState
 
 /**
@@ -92,16 +92,6 @@ object TaskMessages {
   // --------------------------------------------------------------------------
 
   /**
-   * Answer to a [[RequestPartitionState]] with the state of the respective partition.
-   */
-  case class PartitionState(
-      taskExecutionId: ExecutionAttemptID,
-      taskResultId: IntermediateDataSetID,
-      partitionId: IntermediateResultPartitionID,
-      state: ExecutionState)
-    extends TaskMessage with RequiresLeaderSessionID
-
-  /**
    * Base class for messages that update the information about location of input partitions
    */
   abstract sealed class UpdatePartitionInfo extends TaskMessage with RequiresLeaderSessionID {
@@ -127,7 +117,7 @@ object TaskMessages {
    */
   case class UpdateTaskMultiplePartitionInfos(
       executionID: ExecutionAttemptID,
-      partitionInfos: Seq[(IntermediateDataSetID, InputChannelDeploymentDescriptor)])
+      partitionInfos: java.lang.Iterable[PartitionInfo])
     extends UpdatePartitionInfo
 
   /**
@@ -153,25 +143,6 @@ object TaskMessages {
   case class UpdateTaskExecutionState(taskExecutionState: TaskExecutionState)
     extends TaskMessage with RequiresLeaderSessionID
 
-  /**
-   * Response message to updates in the task state. Send for example as a response to
-   *
-   *  - [[SubmitTask]]
-   *  - [[CancelTask]]
-   *
-   * @param executionID identifying the respective task
-   * @param success indicating whether the operation has been successful
-   * @param description Optional description for unsuccessful results.
-   */
-  case class TaskOperationResult(
-      executionID: ExecutionAttemptID,
-      success: Boolean,
-      description: String)
-    extends TaskMessage {
-    def this(executionID: ExecutionAttemptID, success: Boolean) = this(executionID, success, "")
-  }
-
-
   // --------------------------------------------------------------------------
   //  Utility Functions
   // --------------------------------------------------------------------------
@@ -185,9 +156,14 @@ object TaskMessages {
     require(resultIDs.size() == partitionInfos.size(),
       "ResultIDs must have the same length as partitionInfos.")
 
-    import scala.collection.JavaConverters.asScalaBufferConverter
+    val partitionInfoList = new util.ArrayList[PartitionInfo](resultIDs.size())
 
-    new UpdateTaskMultiplePartitionInfos(executionID,
-      resultIDs.asScala.zip(partitionInfos.asScala))
+    for (i <- 0 until resultIDs.size()) {
+      partitionInfoList.add(new PartitionInfo(resultIDs.get(i), partitionInfos.get(i)))
+    }
+
+    new UpdateTaskMultiplePartitionInfos(
+      executionID,
+      partitionInfoList)
   }
 }

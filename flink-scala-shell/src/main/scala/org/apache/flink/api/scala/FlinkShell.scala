@@ -19,6 +19,7 @@
 package org.apache.flink.api.scala
 
 import java.io._
+import java.util.Collections
 
 import org.apache.commons.cli.CommandLine
 import org.apache.flink.client.cli.CliFrontendParser
@@ -142,7 +143,7 @@ object FlinkShell {
   ): (String, Int, Option[Either[FlinkMiniCluster, ClusterClient]]) = {
     config.executionMode match {
       case ExecutionMode.LOCAL => // Local mode
-        val config = GlobalConfiguration.getConfiguration()
+        val config = GlobalConfiguration.loadConfiguration()
         config.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, 0)
 
         val miniCluster = new LocalFlinkMiniCluster(config, false)
@@ -189,7 +190,7 @@ object FlinkShell {
       val conf = cluster match {
         case Some(Left(miniCluster)) => miniCluster.userConfiguration
         case Some(Right(yarnCluster)) => yarnCluster.getFlinkConfiguration
-        case None => GlobalConfiguration.getConfiguration
+        case None => GlobalConfiguration.loadConfiguration()
       }
 
       println(s"\nConnecting to Flink cluster (host: $host, port: $port).\n")
@@ -241,7 +242,7 @@ object FlinkShell {
 
     // set configuration from user input
     yarnConfig.jobManagerMemory.foreach((jmMem) => args ++= Seq("-yjm", jmMem.toString))
-    yarnConfig.slots.foreach((tmMem) => args ++= Seq("-ytm", tmMem.toString))
+    yarnConfig.taskManagerMemory.foreach((tmMem) => args ++= Seq("-ytm", tmMem.toString))
     yarnConfig.name.foreach((name) => args ++= Seq("-ynm", name.toString))
     yarnConfig.queue.foreach((queue) => args ++= Seq("-yqu", queue.toString))
     yarnConfig.slots.foreach((slots) => args ++= Seq("-ys", slots.toString))
@@ -252,7 +253,11 @@ object FlinkShell {
     val config = frontend.getConfiguration
     val customCLI = frontend.getActiveCustomCommandLine(options.getCommandLine)
 
-    val cluster = customCLI.createCluster("Flink Scala Shell", options.getCommandLine, config)
+    val cluster = customCLI.createCluster(
+      "Flink Scala Shell",
+      options.getCommandLine,
+      config,
+      Collections.emptyList())
 
     val address = cluster.getJobManagerAddress.getAddress.getHostAddress
     val port = cluster.getJobManagerAddress.getPort

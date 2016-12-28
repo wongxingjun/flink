@@ -18,9 +18,12 @@
 
 package org.apache.flink.runtime.jobmanager;
 
-import akka.actor.ActorRef;
 import akka.actor.ActorSystem;
-import org.apache.flink.api.common.ExecutionConfig;
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.akka.AkkaUtils;
@@ -28,29 +31,28 @@ import org.apache.flink.runtime.akka.ListeningBehaviour;
 import org.apache.flink.runtime.blob.BlobClient;
 import org.apache.flink.runtime.blob.BlobKey;
 import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.runtime.clusterframework.standalone.StandaloneResourceManager;
 import org.apache.flink.runtime.instance.ActorGateway;
-import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobVertex;
+import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
+import org.apache.flink.runtime.jobgraph.tasks.ExternalizedCheckpointSettings;
+import org.apache.flink.runtime.jobgraph.tasks.JobSnapshottingSettings;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.messages.JobManagerMessages;
+import org.apache.flink.runtime.testtasks.NoOpInvokable;
 import org.apache.flink.runtime.util.LeaderRetrievalUtils;
 import org.apache.flink.util.NetUtils;
-
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
-
 import scala.Tuple2;
 import scala.concurrent.Await;
 import scala.concurrent.Future;
 import scala.concurrent.duration.FiniteDuration;
 
-import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.util.concurrent.TimeUnit;
-
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 /**
@@ -63,28 +65,31 @@ public class JobSubmitTest {
 
 	private static ActorSystem jobManagerSystem;
 	private static ActorGateway jmGateway;
+	private static Configuration jmConfig;
 
 	@BeforeClass
 	public static void setupJobManager() {
-		Configuration config = new Configuration();
+		jmConfig = new Configuration();
 
 		int port = NetUtils.getAvailablePort();
 
-		config.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, "localhost");
-		config.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, port);
+		jmConfig.setString(ConfigConstants.JOB_MANAGER_IPC_ADDRESS_KEY, "localhost");
+		jmConfig.setInteger(ConfigConstants.JOB_MANAGER_IPC_PORT_KEY, port);
 
 		scala.Option<Tuple2<String, Object>> listeningAddress = scala.Option.apply(new Tuple2<String, Object>("localhost", port));
-		jobManagerSystem = AkkaUtils.createActorSystem(config, listeningAddress);
+		jobManagerSystem = AkkaUtils.createActorSystem(jmConfig, listeningAddress);
 
 		// only start JobManager (no ResourceManager)
 		JobManager.startJobManagerActors(
-				config,
-				jobManagerSystem,
-				JobManager.class,
-				MemoryArchivist.class)._1();
+			jmConfig,
+			jobManagerSystem,
+			jobManagerSystem.dispatcher(),
+			jobManagerSystem.dispatcher(),
+			JobManager.class,
+			MemoryArchivist.class)._1();
 
 		try {
-			LeaderRetrievalService lrs = LeaderRetrievalUtils.createLeaderRetrievalService(config);
+			LeaderRetrievalService lrs = LeaderRetrievalUtils.createLeaderRetrievalService(jmConfig);
 
 			jmGateway = LeaderRetrievalUtils.retrieveLeaderGateway(
 					lrs,
@@ -108,7 +113,7 @@ public class JobSubmitTest {
 		try {
 			// create a simple job graph
 			JobVertex jobVertex = new JobVertex("Test Vertex");
-			jobVertex.setInvokableClass(Tasks.NoOpInvokable.class);
+			jobVertex.setInvokableClass(NoOpInvokable.class);
 			JobGraph jg = new JobGraph("test job", jobVertex);
 
 			// request the blob port from the job manager
@@ -117,7 +122,7 @@ public class JobSubmitTest {
 
 			// upload two dummy bytes and add their keys to the job graph as dependencies
 			BlobKey key1, key2;
-			BlobClient bc = new BlobClient(new InetSocketAddress("localhost", blobPort));
+			BlobClient bc = new BlobClient(new InetSocketAddress("localhost", blobPort), jmConfig);
 			try {
 				key1 = bc.put(new byte[10]);
 				key2 = bc.put(new byte[10]);
@@ -166,13 +171,15 @@ public class JobSubmitTest {
 
 			JobVertex jobVertex = new JobVertex("Vertex that fails in initializeOnMaster") {
 
+				private static final long serialVersionUID = -3540303593784587652L;
+
 				@Override
 				public void initializeOnMaster(ClassLoader loader) throws Exception {
 					throw new RuntimeException("test exception");
 				}
 			};
 
-			jobVertex.setInvokableClass(Tasks.NoOpInvokable.class);
+			jobVertex.setInvokableClass(NoOpInvokable.class);
 			JobGraph jg = new JobGraph("test job", jobVertex);
 
 			// submit the job
@@ -197,5 +204,30 @@ public class JobSubmitTest {
 			e.printStackTrace();
 			fail(e.getMessage());
 		}
+	}
+
+	@Test
+	public void testAnswerFailureWhenSavepointReadFails() throws Exception {
+		// create a simple job graph
+		JobGraph jg = createSimpleJobGraph();
+		jg.setSavepointRestoreSettings(SavepointRestoreSettings.forPath("pathThatReallyDoesNotExist..."));
+
+		// submit the job
+		Future<Object> submitFuture = jmGateway.ask(
+			new JobManagerMessages.SubmitJob(jg, ListeningBehaviour.DETACHED), timeout);
+		Object result = Await.result(submitFuture, timeout);
+		assertEquals(JobManagerMessages.JobResultFailure.class, result.getClass());
+	}
+
+	private JobGraph createSimpleJobGraph() {
+		JobVertex jobVertex = new JobVertex("Vertex");
+
+		jobVertex.setInvokableClass(NoOpInvokable.class);
+		List<JobVertexID> vertexIdList = Collections.singletonList(jobVertex.getID());
+
+		JobGraph jg = new JobGraph("test job", jobVertex);
+		jg.setSnapshotSettings(new JobSnapshottingSettings(vertexIdList, vertexIdList, vertexIdList,
+			5000, 5000, 0L, 10, ExternalizedCheckpointSettings.none()));
+		return jg;
 	}
 }

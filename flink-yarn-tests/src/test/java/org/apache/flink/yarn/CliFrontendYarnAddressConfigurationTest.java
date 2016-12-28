@@ -19,15 +19,17 @@
 package org.apache.flink.yarn;
 
 import org.apache.commons.cli.CommandLine;
+
 import org.apache.flink.client.CliFrontend;
 import org.apache.flink.client.cli.CliFrontendParser;
 import org.apache.flink.client.cli.CommandLineOptions;
 import org.apache.flink.client.cli.CustomCommandLine;
 import org.apache.flink.client.cli.RunOptions;
 import org.apache.flink.client.program.ClusterClient;
+import org.apache.flink.client.program.PackagedProgram;
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.test.util.TestBaseUtils;
 import org.apache.flink.yarn.cli.FlinkYarnSessionCli;
@@ -38,19 +40,20 @@ import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.client.api.YarnClient;
 import org.apache.hadoop.yarn.client.api.impl.YarnClientImpl;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+
 import org.junit.AfterClass;
-import org.junit.Before;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+
 import org.mockito.Mockito;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
-import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
@@ -94,14 +97,6 @@ public class CliFrontendYarnAddressConfigurationTest {
 	public static void restoreAfterwards() {
 		System.setOut(OUT);
 		System.setErr(ERR);
-	}
-
-	@Before
-	public void clearConfig() throws NoSuchFieldException, IllegalAccessException {
-		// reset GlobalConfiguration between tests
-		Field instance = GlobalConfiguration.class.getDeclaredField("SINGLETON");
-		instance.setAccessible(true);
-		instance.set(null, null);
 	}
 
 	private static final String TEST_YARN_JOB_MANAGER_ADDRESS = "22.33.44.55";
@@ -199,6 +194,34 @@ public class CliFrontendYarnAddressConfigurationTest {
 			TEST_YARN_JOB_MANAGER_PORT);
 	}
 
+	@Test
+	public void testResumeFromYarnIDZookeeperNamespace() throws Exception {
+		File directoryPath = writeYarnPropertiesFile(validPropertiesFile);
+		// start CLI Frontend
+		TestCLI frontend = new CustomYarnTestCLI(directoryPath.getAbsolutePath());
+
+		RunOptions options =
+				CliFrontendParser.parseRunCommand(new String[] {"-yid", TEST_YARN_APPLICATION_ID.toString()});
+
+		frontend.retrieveClient(options);
+		String zkNs = frontend.getConfiguration().getValue(HighAvailabilityOptions.HA_CLUSTER_ID);
+		Assert.assertTrue(zkNs.matches("application_\\d+_0042"));
+	}
+
+	@Test
+	public void testResumeFromYarnIDZookeeperNamespaceOverride() throws Exception {
+		File directoryPath = writeYarnPropertiesFile(validPropertiesFile);
+		// start CLI Frontend
+		TestCLI frontend = new CustomYarnTestCLI(directoryPath.getAbsolutePath());
+		String overrideZkNamespace = "my_cluster";
+		RunOptions options =
+				CliFrontendParser.parseRunCommand(new String[] {"-yid", TEST_YARN_APPLICATION_ID.toString(), "-yz", overrideZkNamespace});
+
+		frontend.retrieveClient(options);
+		String zkNs = frontend.getConfiguration().getValue(HighAvailabilityOptions.HA_CLUSTER_ID);
+		Assert.assertEquals(overrideZkNamespace, zkNs);
+	}
+
 	@Test(expected = IllegalConfigurationException.class)
 	public void testResumeFromInvalidYarnID() throws Exception {
 		File directoryPath = writeYarnPropertiesFile(validPropertiesFile);
@@ -269,7 +292,7 @@ public class CliFrontendYarnAddressConfigurationTest {
 
 		Configuration config = frontend.getConfiguration();
 
-		InetSocketAddress expectedAddress = new InetSocketAddress("10.221.130.22", 7788);
+		InetSocketAddress expectedAddress = InetSocketAddress.createUnresolved("10.221.130.22", 7788);
 
 		checkJobManagerAddress(config, expectedAddress.getHostName(), expectedAddress.getPort());
 
@@ -302,8 +325,8 @@ public class CliFrontendYarnAddressConfigurationTest {
 
 		@Override
 		// make method public
-		public ClusterClient createClient(CommandLineOptions options, String programName) throws Exception {
-			return super.createClient(options, programName);
+		public ClusterClient createClient(CommandLineOptions options, PackagedProgram program) throws Exception {
+			return super.createClient(options, program);
 		}
 
 		@Override

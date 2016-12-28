@@ -29,7 +29,6 @@ import org.apache.flink.core.fs.Path;
 /**
  * The class <code>LocalFileStatus</code> provides an implementation of the {@link FileStatus} interface
  * for the local file system.
- * 
  */
 @Internal
 public class LocalFileStatus implements FileStatus {
@@ -57,49 +56,50 @@ public class LocalFileStatus implements FileStatus {
 		this.path = new Path(fs.getUri().getScheme() + ":" + f.toURI().getPath());
 	}
 
-
 	@Override
 	public long getAccessTime() {
 		return 0; // We don't have access files for local files
 	}
-
 
 	@Override
 	public long getBlockSize() {
 		return this.file.length();
 	}
 
-
 	@Override
 	public long getLen() {
 		return this.file.length();
 	}
-
 
 	@Override
 	public long getModificationTime() {
 		return this.file.lastModified();
 	}
 
-
 	@Override
 	public short getReplication() {
 		return 1; // For local files replication is always 1
 	}
-
 
 	@Override
 	public boolean isDir() {
 		return this.file.isDirectory();
 	}
 
-
 	@Override
 	public Path getPath() {
 		return this.path;
 	}
-	
+
 	public File getFile() {
 		return this.file;
+	}
+
+	@Override
+	public String toString() {
+		return "LocalFileStatus{" +
+			"file=" + file +
+			", path=" + path +
+			'}';
 	}
 }

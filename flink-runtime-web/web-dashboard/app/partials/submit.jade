@@ -30,7 +30,7 @@ nav.navbar.navbar-default.navbar-fixed-top.navbar-main
     | Yarn's AM proxy doesn't allow file uploads. Please wait while we fetch an alternate url for you to use
   pre(ng-if="address")
     | Yarn's AM proxy doesn't allow file uploads. You can visit&nbsp;
-    a(href="http://{{address}}/#/submit")
+    a(href="{{address}}/#/submit")
       | here
     | &nbsp;to access this functionality.
 
@@ -85,6 +85,13 @@ nav.navbar.navbar-default.navbar-fixed-top.navbar-main
             | {{state['submit-button']}}
           | &nbsp;
           i.fa.fa-spin.fa-spinner(ng-if="state['submit-button'] == 'Submitting'")
+      tr
+        td
+          input.form-control(type="text" placeholder="Savepoint Path" title="Savepoint Path" ng-model="state['savepointPath']")
+        td
+          label.checkbox-inline
+            input.checkbox-inline(type="checkbox", ng-model="state['allowNonRestoredState']")
+            | Allow Non Restored State
 
   table.table.table-no-border(ng-if="jid")
     tbody

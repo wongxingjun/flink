@@ -18,8 +18,8 @@
 
 package org.apache.flink.runtime.webmonitor.handlers;
 
-import org.apache.flink.runtime.executiongraph.Execution;
-import org.apache.flink.runtime.executiongraph.ExecutionVertex;
+import org.apache.flink.runtime.executiongraph.AccessExecution;
+import org.apache.flink.runtime.executiongraph.AccessExecutionVertex;
 import org.apache.flink.runtime.webmonitor.ExecutionGraphHolder;
 
 import java.util.Map;
@@ -37,7 +37,7 @@ public abstract class AbstractSubtaskAttemptRequestHandler extends AbstractSubta
 	}
 	
 	@Override
-	public String handleRequest(ExecutionVertex vertex, Map<String, String> params) throws Exception {
+	public String handleRequest(AccessExecutionVertex vertex, Map<String, String> params) throws Exception {
 		final String attemptNumberString = params.get("attempt");
 		if (attemptNumberString == null) {
 			throw new RuntimeException("Attempt number parameter missing");
@@ -51,18 +51,24 @@ public abstract class AbstractSubtaskAttemptRequestHandler extends AbstractSubta
 			throw new RuntimeException("Invalid attempt number parameter");
 		}
 		
-		final Execution currentAttempt = vertex.getCurrentExecutionAttempt();
+		final AccessExecution currentAttempt = vertex.getCurrentExecutionAttempt();
 		if (attempt == currentAttempt.getAttemptNumber()) {
 			return handleRequest(currentAttempt, params);
 		}
 		else if (attempt >= 0 && attempt < currentAttempt.getAttemptNumber()) {
-			Execution exec = vertex.getPriorExecutionAttempt(attempt);
-			return handleRequest(exec, params);
+			AccessExecution exec = vertex.getPriorExecutionAttempt(attempt);
+
+			if (exec != null) {
+				return handleRequest(exec, params);
+			} else {
+				throw new RequestHandlerException("Execution for attempt " + attempt +
+					" has already been deleted.");
+			}
 		}
 		else {
 			throw new RuntimeException("Attempt does not exist: " + attempt);
 		}
 	}
 
-	public abstract String handleRequest(Execution execAttempt, Map<String, String> params) throws Exception;
+	public abstract String handleRequest(AccessExecution execAttempt, Map<String, String> params) throws Exception;
 }

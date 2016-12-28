@@ -23,9 +23,10 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
+import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
+import org.apache.flink.runtime.checkpoint.SubtaskState;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
@@ -34,8 +35,11 @@ import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.memory.MemoryManager;
-import org.apache.flink.runtime.state.StateHandle;
+import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
+import org.apache.flink.runtime.query.KvStateRegistry;
+import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
+import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
 
 import java.util.Collections;
 import java.util.Map;
@@ -48,9 +52,18 @@ public class DummyEnvironment implements Environment {
 	private final ExecutionAttemptID executionId = new ExecutionAttemptID();
 	private final ExecutionConfig executionConfig = new ExecutionConfig();
 	private final TaskInfo taskInfo;
+	private KvStateRegistry kvStateRegistry = new KvStateRegistry();
 
 	public DummyEnvironment(String taskName, int numSubTasks, int subTaskIndex) {
-		this.taskInfo = new TaskInfo(taskName, subTaskIndex, numSubTasks, 0);
+		this.taskInfo = new TaskInfo(taskName, numSubTasks, subTaskIndex, numSubTasks, 0);
+	}
+
+	public void setKvStateRegistry(KvStateRegistry kvStateRegistry) {
+		this.kvStateRegistry = kvStateRegistry;
+	}
+
+	public KvStateRegistry getKvStateRegistry() {
+		return kvStateRegistry;
 	}
 
 	@Override
@@ -80,7 +93,7 @@ public class DummyEnvironment implements Environment {
 
 	@Override
 	public TaskManagerRuntimeInfo getTaskManagerInfo() {
-		return null;
+		return new TestingTaskManagerRuntimeInfo();
 	}
 
 	@Override
@@ -134,10 +147,22 @@ public class DummyEnvironment implements Environment {
 	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId) {}
+	public TaskKvStateRegistry getTaskKvStateRegistry() {
+		return kvStateRegistry.createTaskRegistry(jobId, jobVertexId);
+	}
 
 	@Override
-	public void acknowledgeCheckpoint(long checkpointId, StateHandle<?> state) {}
+	public void acknowledgeCheckpoint(CheckpointMetaData checkpointMetaData) {
+	}
+
+	@Override
+	public void acknowledgeCheckpoint(CheckpointMetaData checkpointMetaData, SubtaskState subtaskState) {
+	}
+
+	@Override
+	public void declineCheckpoint(long checkpointId, Throwable cause) {
+		throw new UnsupportedOperationException();
+	}
 
 	@Override
 	public void failExternally(Throwable cause) {

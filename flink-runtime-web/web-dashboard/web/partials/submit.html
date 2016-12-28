@@ -26,7 +26,7 @@ limitations under the License.
 </div>
 <div id="content-inner" ng-if="!noaccess &amp;&amp; yarn">
   <pre ng-if="!address">Yarn's AM proxy doesn't allow file uploads. Please wait while we fetch an alternate url for you to use</pre>
-  <pre ng-if="address">Yarn's AM proxy doesn't allow file uploads. You can visit&nbsp;<a href="http://{{address}}/#/submit">here</a>&nbsp;to access this functionality.</pre>
+  <pre ng-if="address">Yarn's AM proxy doesn't allow file uploads. You can visit&nbsp;<a href="{{address}}/#/submit">here</a>&nbsp;to access this functionality.</pre>
 </div>
 <div id="content-inner" ng-if="!noaccess &amp;&amp; jars &amp;&amp; !yarn">
   <div class="panel panel-default">
@@ -74,6 +74,16 @@ limitations under the License.
           <input type="text" placeholder="Program Arguments" title="Program Arguments" ng-model="state['program-args']" class="form-control"/>
         </td>
         <td><span id="job-submit" ng-click="runJob()" class="btn btn-success btn-sm">{{state['submit-button']}}</span>&nbsp;<i ng-if="state['submit-button'] == 'Submitting'" class="fa fa-spin fa-spinner"></i></td>
+      </tr>
+      <tr>
+        <td>
+          <input type="text" placeholder="Savepoint Path" title="Savepoint Path" ng-model="state['savepointPath']" class="form-control"/>
+        </td>
+        <td>
+          <label class="checkbox-inline">
+            <input type="checkbox" ng-model="state['allowNonRestoredState']" class="checkbox-inline"/>Allow Non Restored State
+          </label>
+        </td>
       </tr>
     </tbody>
   </table>

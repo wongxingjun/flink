@@ -18,7 +18,9 @@
 
 package org.apache.flink.api.common.state;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -27,19 +29,26 @@ import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.util.Preconditions;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.Serializable;
+import java.util.concurrent.atomic.AtomicReference;
 
-import static java.util.Objects.requireNonNull;
+import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * Base class for state descriptors. A {@code StateDescriptor} is used for creating partitioned
- * {@link State} in stateful operations. This contains the name and can create an actual state
- * object given a {@link StateBackend} using {@link #bind(StateBackend)}.
+ * {@link State} in stateful operations.
  *
  * <p>Subclasses must correctly implement {@link #equals(Object)} and {@link #hashCode()}.
  *
@@ -48,294 +57,358 @@ import static java.util.Objects.requireNonNull;
  */
 @PublicEvolving
 public abstract class StateDescriptor<S extends State, T> implements Serializable {
+    private static final Logger LOG = LoggerFactory.getLogger(StateDescriptor.class);
 
-	public enum Type {
-		VALUE, LIST, REDUCING, FOLDING, @Deprecated UNKNOWN
-	}
+    /**
+     * An enumeration of the types of supported states. Used to identify the state type when writing
+     * and restoring checkpoints and savepoints.
+     */
+    // IMPORTANT: Do not change the order of the elements in this enum, ordinal is used in
+    // serialization
+    public enum Type {
+        /** @deprecated Enum for migrating from old checkpoints/savepoint versions. */
+        @Deprecated
+        UNKNOWN,
+        VALUE,
+        LIST,
+        REDUCING,
+        FOLDING,
+        AGGREGATING,
+        MAP
+    }
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	/** Name that uniquely identifies state created from this StateDescriptor. */
-	protected final String name;
+    // ------------------------------------------------------------------------
 
-	/** The serializer for the type. May be eagerly initialized in the constructor,
-	 * or lazily once the type is serialized or an ExecutionConfig is provided. */
-	protected TypeSerializer<T> serializer;
+    /** Name that uniquely identifies state created from this StateDescriptor. */
+    protected final String name;
 
-	/** Name for queries against state created from this StateDescriptor. */
-	private String queryableStateName;
+    /**
+     * The serializer for the type. May be eagerly initialized in the constructor, or lazily once
+     * the {@link #initializeSerializerUnlessSet(ExecutionConfig)} method is called.
+     */
+    private final AtomicReference<TypeSerializer<T>> serializerAtomicReference =
+            new AtomicReference<>();
 
-	/** The default value returned by the state when no other value is bound to a key */
-	protected transient T defaultValue;
+    /**
+     * The type information describing the value type. Only used to if the serializer is created
+     * lazily.
+     */
+    @Nullable private TypeInformation<T> typeInfo;
 
-	/** The type information describing the value type. Only used to lazily create the serializer
-	 * and dropped during serialization */
-	private transient TypeInformation<T> typeInfo;
+    /** Name for queries against state created from this StateDescriptor. */
+    @Nullable private String queryableStateName;
 
-	// ------------------------------------------------------------------------
+    /** Name for queries against state created from this StateDescriptor. */
+    @Nonnull private StateTtlConfig ttlConfig = StateTtlConfig.DISABLED;
 
-	/**
-	 * Create a new {@code StateDescriptor} with the given name and the given type serializer.
-	 *
-	 * @param name The name of the {@code StateDescriptor}.
-	 * @param serializer The type serializer for the values in the state.
-	 * @param defaultValue The default value that will be set when requesting state without setting
-	 *                     a value before.
-	 */
-	protected StateDescriptor(String name, TypeSerializer<T> serializer, T defaultValue) {
-		this.name = requireNonNull(name, "name must not be null");
-		this.serializer = requireNonNull(serializer, "serializer must not be null");
-		this.defaultValue = defaultValue;
-	}
+    /** The default value returned by the state when no other value is bound to a key. */
+    @Nullable protected transient T defaultValue;
 
-	/**
-	 * Create a new {@code StateDescriptor} with the given name and the given type information.
-	 *
-	 * @param name The name of the {@code StateDescriptor}.
-	 * @param typeInfo The type information for the values in the state.
-	 * @param defaultValue The default value that will be set when requesting state without setting
-	 *                     a value before.   
-	 */
-	protected StateDescriptor(String name, TypeInformation<T> typeInfo, T defaultValue) {
-		this.name = requireNonNull(name, "name must not be null");
-		this.typeInfo = requireNonNull(typeInfo, "type information must not be null");
-		this.defaultValue = defaultValue;
-	}
+    // ------------------------------------------------------------------------
 
-	/**
-	 * Create a new {@code StateDescriptor} with the given name and the given type information.
-	 *
-	 * <p>If this constructor fails (because it is not possible to describe the type via a class),
-	 * consider using the {@link #StateDescriptor(String, TypeInformation, Object)} constructor.
-	 *
-	 * @param name The name of the {@code StateDescriptor}.
-	 * @param type The class of the type of values in the state.
-	 * @param defaultValue The default value that will be set when requesting state without setting
-	 *                     a value before.   
-	 */
-	protected StateDescriptor(String name, Class<T> type, T defaultValue) {
-		this.name = requireNonNull(name, "name must not be null");
-		requireNonNull(type, "type class must not be null");
+    /**
+     * Create a new {@code StateDescriptor} with the given name and the given type serializer.
+     *
+     * @param name The name of the {@code StateDescriptor}.
+     * @param serializer The type serializer for the values in the state.
+     * @param defaultValue The default value that will be set when requesting state without setting
+     *     a value before.
+     */
+    protected StateDescriptor(String name, TypeSerializer<T> serializer, @Nullable T defaultValue) {
+        this.name = checkNotNull(name, "name must not be null");
+        this.serializerAtomicReference.set(checkNotNull(serializer, "serializer must not be null"));
+        this.defaultValue = defaultValue;
+    }
 
-		try {
-			this.typeInfo = TypeExtractor.createTypeInfo(type);
-		} catch (Exception e) {
-			throw new RuntimeException("Cannot create full type information based on the given class. If the type has generics, please", e);
-		}
+    /**
+     * Create a new {@code StateDescriptor} with the given name and the given type information.
+     *
+     * @param name The name of the {@code StateDescriptor}.
+     * @param typeInfo The type information for the values in the state.
+     * @param defaultValue The default value that will be set when requesting state without setting
+     *     a value before.
+     */
+    protected StateDescriptor(String name, TypeInformation<T> typeInfo, @Nullable T defaultValue) {
+        this.name = checkNotNull(name, "name must not be null");
+        this.typeInfo = checkNotNull(typeInfo, "type information must not be null");
+        this.defaultValue = defaultValue;
+    }
 
-		this.defaultValue = defaultValue;
-	}
+    /**
+     * Create a new {@code StateDescriptor} with the given name and the given type information.
+     *
+     * <p>If this constructor fails (because it is not possible to describe the type via a class),
+     * consider using the {@link #StateDescriptor(String, TypeInformation, Object)} constructor.
+     *
+     * @param name The name of the {@code StateDescriptor}.
+     * @param type The class of the type of values in the state.
+     * @param defaultValue The default value that will be set when requesting state without setting
+     *     a value before.
+     */
+    protected StateDescriptor(String name, Class<T> type, @Nullable T defaultValue) {
+        this.name = checkNotNull(name, "name must not be null");
+        checkNotNull(type, "type class must not be null");
 
-	// ------------------------------------------------------------------------
+        try {
+            this.typeInfo = TypeExtractor.createTypeInfo(type);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Could not create the type information for '"
+                            + type.getName()
+                            + "'. "
+                            + "The most common reason is failure to infer the generic type information, due to Java's type erasure. "
+                            + "In that case, please pass a 'TypeHint' instead of a class to describe the type. "
+                            + "For example, to describe 'Tuple2<String, String>' as a generic type, use "
+                            + "'new PravegaDeserializationSchema<>(new TypeHint<Tuple2<String, String>>(){}, serializer);'",
+                    e);
+        }
 
-	/**
-	 * Returns the name of this {@code StateDescriptor}.
-	 */
-	public String getName() {
-		return name;
-	}
+        this.defaultValue = defaultValue;
+    }
 
-	/**
-	 * Returns the default value.
-	 */
-	public T getDefaultValue() {
-		if (defaultValue != null) {
-			if (serializer != null) {
-				return serializer.copy(defaultValue);
-			} else {
-				throw new IllegalStateException("Serializer not yet initialized.");
-			}
-		} else {
-			return null;
-		}
-	}
+    // ------------------------------------------------------------------------
 
-	/**
-	 * Returns the {@link TypeSerializer} that can be used to serialize the value in the state.
-	 * Note that the serializer may initialized lazily and is only guaranteed to exist after
-	 * calling {@link #initializeSerializerUnlessSet(ExecutionConfig)}.
-	 */
-	public TypeSerializer<T> getSerializer() {
-		if (serializer != null) {
-			return serializer;
-		} else {
-			throw new IllegalStateException("Serializer not yet initialized.");
-		}
-	}
+    /** Returns the name of this {@code StateDescriptor}. */
+    public String getName() {
+        return name;
+    }
 
-	/**
-	 * Sets the name for queries of state created from this descriptor.
-	 *
-	 * <p>If a name is set, the created state will be published for queries
-	 * during runtime. The name needs to be unique per job. If there is another
-	 * state instance published under the same name, the job will fail during runtime.
-	 *
-	 * @param queryableStateName State name for queries (unique name per job)
-	 * @throws IllegalStateException If queryable state name already set
-	 */
-	public void setQueryable(String queryableStateName) {
-		if (this.queryableStateName == null) {
-			this.queryableStateName = Preconditions.checkNotNull(queryableStateName, "Registration name");
-		} else {
-			throw new IllegalStateException("Queryable state name already set");
-		}
-	}
+    /** Returns the default value. */
+    public T getDefaultValue() {
+        if (defaultValue != null) {
+            TypeSerializer<T> serializer = serializerAtomicReference.get();
+            if (serializer != null) {
+                return serializer.copy(defaultValue);
+            } else {
+                throw new IllegalStateException("Serializer not yet initialized.");
+            }
+        } else {
+            return null;
+        }
+    }
 
-	/**
-	 * Returns the queryable state name.
-	 *
-	 * @return Queryable state name or <code>null</code> if not set.
-	 */
-	public String getQueryableStateName() {
-		return queryableStateName;
-	}
+    /**
+     * Returns the {@link TypeSerializer} that can be used to serialize the value in the state. Note
+     * that the serializer may initialized lazily and is only guaranteed to exist after calling
+     * {@link #initializeSerializerUnlessSet(ExecutionConfig)}.
+     */
+    public TypeSerializer<T> getSerializer() {
+        TypeSerializer<T> serializer = serializerAtomicReference.get();
+        if (serializer != null) {
+            return serializer.duplicate();
+        } else {
+            throw new IllegalStateException("Serializer not yet initialized.");
+        }
+    }
 
-	/**
-	 * Returns whether the state created from this descriptor is queryable.
-	 *
-	 * @return <code>true</code> if state is queryable, <code>false</code>
-	 * otherwise.
-	 */
-	public boolean isQueryable() {
-		return queryableStateName != null;
-	}
+    @VisibleForTesting
+    final TypeSerializer<T> getOriginalSerializer() {
+        TypeSerializer<T> serializer = serializerAtomicReference.get();
+        if (serializer != null) {
+            return serializer;
+        } else {
+            throw new IllegalStateException("Serializer not yet initialized.");
+        }
+    }
 
-	/**
-	 * Creates a new {@link State} on the given {@link StateBackend}.
-	 *
-	 * @param stateBackend The {@code StateBackend} on which to create the {@link State}.
-	 */
-	public abstract S bind(StateBackend stateBackend) throws Exception;
+    /**
+     * Sets the name for queries of state created from this descriptor.
+     *
+     * <p>If a name is set, the created state will be published for queries during runtime. The name
+     * needs to be unique per job. If there is another state instance published under the same name,
+     * the job will fail during runtime.
+     *
+     * @param queryableStateName State name for queries (unique name per job)
+     * @throws IllegalStateException If queryable state name already set
+     */
+    public void setQueryable(String queryableStateName) {
+        Preconditions.checkArgument(
+                ttlConfig.getUpdateType() == StateTtlConfig.UpdateType.Disabled,
+                "Queryable state is currently not supported with TTL");
+        if (this.queryableStateName == null) {
+            this.queryableStateName =
+                    Preconditions.checkNotNull(queryableStateName, "Registration name");
+        } else {
+            throw new IllegalStateException("Queryable state name already set");
+        }
+    }
 
-	// ------------------------------------------------------------------------
+    /**
+     * Returns the queryable state name.
+     *
+     * @return Queryable state name or <code>null</code> if not set.
+     */
+    @Nullable
+    public String getQueryableStateName() {
+        return queryableStateName;
+    }
 
-	/**
-	 * Checks whether the serializer has been initialized. Serializer initialization is lazy,
-	 * to allow parametrization of serializers with an {@link ExecutionConfig} via
-	 * {@link #initializeSerializerUnlessSet(ExecutionConfig)}.
-	 *
-	 * @return True if the serializers have been initialized, false otherwise.
-	 */
-	public boolean isSerializerInitialized() {
-		return serializer != null;
-	}
+    /**
+     * Returns whether the state created from this descriptor is queryable.
+     *
+     * @return <code>true</code> if state is queryable, <code>false</code> otherwise.
+     */
+    public boolean isQueryable() {
+        return queryableStateName != null;
+    }
 
-	/**
-	 * Initializes the serializer, unless it has been initialized before.
-	 *
-	 * @param executionConfig The execution config to use when creating the serializer.
-	 */
-	public void initializeSerializerUnlessSet(ExecutionConfig executionConfig) {
-		if (serializer == null) {
-			if (typeInfo != null) {
-				serializer = typeInfo.createSerializer(executionConfig);
-			} else {
-				throw new IllegalStateException(
-						"Cannot initialize serializer after TypeInformation was dropped during serialization");
-			}
-		}
-	}
+    /**
+     * Configures optional activation of state time-to-live (TTL).
+     *
+     * <p>State user value will expire, become unavailable and be cleaned up in storage depending on
+     * configured {@link StateTtlConfig}.
+     *
+     * @param ttlConfig configuration of state TTL
+     */
+    public void enableTimeToLive(StateTtlConfig ttlConfig) {
+        Preconditions.checkNotNull(ttlConfig);
+        Preconditions.checkArgument(
+                ttlConfig.getUpdateType() != StateTtlConfig.UpdateType.Disabled
+                        && queryableStateName == null,
+                "Queryable state is currently not supported with TTL");
+        this.ttlConfig = ttlConfig;
+    }
 
-	/**
-	 * This method should be called by subclasses prior to serialization. Because the TypeInformation is
-	 * not always serializable, it is 'transient' and dropped during serialization. Hence, the descriptor
-	 * needs to make sure that the serializer is created before the TypeInformation is dropped. 
-	 */
-	private void ensureSerializerCreated() {
-		if (serializer == null) {
-			if (typeInfo != null) {
-				serializer = typeInfo.createSerializer(new ExecutionConfig());
-			} else {
-				throw new IllegalStateException(
-						"Cannot initialize serializer after TypeInformation was dropped during serialization");
-			}
-		}
-	}
+    @Nonnull
+    @Internal
+    public StateTtlConfig getTtlConfig() {
+        return ttlConfig;
+    }
 
-	// ------------------------------------------------------------------------
-	//  Standard Utils
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
-	@Override
-	public abstract int hashCode();
+    /**
+     * Checks whether the serializer has been initialized. Serializer initialization is lazy, to
+     * allow parametrization of serializers with an {@link ExecutionConfig} via {@link
+     * #initializeSerializerUnlessSet(ExecutionConfig)}.
+     *
+     * @return True if the serializers have been initialized, false otherwise.
+     */
+    public boolean isSerializerInitialized() {
+        return serializerAtomicReference.get() != null;
+    }
 
-	@Override
-	public abstract boolean equals(Object o);
+    /**
+     * Initializes the serializer, unless it has been initialized before.
+     *
+     * @param executionConfig The execution config to use when creating the serializer.
+     */
+    public void initializeSerializerUnlessSet(ExecutionConfig executionConfig) {
+        if (serializerAtomicReference.get() == null) {
+            checkState(typeInfo != null, "no serializer and no type info");
+            // try to instantiate and set the serializer
+            TypeSerializer<T> serializer = typeInfo.createSerializer(executionConfig);
+            // use cas to assure the singleton
+            if (!serializerAtomicReference.compareAndSet(null, serializer)) {
+                LOG.debug("Someone else beat us at initializing the serializer.");
+            }
+        }
+    }
 
-	@Override
-	public String toString() {
-		return getClass().getSimpleName() +
-				"{name=" + name +
-				", defaultValue=" + defaultValue +
-				", serializer=" + serializer +
-				(isQueryable() ? ", queryableStateName=" + queryableStateName + "" : "") +
-				'}';
-	}
+    // ------------------------------------------------------------------------
+    //  Standard Utils
+    // ------------------------------------------------------------------------
 
-	public abstract Type getType();
+    @Override
+    public final int hashCode() {
+        return name.hashCode() + 31 * getClass().hashCode();
+    }
 
-	// ------------------------------------------------------------------------
-	//  Serialization
-	// ------------------------------------------------------------------------
+    @Override
+    public final boolean equals(Object o) {
+        if (o == this) {
+            return true;
+        } else if (o != null && o.getClass() == this.getClass()) {
+            final StateDescriptor<?, ?> that = (StateDescriptor<?, ?>) o;
+            return this.name.equals(that.name);
+        } else {
+            return false;
+        }
+    }
 
-	private void writeObject(final ObjectOutputStream out) throws IOException {
-		// make sure we have a serializer before the type information gets lost
-		ensureSerializerCreated();
+    @Override
+    public String toString() {
+        return getClass().getSimpleName()
+                + "{name="
+                + name
+                + ", defaultValue="
+                + defaultValue
+                + ", serializer="
+                + serializerAtomicReference.get()
+                + (isQueryable() ? ", queryableStateName=" + queryableStateName + "" : "")
+                + '}';
+    }
 
-		// write all the non-transient fields
-		out.defaultWriteObject();
+    public abstract Type getType();
 
-		// write the non-serializable default value field
-		if (defaultValue == null) {
-			// we don't have a default value
-			out.writeBoolean(false);
-		} else {
-			// we have a default value
-			out.writeBoolean(true);
+    // ------------------------------------------------------------------------
+    //  Serialization
+    // ------------------------------------------------------------------------
 
-			byte[] serializedDefaultValue;
-			try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-					DataOutputViewStreamWrapper outView = new DataOutputViewStreamWrapper(baos))
-			{
-				TypeSerializer<T> duplicateSerializer = serializer.duplicate();
-				duplicateSerializer.serialize(defaultValue, outView);
+    private void writeObject(final ObjectOutputStream out) throws IOException {
+        // write all the non-transient fields
+        out.defaultWriteObject();
 
-				outView.flush();
-				serializedDefaultValue = baos.toByteArray();
-			}
-			catch (Exception e) {
-				throw new IOException("Unable to serialize default value of type " +
-						defaultValue.getClass().getSimpleName() + ".", e);
-			}
+        // write the non-serializable default value field
+        if (defaultValue == null) {
+            // we don't have a default value
+            out.writeBoolean(false);
+        } else {
+            TypeSerializer<T> serializer = serializerAtomicReference.get();
+            checkNotNull(serializer, "Serializer not initialized.");
 
-			out.writeInt(serializedDefaultValue.length);
-			out.write(serializedDefaultValue);
-		}
-	}
+            // we have a default value
+            out.writeBoolean(true);
 
-	private void readObject(final ObjectInputStream in) throws IOException, ClassNotFoundException {
-		// read the non-transient fields
-		in.defaultReadObject();
+            byte[] serializedDefaultValue;
+            try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    DataOutputViewStreamWrapper outView = new DataOutputViewStreamWrapper(baos)) {
 
-		// read the default value field
-		boolean hasDefaultValue = in.readBoolean();
-		if (hasDefaultValue) {
-			int size = in.readInt();
+                TypeSerializer<T> duplicateSerializer = serializer.duplicate();
+                duplicateSerializer.serialize(defaultValue, outView);
 
-			byte[] buffer = new byte[size];
+                outView.flush();
+                serializedDefaultValue = baos.toByteArray();
+            } catch (Exception e) {
+                throw new IOException(
+                        "Unable to serialize default value of type "
+                                + defaultValue.getClass().getSimpleName()
+                                + ".",
+                        e);
+            }
 
-			in.readFully(buffer);
+            out.writeInt(serializedDefaultValue.length);
+            out.write(serializedDefaultValue);
+        }
+    }
 
-			try (ByteArrayInputStream bais = new ByteArrayInputStream(buffer);
-					DataInputViewStreamWrapper inView = new DataInputViewStreamWrapper(bais))
-			{
-				defaultValue = serializer.deserialize(inView);
-			}
-			catch (Exception e) {
-				throw new IOException("Unable to deserialize default value.", e);
-			}
-		} else {
-			defaultValue = null;
-		}
-	}
+    private void readObject(final ObjectInputStream in) throws IOException, ClassNotFoundException {
+        // read the non-transient fields
+        in.defaultReadObject();
+
+        // read the default value field
+        boolean hasDefaultValue = in.readBoolean();
+        if (hasDefaultValue) {
+            TypeSerializer<T> serializer = serializerAtomicReference.get();
+            checkNotNull(serializer, "Serializer not initialized.");
+
+            int size = in.readInt();
+
+            byte[] buffer = new byte[size];
+
+            in.readFully(buffer);
+
+            try (ByteArrayInputStream bais = new ByteArrayInputStream(buffer);
+                    DataInputViewStreamWrapper inView = new DataInputViewStreamWrapper(bais)) {
+
+                defaultValue = serializer.deserialize(inView);
+            } catch (Exception e) {
+                throw new IOException("Unable to deserialize default value.", e);
+            }
+        } else {
+            defaultValue = null;
+        }
+    }
 }

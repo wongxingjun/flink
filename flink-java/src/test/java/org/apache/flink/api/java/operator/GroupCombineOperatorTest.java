@@ -31,6 +31,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.util.Collector;
+
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -38,308 +39,359 @@ import java.util.List;
 
 import static org.junit.Assert.assertTrue;
 
+/** Tests for {@link DataSet#combineGroup(GroupCombineFunction)}. */
 @SuppressWarnings("serial")
 public class GroupCombineOperatorTest {
 
-	private final List<Tuple5<Integer, Long, String, Long, Integer>> emptyTupleData =
-			new ArrayList<Tuple5<Integer, Long, String, Long, Integer>>();
-	
-	private final TupleTypeInfo<Tuple5<Integer, Long, String, Long, Integer>> tupleTypeInfo = new 
-			TupleTypeInfo<Tuple5<Integer, Long, String, Long, Integer>>(
-					BasicTypeInfo.INT_TYPE_INFO,
-					BasicTypeInfo.LONG_TYPE_INFO,
-					BasicTypeInfo.STRING_TYPE_INFO,
-					BasicTypeInfo.LONG_TYPE_INFO,
-					BasicTypeInfo.INT_TYPE_INFO
-			);
-	
-	@Test
-	public void testSemanticPropsWithKeySelector1() {
-		
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+    private final List<Tuple5<Integer, Long, String, Long, Integer>> emptyTupleData =
+            new ArrayList<Tuple5<Integer, Long, String, Long, Integer>>();
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.combineGroup(new DummyGroupCombineFunction1());
+    private final TupleTypeInfo<Tuple5<Integer, Long, String, Long, Integer>> tupleTypeInfo =
+            new TupleTypeInfo<Tuple5<Integer, Long, String, Long, Integer>>(
+                    BasicTypeInfo.INT_TYPE_INFO,
+                    BasicTypeInfo.LONG_TYPE_INFO,
+                    BasicTypeInfo.STRING_TYPE_INFO,
+                    BasicTypeInfo.LONG_TYPE_INFO,
+                    BasicTypeInfo.INT_TYPE_INFO);
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector1() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).contains(4));
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 2);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 3).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).contains(2));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 0);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 3);
-		assertTrue(semProps.getForwardingSourceField(0, 2) == 4);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 3);
-		assertTrue(semProps.getForwardingSourceField(0, 4) == 2);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .combineGroup(new DummyGroupCombineFunction1());
 
-		assertTrue(semProps.getReadFields(0).size() == 3);
-		assertTrue(semProps.getReadFields(0).contains(2));
-		assertTrue(semProps.getReadFields(0).contains(5));
-		assertTrue(semProps.getReadFields(0).contains(6));
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	@Test
-	public void testSemanticPropsWithKeySelector2() {
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).contains(4));
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 2);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 3).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).contains(2));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 0);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+        assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 3);
+        assertTrue(semProps.getForwardingSourceField(0, 2) == 4);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 3);
+        assertTrue(semProps.getForwardingSourceField(0, 4) == 2);
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.sortGroup(new DummyTestKeySelector(), Order.ASCENDING)
-						.combineGroup(new DummyGroupCombineFunction1());
+        assertTrue(semProps.getReadFields(0).size() == 3);
+        assertTrue(semProps.getReadFields(0).contains(2));
+        assertTrue(semProps.getReadFields(0).contains(5));
+        assertTrue(semProps.getReadFields(0).contains(6));
+    }
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector2() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).contains(4));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 2);
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).contains(2));
-		assertTrue(semProps.getForwardingTargetFields(0, 7).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 8).size() == 0);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 2) == 6);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 4) == 4);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .sortGroup(new DummyTestKeySelector(), Order.ASCENDING)
+                                .combineGroup(new DummyGroupCombineFunction1());
 
-		assertTrue(semProps.getReadFields(0).size() == 3);
-		assertTrue(semProps.getReadFields(0).contains(4));
-		assertTrue(semProps.getReadFields(0).contains(7));
-		assertTrue(semProps.getReadFields(0).contains(8));
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	@Test
-	public void testSemanticPropsWithKeySelector3() {
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).contains(4));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 2);
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).contains(2));
+        assertTrue(semProps.getForwardingTargetFields(0, 7).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 8).size() == 0);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+        assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 2) == 6);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 4) == 4);
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.combineGroup(new DummyGroupCombineFunction2())
-							.withForwardedFields("0->4;1;1->3;2");
+        assertTrue(semProps.getReadFields(0).size() == 3);
+        assertTrue(semProps.getReadFields(0).contains(4));
+        assertTrue(semProps.getReadFields(0).contains(7));
+        assertTrue(semProps.getReadFields(0).contains(8));
+    }
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector3() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).contains(4));
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 2);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 3).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).contains(2));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 0);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 3);
-		assertTrue(semProps.getForwardingSourceField(0, 2) == 4);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 3);
-		assertTrue(semProps.getForwardingSourceField(0, 4) == 2);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .combineGroup(new DummyGroupCombineFunction2())
+                                .withForwardedFields("0->4;1;1->3;2");
 
-		assertTrue(semProps.getReadFields(0).size() == 3);
-		assertTrue(semProps.getReadFields(0).contains(2));
-		assertTrue(semProps.getReadFields(0).contains(5));
-		assertTrue(semProps.getReadFields(0).contains(6));
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	@Test
-	public void testSemanticPropsWithKeySelector4() {
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).contains(4));
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 2);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 3).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).contains(2));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 0);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+        assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 3);
+        assertTrue(semProps.getForwardingSourceField(0, 2) == 4);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 3);
+        assertTrue(semProps.getForwardingSourceField(0, 4) == 2);
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.sortGroup(new DummyTestKeySelector(), Order.ASCENDING)
-						.combineGroup(new DummyGroupCombineFunction2())
-							.withForwardedFields("0->4;1;1->3;2");
+        assertTrue(semProps.getReadFields(0).size() == 3);
+        assertTrue(semProps.getReadFields(0).contains(2));
+        assertTrue(semProps.getReadFields(0).contains(5));
+        assertTrue(semProps.getReadFields(0).contains(6));
+    }
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector4() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).contains(4));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 2);
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).contains(2));
-		assertTrue(semProps.getForwardingTargetFields(0, 7).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 8).size() == 0);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 2) == 6);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 4) == 4);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .sortGroup(new DummyTestKeySelector(), Order.ASCENDING)
+                                .combineGroup(new DummyGroupCombineFunction2())
+                                .withForwardedFields("0->4;1;1->3;2");
 
-		assertTrue(semProps.getReadFields(0).size() == 3);
-		assertTrue(semProps.getReadFields(0).contains(4));
-		assertTrue(semProps.getReadFields(0).contains(7));
-		assertTrue(semProps.getReadFields(0).contains(8));
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	@Test
-	public void testSemanticPropsWithKeySelector5() {
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).contains(4));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 2);
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).contains(2));
+        assertTrue(semProps.getForwardingTargetFields(0, 7).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 8).size() == 0);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+        assertTrue(semProps.getForwardingSourceField(0, 0) < 0);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 2) == 6);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 4) == 4);
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.combineGroup(new DummyGroupCombineFunction3())
-						.withForwardedFields("4->0;3;3->1;2");
+        assertTrue(semProps.getReadFields(0).size() == 3);
+        assertTrue(semProps.getReadFields(0).contains(4));
+        assertTrue(semProps.getReadFields(0).contains(7));
+        assertTrue(semProps.getReadFields(0).contains(8));
+    }
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector5() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).contains(2));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 2);
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).contains(0));
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) == 6);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 2) == 4);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 4) < 0);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .combineGroup(new DummyGroupCombineFunction3())
+                                .withForwardedFields("4->0;3;3->1;2");
 
-		assertTrue(semProps.getReadFields(0) == null);
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	@Test
-	public void testSemanticPropsWithKeySelector6() {
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).contains(2));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 2);
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).contains(0));
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+        assertTrue(semProps.getForwardingSourceField(0, 0) == 6);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 2) == 4);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 4) < 0);
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.sortGroup(new DummyTestKeySelector(), Order.ASCENDING)
-						.combineGroup(new DummyGroupCombineFunction3())
-						.withForwardedFields("4->0;3;3->1;2");
+        assertTrue(semProps.getReadFields(0) == null);
+    }
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector6() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 6).contains(2));
-		assertTrue(semProps.getForwardingTargetFields(0, 7).size() == 2);
-		assertTrue(semProps.getForwardingTargetFields(0, 7).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 7).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 8).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 8).contains(0));
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) == 8);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 7);
-		assertTrue(semProps.getForwardingSourceField(0, 2) == 6);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 7);
-		assertTrue(semProps.getForwardingSourceField(0, 4) < 0);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .sortGroup(new DummyTestKeySelector(), Order.ASCENDING)
+                                .combineGroup(new DummyGroupCombineFunction3())
+                                .withForwardedFields("4->0;3;3->1;2");
 
-		assertTrue(semProps.getReadFields(0) == null);
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	@Test
-	public void testSemanticPropsWithKeySelector7() {
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 6).contains(2));
+        assertTrue(semProps.getForwardingTargetFields(0, 7).size() == 2);
+        assertTrue(semProps.getForwardingTargetFields(0, 7).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 7).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 8).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 8).contains(0));
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs = env.fromCollection(emptyTupleData, tupleTypeInfo);
+        assertTrue(semProps.getForwardingSourceField(0, 0) == 8);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 7);
+        assertTrue(semProps.getForwardingSourceField(0, 2) == 6);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 7);
+        assertTrue(semProps.getForwardingSourceField(0, 4) < 0);
 
-		GroupCombineOperator<Tuple5<Integer, Long, String, Long, Integer>,Tuple5<Integer, Long, String, Long, Integer>> combineOp =
-				tupleDs.groupBy(new DummyTestKeySelector())
-						.combineGroup(new DummyGroupCombineFunction4());
+        assertTrue(semProps.getReadFields(0) == null);
+    }
 
-		SemanticProperties semProps = combineOp.getSemanticProperties();
+    @Test
+    public void testSemanticPropsWithKeySelector7() {
 
-		assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 2).contains(0));
-		assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 3).contains(1));
-		assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 0);
-		assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 1);
-		assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
-		assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 0);
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<Tuple5<Integer, Long, String, Long, Integer>> tupleDs =
+                env.fromCollection(emptyTupleData, tupleTypeInfo);
 
-		assertTrue(semProps.getForwardingSourceField(0, 0) == 2);
-		assertTrue(semProps.getForwardingSourceField(0, 1) == 3);
-		assertTrue(semProps.getForwardingSourceField(0, 2) < 0);
-		assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
-		assertTrue(semProps.getForwardingSourceField(0, 4) < 0);
+        GroupCombineOperator<
+                        Tuple5<Integer, Long, String, Long, Integer>,
+                        Tuple5<Integer, Long, String, Long, Integer>>
+                combineOp =
+                        tupleDs.groupBy(new DummyTestKeySelector())
+                                .combineGroup(new DummyGroupCombineFunction4());
 
-		assertTrue(semProps.getReadFields(0) == null);
-	}
+        SemanticProperties semProps = combineOp.getSemanticProperties();
 
-	public static class DummyTestKeySelector implements KeySelector<Tuple5<Integer, Long, String, Long, Integer>, Tuple2<Long, Integer>> {
-		@Override
-		public Tuple2<Long, Integer> getKey(Tuple5<Integer, Long, String, Long, Integer> value) throws Exception {
-			return new Tuple2<Long, Integer>();
-		}
-	}
+        assertTrue(semProps.getForwardingTargetFields(0, 0).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 1).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 2).contains(0));
+        assertTrue(semProps.getForwardingTargetFields(0, 3).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 3).contains(1));
+        assertTrue(semProps.getForwardingTargetFields(0, 4).size() == 0);
+        assertTrue(semProps.getForwardingTargetFields(0, 5).size() == 1);
+        assertTrue(semProps.getForwardingTargetFields(0, 5).contains(3));
+        assertTrue(semProps.getForwardingTargetFields(0, 6).size() == 0);
 
-	@FunctionAnnotation.ForwardedFields("0->4;1;1->3;2")
-	@FunctionAnnotation.ReadFields("0;3;4")
-	public static class DummyGroupCombineFunction1 implements GroupCombineFunction<Tuple5<Integer, Long, String, Long, Integer>, Tuple5<Integer, Long, String, Long, Integer>> {
-		@Override
-		public void combine(Iterable<Tuple5<Integer, Long, String, Long, Integer>> values, Collector<Tuple5<Integer, Long, String, Long, Integer>> out) throws Exception {
-		}
-	}
+        assertTrue(semProps.getForwardingSourceField(0, 0) == 2);
+        assertTrue(semProps.getForwardingSourceField(0, 1) == 3);
+        assertTrue(semProps.getForwardingSourceField(0, 2) < 0);
+        assertTrue(semProps.getForwardingSourceField(0, 3) == 5);
+        assertTrue(semProps.getForwardingSourceField(0, 4) < 0);
 
-	@FunctionAnnotation.ReadFields("0;3;4")
-	public static class DummyGroupCombineFunction2 implements GroupCombineFunction<Tuple5<Integer, Long, String, Long, Integer>, Tuple5<Integer, Long, String, Long, Integer>> {
-		@Override
-		public void combine(Iterable<Tuple5<Integer, Long, String, Long, Integer>> values, Collector<Tuple5<Integer, Long, String, Long, Integer>> out) throws Exception {
-		}
-	}
+        assertTrue(semProps.getReadFields(0) == null);
+    }
 
-	public static class DummyGroupCombineFunction3 implements GroupCombineFunction<Tuple5<Integer, Long, String, Long, Integer>, Tuple5<Integer, Long, String, Long, Integer>> {
-		@Override
-		public void combine(Iterable<Tuple5<Integer, Long, String, Long, Integer>> values, Collector<Tuple5<Integer, Long, String, Long, Integer>> out) throws Exception {
-		}
-	}
+    private static class DummyTestKeySelector
+            implements KeySelector<
+                    Tuple5<Integer, Long, String, Long, Integer>, Tuple2<Long, Integer>> {
+        @Override
+        public Tuple2<Long, Integer> getKey(Tuple5<Integer, Long, String, Long, Integer> value)
+                throws Exception {
+            return new Tuple2<Long, Integer>();
+        }
+    }
 
-	@FunctionAnnotation.NonForwardedFields("2;4")
-	public static class DummyGroupCombineFunction4 implements GroupCombineFunction<Tuple5<Integer, Long, String, Long, Integer>, Tuple5<Integer, Long, String, Long, Integer>> {
-		@Override
-		public void combine(Iterable<Tuple5<Integer, Long, String, Long, Integer>> values, Collector<Tuple5<Integer, Long, String, Long, Integer>> out) throws Exception {
-		}
-	}
+    @FunctionAnnotation.ForwardedFields("0->4;1;1->3;2")
+    @FunctionAnnotation.ReadFields("0;3;4")
+    private static class DummyGroupCombineFunction1
+            implements GroupCombineFunction<
+                    Tuple5<Integer, Long, String, Long, Integer>,
+                    Tuple5<Integer, Long, String, Long, Integer>> {
+        @Override
+        public void combine(
+                Iterable<Tuple5<Integer, Long, String, Long, Integer>> values,
+                Collector<Tuple5<Integer, Long, String, Long, Integer>> out)
+                throws Exception {}
+    }
+
+    @FunctionAnnotation.ReadFields("0;3;4")
+    private static class DummyGroupCombineFunction2
+            implements GroupCombineFunction<
+                    Tuple5<Integer, Long, String, Long, Integer>,
+                    Tuple5<Integer, Long, String, Long, Integer>> {
+        @Override
+        public void combine(
+                Iterable<Tuple5<Integer, Long, String, Long, Integer>> values,
+                Collector<Tuple5<Integer, Long, String, Long, Integer>> out)
+                throws Exception {}
+    }
+
+    private static class DummyGroupCombineFunction3
+            implements GroupCombineFunction<
+                    Tuple5<Integer, Long, String, Long, Integer>,
+                    Tuple5<Integer, Long, String, Long, Integer>> {
+        @Override
+        public void combine(
+                Iterable<Tuple5<Integer, Long, String, Long, Integer>> values,
+                Collector<Tuple5<Integer, Long, String, Long, Integer>> out)
+                throws Exception {}
+    }
+
+    @FunctionAnnotation.NonForwardedFields("2;4")
+    private static class DummyGroupCombineFunction4
+            implements GroupCombineFunction<
+                    Tuple5<Integer, Long, String, Long, Integer>,
+                    Tuple5<Integer, Long, String, Long, Integer>> {
+        @Override
+        public void combine(
+                Iterable<Tuple5<Integer, Long, String, Long, Integer>> values,
+                Collector<Tuple5<Integer, Long, String, Long, Integer>> out)
+                throws Exception {}
+    }
 }

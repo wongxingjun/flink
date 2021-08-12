@@ -17,39 +17,31 @@
 
 package org.apache.flink.streaming.runtime.partitioner;
 
-import static org.junit.Assert.assertArrayEquals;
-
 import org.apache.flink.api.java.tuple.Tuple;
-import org.apache.flink.runtime.plugable.SerializationDelegate;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.junit.Before;
+
 import org.junit.Test;
 
-public class BroadcastPartitionerTest {
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-	private BroadcastPartitioner<Tuple> broadcastPartitioner1;
-	private BroadcastPartitioner<Tuple> broadcastPartitioner2;
-	private BroadcastPartitioner<Tuple> broadcastPartitioner3;
-	
-	private StreamRecord<Tuple> streamRecord = new StreamRecord<Tuple>(null);
-	private SerializationDelegate<StreamRecord<Tuple>> sd = new SerializationDelegate<StreamRecord<Tuple>>(null);
+/** Tests for {@link BroadcastPartitioner}. */
+public class BroadcastPartitionerTest extends StreamPartitionerTest {
 
-	@Before
-	public void setPartitioner() {
-		broadcastPartitioner1 = new BroadcastPartitioner<Tuple>();
-		broadcastPartitioner2 = new BroadcastPartitioner<Tuple>();
-		broadcastPartitioner3 = new BroadcastPartitioner<Tuple>();
+    @Override
+    public StreamPartitioner<Tuple> createPartitioner() {
+        StreamPartitioner<Tuple> partitioner = new BroadcastPartitioner<>();
+        assertTrue(partitioner.isBroadcast());
+        return partitioner;
+    }
 
-	}
+    @Test
+    public void testSelectChannels() {
+        try {
+            streamPartitioner.selectChannel(serializationDelegate);
+        } catch (UnsupportedOperationException ex) {
+            return;
+        }
 
-	@Test
-	public void testSelectChannels() {
-		int[] first = new int[] { 0 };
-		int[] second = new int[] { 0, 1 };
-		int[] sixth = new int[] { 0, 1, 2, 3, 4, 5 };
-		sd.setInstance(streamRecord);
-		assertArrayEquals(first, broadcastPartitioner1.selectChannels(sd, 1));
-		assertArrayEquals(second, broadcastPartitioner2.selectChannels(sd, 2));
-		assertArrayEquals(sixth, broadcastPartitioner3.selectChannels(sd, 6));
-	}
+        fail("Broadcast selector does not support select channels.");
+    }
 }

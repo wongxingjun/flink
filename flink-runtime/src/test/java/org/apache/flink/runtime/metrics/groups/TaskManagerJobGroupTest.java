@@ -19,91 +19,116 @@
 package org.apache.flink.runtime.metrics.groups;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.metrics.MetricRegistry;
-
-import org.apache.flink.runtime.metrics.MetricRegistryConfiguration;
+import org.apache.flink.configuration.MetricOptions;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.metrics.MetricRegistryImpl;
+import org.apache.flink.runtime.metrics.MetricRegistryTestUtils;
 import org.apache.flink.runtime.metrics.dump.QueryScopeInfo;
 import org.apache.flink.runtime.metrics.util.DummyCharacterFilter;
 import org.apache.flink.util.TestLogger;
+
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
+/** Tests for the {@link TaskManagerJobMetricGroup}. */
 public class TaskManagerJobGroupTest extends TestLogger {
 
-	@Test
-	public void testGenerateScopeDefault() {
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
+    private MetricRegistryImpl registry;
 
-		TaskManagerMetricGroup tmGroup = new TaskManagerMetricGroup(registry, "theHostName", "test-tm-id");
-		JobMetricGroup jmGroup = new TaskManagerJobMetricGroup(registry, tmGroup, new JobID(), "myJobName");
+    @Before
+    public void setup() {
+        registry =
+                new MetricRegistryImpl(
+                        MetricRegistryTestUtils.defaultMetricRegistryConfiguration());
+    }
 
-		assertArrayEquals(
-				new String[] { "theHostName", "taskmanager", "test-tm-id", "myJobName"},
-				jmGroup.getScopeComponents());
+    @After
+    public void teardown() throws Exception {
+        if (registry != null) {
+            registry.shutdown().get();
+        }
+    }
 
-		assertEquals(
-				"theHostName.taskmanager.test-tm-id.myJobName.name",
-				jmGroup.getMetricIdentifier("name"));
-		registry.shutdown();
-	}
+    @Test
+    public void testGenerateScopeDefault() {
+        TaskManagerMetricGroup tmGroup =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "theHostName", new ResourceID("test-tm-id"));
+        JobMetricGroup jmGroup =
+                new TaskManagerJobMetricGroup(registry, tmGroup, new JobID(), "myJobName");
 
-	@Test
-	public void testGenerateScopeCustom() {
-		Configuration cfg = new Configuration();
-		cfg.setString(ConfigConstants.METRICS_SCOPE_NAMING_TM, "abc");
-		cfg.setString(ConfigConstants.METRICS_SCOPE_NAMING_TM_JOB, "some-constant.<job_name>");
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.fromConfiguration(cfg));
+        assertArrayEquals(
+                new String[] {"theHostName", "taskmanager", "test-tm-id", "myJobName"},
+                jmGroup.getScopeComponents());
 
-		JobID jid = new JobID();
+        assertEquals(
+                "theHostName.taskmanager.test-tm-id.myJobName.name",
+                jmGroup.getMetricIdentifier("name"));
+    }
 
-		TaskManagerMetricGroup tmGroup = new TaskManagerMetricGroup(registry, "theHostName", "test-tm-id");
-		JobMetricGroup jmGroup = new TaskManagerJobMetricGroup(registry, tmGroup, jid, "myJobName");
+    @Test
+    public void testGenerateScopeCustom() throws Exception {
+        Configuration cfg = new Configuration();
+        cfg.setString(MetricOptions.SCOPE_NAMING_TM, "abc");
+        cfg.setString(MetricOptions.SCOPE_NAMING_TM_JOB, "some-constant.<job_name>");
+        MetricRegistryImpl registry =
+                new MetricRegistryImpl(MetricRegistryTestUtils.fromConfiguration(cfg));
 
-		assertArrayEquals(
-				new String[] { "some-constant", "myJobName" },
-				jmGroup.getScopeComponents());
+        JobID jid = new JobID();
 
-		assertEquals(
-				"some-constant.myJobName.name",
-				jmGroup.getMetricIdentifier("name"));
-		registry.shutdown();
-	}
+        TaskManagerMetricGroup tmGroup =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "theHostName", new ResourceID("test-tm-id"));
+        JobMetricGroup jmGroup = new TaskManagerJobMetricGroup(registry, tmGroup, jid, "myJobName");
 
-	@Test
-	public void testGenerateScopeCustomWildcard() {
-		Configuration cfg = new Configuration();
-		cfg.setString(ConfigConstants.METRICS_SCOPE_NAMING_TM, "peter.<tm_id>");
-		cfg.setString(ConfigConstants.METRICS_SCOPE_NAMING_TM_JOB, "*.some-constant.<job_id>");
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.fromConfiguration(cfg));
+        assertArrayEquals(
+                new String[] {"some-constant", "myJobName"}, jmGroup.getScopeComponents());
 
-		JobID jid = new JobID();
+        assertEquals("some-constant.myJobName.name", jmGroup.getMetricIdentifier("name"));
+        registry.shutdown().get();
+    }
 
-		TaskManagerMetricGroup tmGroup = new TaskManagerMetricGroup(registry, "theHostName", "test-tm-id");
-		JobMetricGroup jmGroup = new TaskManagerJobMetricGroup(registry, tmGroup, jid, "myJobName");
+    @Test
+    public void testGenerateScopeCustomWildcard() throws Exception {
+        Configuration cfg = new Configuration();
+        cfg.setString(MetricOptions.SCOPE_NAMING_TM, "peter.<tm_id>");
+        cfg.setString(MetricOptions.SCOPE_NAMING_TM_JOB, "*.some-constant.<job_id>");
+        MetricRegistryImpl registry =
+                new MetricRegistryImpl(MetricRegistryTestUtils.fromConfiguration(cfg));
 
-		assertArrayEquals(
-				new String[] { "peter", "test-tm-id", "some-constant", jid.toString() },
-				jmGroup.getScopeComponents());
+        JobID jid = new JobID();
 
-		assertEquals(
-				"peter.test-tm-id.some-constant." + jid + ".name",
-				jmGroup.getMetricIdentifier("name"));
-		registry.shutdown();
-	}
+        TaskManagerMetricGroup tmGroup =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "theHostName", new ResourceID("test-tm-id"));
+        JobMetricGroup jmGroup = new TaskManagerJobMetricGroup(registry, tmGroup, jid, "myJobName");
 
-	@Test
-	public void testCreateQueryServiceMetricInfo() {
-		JobID jid = new JobID();
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
-		TaskManagerMetricGroup tm = new TaskManagerMetricGroup(registry, "host", "id");
-		TaskManagerJobMetricGroup job = new TaskManagerJobMetricGroup(registry, tm, jid, "jobname");
+        assertArrayEquals(
+                new String[] {"peter", "test-tm-id", "some-constant", jid.toString()},
+                jmGroup.getScopeComponents());
 
-		QueryScopeInfo.JobQueryScopeInfo info = job.createQueryServiceMetricInfo(new DummyCharacterFilter());
-		assertEquals("", info.scope);
-		assertEquals(jid.toString(), info.jobID);
-	}
+        assertEquals(
+                "peter.test-tm-id.some-constant." + jid + ".name",
+                jmGroup.getMetricIdentifier("name"));
+        registry.shutdown().get();
+    }
+
+    @Test
+    public void testCreateQueryServiceMetricInfo() {
+        JobID jid = new JobID();
+        TaskManagerMetricGroup tm =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "host", new ResourceID("id"));
+        TaskManagerJobMetricGroup job = new TaskManagerJobMetricGroup(registry, tm, jid, "jobname");
+
+        QueryScopeInfo.JobQueryScopeInfo info =
+                job.createQueryServiceMetricInfo(new DummyCharacterFilter());
+        assertEquals("", info.scope);
+        assertEquals(jid.toString(), info.jobID);
+    }
 }

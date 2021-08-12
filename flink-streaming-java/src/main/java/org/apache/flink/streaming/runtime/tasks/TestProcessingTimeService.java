@@ -24,6 +24,7 @@ import java.util.Comparator;
 import java.util.HashSet;
 import java.util.PriorityQueue;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledFuture;
@@ -32,213 +33,231 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * This is a {@link ProcessingTimeService} used <b>strictly for testing</b> the
- * processing time functionality.
- * */
-public class TestProcessingTimeService extends ProcessingTimeService {
+ * This is a {@link TimerService} and {@link ProcessingTimeService} used <b>strictly for testing</b>
+ * the processing time functionality.
+ */
+public class TestProcessingTimeService implements TimerService {
 
-	private volatile long currentTime = 0L;
+    private volatile long currentTime = Long.MIN_VALUE;
 
-	private volatile boolean isTerminated;
-	private volatile boolean isQuiesced;
+    private volatile boolean isTerminated;
+    private volatile boolean isQuiesced;
 
-	// sorts the timers by timestamp so that they are processed in the correct order.
-	private final PriorityQueue<Tuple2<Long, CallbackTask>> priorityQueue;
+    // sorts the timers by timestamp so that they are processed in the correct order.
+    private final PriorityQueue<Tuple2<Long, CallbackTask>> priorityQueue;
 
-	public TestProcessingTimeService() {
-		this.priorityQueue = new PriorityQueue<>(16, new Comparator<Tuple2<Long, CallbackTask>>() {
-			@Override
-			public int compare(Tuple2<Long, CallbackTask> o1, Tuple2<Long, CallbackTask> o2) {
-				return Long.compare(o1.f0, o2.f0);
-			}
-		});
-	}
-	
-	public void setCurrentTime(long timestamp) throws Exception {
-		this.currentTime = timestamp;
+    public TestProcessingTimeService() {
+        this.priorityQueue =
+                new PriorityQueue<>(
+                        16,
+                        new Comparator<Tuple2<Long, CallbackTask>>() {
+                            @Override
+                            public int compare(
+                                    Tuple2<Long, CallbackTask> o1, Tuple2<Long, CallbackTask> o2) {
+                                return Long.compare(o1.f0, o2.f0);
+                            }
+                        });
+    }
 
-		if (!isQuiesced) {
-			while (!priorityQueue.isEmpty() && currentTime >= priorityQueue.peek().f0) {
-				Tuple2<Long, CallbackTask> entry = priorityQueue.poll();
+    public void setCurrentTime(long timestamp) throws Exception {
+        this.currentTime = timestamp;
 
-				CallbackTask callbackTask = entry.f1;
+        if (!isQuiesced) {
+            while (!priorityQueue.isEmpty() && currentTime >= priorityQueue.peek().f0) {
+                Tuple2<Long, CallbackTask> entry = priorityQueue.poll();
 
-				if (!callbackTask.isDone()) {
-					callbackTask.onProcessingTime(entry.f0);
+                CallbackTask callbackTask = entry.f1;
 
-					if (callbackTask instanceof PeriodicCallbackTask) {
-						priorityQueue.offer(Tuple2.of(((PeriodicCallbackTask)callbackTask).nextTimestamp(entry.f0), callbackTask));
-					}
-				}
-			}
-		}
-	}
+                if (!callbackTask.isDone()) {
+                    callbackTask.onProcessingTime(entry.f0);
 
-	@Override
-	public long getCurrentProcessingTime() {
-		return currentTime;
-	}
+                    if (callbackTask instanceof PeriodicCallbackTask) {
+                        priorityQueue.offer(
+                                Tuple2.of(
+                                        ((PeriodicCallbackTask) callbackTask)
+                                                .nextTimestamp(entry.f0),
+                                        callbackTask));
+                    }
+                }
+            }
+        }
+    }
 
-	@Override
-	public ScheduledFuture<?> registerTimer(long timestamp, ProcessingTimeCallback target) {
-		if (isTerminated) {
-			throw new IllegalStateException("terminated");
-		}
-		if (isQuiesced) {
-			return new CallbackTask(null);
-		}
+    @Override
+    public long getCurrentProcessingTime() {
+        return currentTime;
+    }
 
-		CallbackTask callbackTask = new CallbackTask(target);
+    @Override
+    public ScheduledFuture<?> registerTimer(long timestamp, ProcessingTimeCallback target) {
+        if (isTerminated) {
+            throw new IllegalStateException("terminated");
+        }
+        if (isQuiesced) {
+            return new CallbackTask(null);
+        }
 
-		if (timestamp <= currentTime) {
-			try {
-				callbackTask.onProcessingTime(timestamp);
-			} catch (Exception e) {
-				throw new RuntimeException(e);
-			}
-		} else {
-			priorityQueue.offer(Tuple2.of(timestamp, callbackTask));
-		}
+        CallbackTask callbackTask = new CallbackTask(target);
 
-		return callbackTask;
-	}
+        priorityQueue.offer(Tuple2.of(timestamp, callbackTask));
 
-	@Override
-	public ScheduledFuture<?> scheduleAtFixedRate(ProcessingTimeCallback callback, long initialDelay, long period) {
-		if (isTerminated) {
-			throw new IllegalStateException("terminated");
-		}
-		if (isQuiesced) {
-			return new CallbackTask(null);
-		}
+        return callbackTask;
+    }
 
-		PeriodicCallbackTask periodicCallbackTask = new PeriodicCallbackTask(callback, period);
+    @Override
+    public ScheduledFuture<?> scheduleAtFixedRate(
+            ProcessingTimeCallback callback, long initialDelay, long period) {
+        if (isTerminated) {
+            throw new IllegalStateException("terminated");
+        }
+        if (isQuiesced) {
+            return new CallbackTask(null);
+        }
 
-		priorityQueue.offer(Tuple2.<Long, CallbackTask>of(currentTime + initialDelay, periodicCallbackTask));
+        PeriodicCallbackTask periodicCallbackTask = new PeriodicCallbackTask(callback, period);
 
-		return periodicCallbackTask;
-	}
+        priorityQueue.offer(
+                Tuple2.<Long, CallbackTask>of(currentTime + initialDelay, periodicCallbackTask));
 
-	@Override
-	public boolean isTerminated() {
-		return isTerminated;
-	}
+        return periodicCallbackTask;
+    }
 
-	@Override
-	public void quiesceAndAwaitPending() {
-		if (!isTerminated) {
-			isQuiesced = true;
-			priorityQueue.clear();
-		}
-	}
+    @Override
+    public ScheduledFuture<?> scheduleWithFixedDelay(
+            ProcessingTimeCallback callback, long initialDelay, long period) {
+        // for all testing purposed, there is no difference between the fixed rate and fixed delay
+        return scheduleAtFixedRate(callback, initialDelay, period);
+    }
 
-	@Override
-	public void shutdownService() {
-		this.isTerminated = true;
-	}
+    @Override
+    public boolean isTerminated() {
+        return isTerminated;
+    }
 
-	public int getNumActiveTimers() {
-		int count = 0;
+    @Override
+    public CompletableFuture<Void> quiesce() {
+        if (!isTerminated) {
+            isQuiesced = true;
+            priorityQueue.clear();
+        }
+        return CompletableFuture.completedFuture(null);
+    }
 
-		for (Tuple2<Long, CallbackTask> entry : priorityQueue) {
-			if (!entry.f1.isDone()) {
-				count++;
-			}
-		}
+    @Override
+    public void shutdownService() {
+        this.isTerminated = true;
+    }
 
-		return count;
-	}
+    @Override
+    public boolean shutdownServiceUninterruptible(long timeoutMs) {
+        shutdownService();
+        return true;
+    }
 
-	public Set<Long> getActiveTimerTimestamps() {
-		Set<Long> actualTimestamps = new HashSet<>();
+    public int getNumActiveTimers() {
+        int count = 0;
 
-		for (Tuple2<Long, CallbackTask> entry : priorityQueue) {
-			if (!entry.f1.isDone()) {
-				actualTimestamps.add(entry.f0);
-			}
-		}
+        for (Tuple2<Long, CallbackTask> entry : priorityQueue) {
+            if (!entry.f1.isDone()) {
+                count++;
+            }
+        }
 
-		return actualTimestamps;
-	}
+        return count;
+    }
 
-	// ------------------------------------------------------------------------
+    public Set<Long> getActiveTimerTimestamps() {
+        Set<Long> actualTimestamps = new HashSet<>();
 
-	private static class CallbackTask implements ScheduledFuture<Object> {
+        for (Tuple2<Long, CallbackTask> entry : priorityQueue) {
+            if (!entry.f1.isDone()) {
+                actualTimestamps.add(entry.f0);
+            }
+        }
 
-		protected final ProcessingTimeCallback processingTimeCallback;
+        return actualTimestamps;
+    }
 
-		private AtomicReference<CallbackTaskState> state = new AtomicReference<>(CallbackTaskState.CREATED);
+    // ------------------------------------------------------------------------
 
-		private CallbackTask(ProcessingTimeCallback processingTimeCallback) {
-			this.processingTimeCallback = processingTimeCallback;
-		}
+    private static class CallbackTask implements ScheduledFuture<Object> {
 
-		public void onProcessingTime(long timestamp) throws Exception {
-			processingTimeCallback.onProcessingTime(timestamp);
+        protected final ProcessingTimeCallback processingTimeCallback;
 
-			state.compareAndSet(CallbackTaskState.CREATED, CallbackTaskState.DONE);
-		}
+        private AtomicReference<CallbackTaskState> state =
+                new AtomicReference<>(CallbackTaskState.CREATED);
 
-		@Override
-		public long getDelay(TimeUnit unit) {
-			throw new UnsupportedOperationException();
-		}
+        private CallbackTask(ProcessingTimeCallback processingTimeCallback) {
+            this.processingTimeCallback = processingTimeCallback;
+        }
 
-		@Override
-		public int compareTo(Delayed o) {
-			throw new UnsupportedOperationException();
-		}
+        public void onProcessingTime(long timestamp) throws Exception {
+            processingTimeCallback.onProcessingTime(timestamp);
 
-		@Override
-		public boolean cancel(boolean mayInterruptIfRunning) {
-			return state.compareAndSet(CallbackTaskState.CREATED, CallbackTaskState.CANCELLED);
-		}
+            state.compareAndSet(CallbackTaskState.CREATED, CallbackTaskState.DONE);
+        }
 
-		@Override
-		public boolean isCancelled() {
-			return state.get() == CallbackTaskState.CANCELLED;
-		}
+        @Override
+        public long getDelay(TimeUnit unit) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public boolean isDone() {
-			return state.get() != CallbackTaskState.CREATED;
-		}
+        @Override
+        public int compareTo(Delayed o) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public Object get() throws InterruptedException, ExecutionException {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public boolean cancel(boolean mayInterruptIfRunning) {
+            return state.compareAndSet(CallbackTaskState.CREATED, CallbackTaskState.CANCELLED);
+        }
 
-		@Override
-		public Object get(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public boolean isCancelled() {
+            return state.get() == CallbackTaskState.CANCELLED;
+        }
 
-		enum CallbackTaskState {
-			CREATED,
-			CANCELLED,
-			DONE
-		}
-	}
+        @Override
+        public boolean isDone() {
+            return state.get() != CallbackTaskState.CREATED;
+        }
 
-	private static class PeriodicCallbackTask extends CallbackTask {
+        @Override
+        public Object get() throws InterruptedException, ExecutionException {
+            throw new UnsupportedOperationException();
+        }
 
-		private final long period;
+        @Override
+        public Object get(long timeout, TimeUnit unit)
+                throws InterruptedException, ExecutionException, TimeoutException {
+            throw new UnsupportedOperationException();
+        }
 
-		private PeriodicCallbackTask(ProcessingTimeCallback processingTimeCallback, long period) {
-			super(processingTimeCallback);
-			Preconditions.checkArgument(period > 0L, "The period must be greater than 0.");
+        enum CallbackTaskState {
+            CREATED,
+            CANCELLED,
+            DONE
+        }
+    }
 
-			this.period = period;
-		}
+    private static class PeriodicCallbackTask extends CallbackTask {
 
-		@Override
-		public void onProcessingTime(long timestamp) throws Exception {
-			processingTimeCallback.onProcessingTime(timestamp);
-		}
+        private final long period;
 
-		public long nextTimestamp(long currentTimestamp) {
-			return currentTimestamp + period;
-		}
-	}
+        private PeriodicCallbackTask(ProcessingTimeCallback processingTimeCallback, long period) {
+            super(processingTimeCallback);
+            Preconditions.checkArgument(period > 0L, "The period must be greater than 0.");
+
+            this.period = period;
+        }
+
+        @Override
+        public void onProcessingTime(long timestamp) throws Exception {
+            processingTimeCallback.onProcessingTime(timestamp);
+        }
+
+        public long nextTimestamp(long currentTimestamp) {
+            return currentTimestamp + period;
+        }
+    }
 }

@@ -18,53 +18,89 @@
 
 package org.apache.flink.runtime.io.network.buffer;
 
-import org.apache.flink.runtime.util.event.EventListener;
+import org.apache.flink.core.memory.MemorySegment;
+import org.apache.flink.runtime.io.AvailabilityProvider;
 
-import java.io.IOException;
+import javax.annotation.Nullable;
 
 /**
  * A buffer provider to request buffers from in a synchronous or asynchronous fashion.
  *
- * <p> The data producing side (result partition writers) request buffers in a synchronous fashion,
+ * <p>The data producing side (result partition writers) request buffers in a synchronous fashion,
  * whereas the input side requests asynchronously.
  */
-public interface BufferProvider {
+public interface BufferProvider extends AvailabilityProvider {
 
-	/**
-	 * Returns a {@link Buffer} instance from the buffer provider, if one is available.
-	 * <p>
-	 * Returns <code>null</code> if no buffer is available or the buffer provider has been destroyed.
-	 */
-	Buffer requestBuffer() throws IOException;
+    /**
+     * Returns a {@link Buffer} instance from the buffer provider, if one is available.
+     *
+     * @return {@code null} if no buffer is available or the buffer provider has been destroyed.
+     */
+    @Nullable
+    Buffer requestBuffer();
 
-	/**
-	 * Returns a {@link Buffer} instance from the buffer provider.
-	 * <p>
-	 * If there is no buffer available, the call will block until one becomes available again or the
-	 * buffer provider has been destroyed.
-	 */
-	Buffer requestBufferBlocking() throws IOException, InterruptedException;
+    /**
+     * Returns a {@link BufferBuilder} instance from the buffer provider. This equals to {@link
+     * #requestBufferBuilder(int)} with unknown target channel.
+     *
+     * @return {@code null} if no buffer is available or the buffer provider has been destroyed.
+     */
+    @Nullable
+    BufferBuilder requestBufferBuilder();
 
-	/**
-	 * Adds a buffer availability listener to the buffer provider.
-	 * <p>
-	 * The operation fails with return value <code>false</code>, when there is a buffer available or
-	 * the buffer provider has been destroyed.
-	 * <p>
-	 * If the buffer provider gets destroyed while the listener is registered the listener will be
-	 * notified with a <code>null</code> value.
-	 */
-	boolean addListener(EventListener<Buffer> listener);
+    /**
+     * Returns a {@link BufferBuilder} instance from the buffer provider.
+     *
+     * @param targetChannel to which the request will be accounted to.
+     * @return {@code null} if no buffer is available or the buffer provider has been destroyed.
+     */
+    @Nullable
+    BufferBuilder requestBufferBuilder(int targetChannel);
 
-	/**
-	 * Returns whether the buffer provider has been destroyed.
-	 */
-	boolean isDestroyed();
+    /**
+     * Returns a {@link BufferBuilder} instance from the buffer provider. This equals to {@link
+     * #requestBufferBuilderBlocking(int)} with unknown target channel.
+     *
+     * <p>If there is no buffer available, the call will block until one becomes available again or
+     * the buffer provider has been destroyed.
+     */
+    BufferBuilder requestBufferBuilderBlocking() throws InterruptedException;
 
-	/**
-	 * Returns the size of the underlying memory segments. This is the maximum size a {@link Buffer}
-	 * instance can have.
-	 */
-	int getMemorySegmentSize();
+    /**
+     * Returns a {@link BufferBuilder} instance from the buffer provider.
+     *
+     * <p>If there is no buffer available, the call will block until one becomes available again or
+     * the buffer provider has been destroyed.
+     *
+     * @param targetChannel to which the request will be accounted to.
+     */
+    BufferBuilder requestBufferBuilderBlocking(int targetChannel) throws InterruptedException;
 
+    /**
+     * Adds a buffer availability listener to the buffer provider.
+     *
+     * <p>The operation fails with return value <code>false</code>, when there is a buffer available
+     * or the buffer provider has been destroyed.
+     */
+    boolean addBufferListener(BufferListener listener);
+
+    /** Returns whether the buffer provider has been destroyed. */
+    boolean isDestroyed();
+
+    /**
+     * Returns a {@link MemorySegment} instance from the buffer provider.
+     *
+     * @return {@code null} if no memory segment is available or the buffer provider has been
+     *     destroyed.
+     */
+    @Nullable
+    MemorySegment requestMemorySegment();
+
+    /**
+     * Returns a {@link MemorySegment} instance from the buffer provider.
+     *
+     * <p>If there is no memory segment available, the call will block until one becomes available
+     * again or the buffer provider has been destroyed.
+     */
+    MemorySegment requestMemorySegmentBlocking() throws InterruptedException;
 }

@@ -18,82 +18,69 @@
 
 package org.apache.flink.runtime.state;
 
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.core.fs.CloseableRegistry;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
+import org.apache.flink.runtime.state.metrics.LatencyTrackingStateConfig;
+import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
+
+import javax.annotation.Nonnull;
 
 import java.io.IOException;
 import java.util.Collection;
 
 /**
- * A state backend defines how state is stored and snapshotted during checkpoints.
+ * An abstract base implementation of the {@link StateBackend} interface.
+ *
+ * <p>This class has currently no contents and only kept to not break the prior class hierarchy for
+ * users.
  */
-public abstract class AbstractStateBackend implements java.io.Serializable {
-	private static final long serialVersionUID = 4620415814639230247L;
+@PublicEvolving
+public abstract class AbstractStateBackend implements StateBackend, java.io.Serializable {
 
-	/**
-	 * Creates a {@link CheckpointStreamFactory} that can be used to create streams
-	 * that should end up in a checkpoint.
-	 *
-	 * @param jobId              The {@link JobID} of the job for which we are creating checkpoint streams.
-	 * @param operatorIdentifier An identifier of the operator for which we create streams.
-	 */
-	public abstract CheckpointStreamFactory createStreamFactory(
-			JobID jobId,
-			String operatorIdentifier
-	) throws IOException;
+    private static final long serialVersionUID = 4620415814639230247L;
 
-	/**
-	 * Creates a new {@link AbstractKeyedStateBackend} that is responsible for keeping keyed state
-	 * and can be checkpointed to checkpoint streams.
-	 */
-	public abstract <K> AbstractKeyedStateBackend<K> createKeyedStateBackend(
-			Environment env,
-			JobID jobID,
-			String operatorIdentifier,
-			TypeSerializer<K> keySerializer,
-			int numberOfKeyGroups,
-			KeyGroupRange keyGroupRange,
-			TaskKvStateRegistry kvStateRegistry
-	) throws Exception;
+    public static StreamCompressionDecorator getCompressionDecorator(
+            ExecutionConfig executionConfig) {
+        if (executionConfig != null && executionConfig.isUseSnapshotCompression()) {
+            return SnappyStreamCompressionDecorator.INSTANCE;
+        } else {
+            return UncompressedStreamCompressionDecorator.INSTANCE;
+        }
+    }
 
-	/**
-	 * Creates a new {@link AbstractKeyedStateBackend} that restores its state from the given list
-	 * {@link KeyGroupsStateHandle KeyGroupStateHandles}.
-	 */
-	public abstract <K> AbstractKeyedStateBackend<K> restoreKeyedStateBackend(
-			Environment env,
-			JobID jobID,
-			String operatorIdentifier,
-			TypeSerializer<K> keySerializer,
-			int numberOfKeyGroups,
-			KeyGroupRange keyGroupRange,
-			Collection<KeyGroupsStateHandle> restoredState,
-			TaskKvStateRegistry kvStateRegistry
-	) throws Exception;
+    protected LatencyTrackingStateConfig.Builder latencyTrackingConfigBuilder =
+            LatencyTrackingStateConfig.newBuilder();
 
+    // ------------------------------------------------------------------------
+    //  State Backend - State-Holding Backends
+    // ------------------------------------------------------------------------
 
-	/**
-	 * Creates a new {@link OperatorStateBackend} that can be used for storing partitionable operator
-	 * state in checkpoint streams.
-	 */
-	public OperatorStateBackend createOperatorStateBackend(
-			Environment env,
-			String operatorIdentifier
-	) throws Exception {
-		return new DefaultOperatorStateBackend(env.getUserClassLoader());
-	}
+    @Override
+    public abstract <K> AbstractKeyedStateBackend<K> createKeyedStateBackend(
+            Environment env,
+            JobID jobID,
+            String operatorIdentifier,
+            TypeSerializer<K> keySerializer,
+            int numberOfKeyGroups,
+            KeyGroupRange keyGroupRange,
+            TaskKvStateRegistry kvStateRegistry,
+            TtlTimeProvider ttlTimeProvider,
+            MetricGroup metricGroup,
+            @Nonnull Collection<KeyedStateHandle> stateHandles,
+            CloseableRegistry cancelStreamRegistry)
+            throws IOException;
 
-	/**
-	 * Creates a new {@link OperatorStateBackend} that restores its state from the given collection of
-	 * {@link OperatorStateHandle}.
-	 */
-	public OperatorStateBackend restoreOperatorStateBackend(
-			Environment env,
-			String operatorIdentifier,
-			Collection<OperatorStateHandle> restoreSnapshots
-	) throws Exception {
-		return new DefaultOperatorStateBackend(env.getUserClassLoader(), restoreSnapshots);
-	}
+    @Override
+    public abstract OperatorStateBackend createOperatorStateBackend(
+            Environment env,
+            String operatorIdentifier,
+            @Nonnull Collection<OperatorStateHandle> stateHandles,
+            CloseableRegistry cancelStreamRegistry)
+            throws Exception;
 }

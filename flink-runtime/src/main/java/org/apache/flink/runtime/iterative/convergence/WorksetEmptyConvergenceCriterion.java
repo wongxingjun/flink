@@ -16,34 +16,41 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.iterative.convergence;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.apache.flink.api.common.aggregators.ConvergenceCriterion;
 import org.apache.flink.types.LongValue;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
- * A workset iteration is by definition converged if no records have been updated in the solutionset
+ * A workset iteration is by definition converged if no records have been updated in the
+ * solutionset.
  */
 public class WorksetEmptyConvergenceCriterion implements ConvergenceCriterion<LongValue> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private static final Logger log = LoggerFactory.getLogger(WorksetEmptyConvergenceCriterion.class);
-	
-	public static final String AGGREGATOR_NAME = "pact.runtime.workset-empty-aggregator";
+    private static final Logger log =
+            LoggerFactory.getLogger(WorksetEmptyConvergenceCriterion.class);
 
-	@Override
-	public boolean isConverged(int iteration, LongValue value) {
+    public static final String AGGREGATOR_NAME = "pact.runtime.workset-empty-aggregator";
 
-		long updatedElements = value.getValue();
+    @Override
+    public boolean isConverged(int iteration, LongValue value) {
 
-		if (log.isInfoEnabled()) {
-			log.info("[" + updatedElements + "] elements updated in the solutionset in iteration [" + iteration + "]");
-		}
+        long updatedElements = value.getValue();
 
-		return updatedElements == 0;
-	}
+        if (log.isInfoEnabled()) {
+            log.info(
+                    "["
+                            + updatedElements
+                            + "] elements updated in the solutionset in iteration ["
+                            + iteration
+                            + "]");
+        }
+
+        return updatedElements == 0;
+    }
 }

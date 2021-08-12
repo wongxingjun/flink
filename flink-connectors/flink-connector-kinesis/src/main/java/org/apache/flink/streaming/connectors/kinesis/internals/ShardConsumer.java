@@ -17,271 +17,240 @@
 
 package org.apache.flink.streaming.connectors.kinesis.internals;
 
-import com.amazonaws.services.kinesis.clientlibrary.types.UserRecord;
-import com.amazonaws.services.kinesis.model.ExpiredIteratorException;
-import com.amazonaws.services.kinesis.model.GetRecordsResult;
-import com.amazonaws.services.kinesis.model.Record;
-import com.amazonaws.services.kinesis.model.ShardIteratorType;
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.connectors.kinesis.config.ConsumerConfigConstants;
-import org.apache.flink.streaming.connectors.kinesis.model.KinesisStreamShard;
+import org.apache.flink.streaming.connectors.kinesis.internals.publisher.RecordPublisher;
+import org.apache.flink.streaming.connectors.kinesis.internals.publisher.RecordPublisher.RecordPublisherRunResult;
+import org.apache.flink.streaming.connectors.kinesis.metrics.ShardConsumerMetricsReporter;
 import org.apache.flink.streaming.connectors.kinesis.model.SentinelSequenceNumber;
 import org.apache.flink.streaming.connectors.kinesis.model.SequenceNumber;
-import org.apache.flink.streaming.connectors.kinesis.proxy.KinesisProxyInterface;
-import org.apache.flink.streaming.connectors.kinesis.proxy.KinesisProxy;
+import org.apache.flink.streaming.connectors.kinesis.model.StreamShardHandle;
 import org.apache.flink.streaming.connectors.kinesis.serialization.KinesisDeserializationSchema;
+
+import com.amazonaws.services.kinesis.clientlibrary.types.UserRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.math.BigInteger;
 import java.nio.ByteBuffer;
-import java.util.List;
-import java.util.Properties;
 
+import static java.util.Optional.ofNullable;
+import static org.apache.flink.streaming.connectors.kinesis.internals.publisher.RecordPublisher.RecordPublisherRunResult.CANCELLED;
+import static org.apache.flink.streaming.connectors.kinesis.internals.publisher.RecordPublisher.RecordPublisherRunResult.COMPLETE;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Thread that does the actual data pulling from AWS Kinesis shards. Each thread is in charge of one Kinesis shard only.
+ * Thread that subscribes to the given {@link RecordPublisher}. Each thread is in charge of one
+ * Kinesis shard only.
+ *
+ * <p>A {@link ShardConsumer} is responsible for:
+ *
+ * <ul>
+ *   <li>Running the {@link RecordPublisher} to consume all records from the subscribed shard
+ *   <li>Deserializing and deaggregating incoming records from Kinesis
+ *   <li>Logging metrics
+ *   <li>Passing the records up to the {@link KinesisDataFetcher}
+ * </ul>
  */
+@Internal
 public class ShardConsumer<T> implements Runnable {
 
-	private static final Logger LOG = LoggerFactory.getLogger(ShardConsumer.class);
+    private static final Logger LOG = LoggerFactory.getLogger(ShardConsumer.class);
 
-	private final KinesisDeserializationSchema<T> deserializer;
+    private final KinesisDeserializationSchema<T> deserializer;
 
-	private final KinesisProxyInterface kinesis;
+    private final int subscribedShardStateIndex;
 
-	private final int subscribedShardStateIndex;
+    private final KinesisDataFetcher<T> fetcherRef;
 
-	private final KinesisDataFetcher<T> fetcherRef;
+    private final StreamShardHandle subscribedShard;
 
-	private final KinesisStreamShard subscribedShard;
+    private final ShardConsumerMetricsReporter shardConsumerMetricsReporter;
 
-	private final int maxNumberOfRecordsPerFetch;
-	private final long fetchIntervalMillis;
+    private SequenceNumber lastSequenceNum;
 
-	private SequenceNumber lastSequenceNum;
+    private final RecordPublisher recordPublisher;
 
-	/**
-	 * Creates a shard consumer.
-	 *
-	 * @param fetcherRef reference to the owning fetcher
-	 * @param subscribedShardStateIndex the state index of the shard this consumer is subscribed to
-	 * @param subscribedShard the shard this consumer is subscribed to
-	 * @param lastSequenceNum the sequence number in the shard to start consuming
-	 */
-	public ShardConsumer(KinesisDataFetcher<T> fetcherRef,
-						Integer subscribedShardStateIndex,
-						KinesisStreamShard subscribedShard,
-						SequenceNumber lastSequenceNum) {
-		this(fetcherRef,
-			subscribedShardStateIndex,
-			subscribedShard,
-			lastSequenceNum,
-			KinesisProxy.create(fetcherRef.getConsumerConfiguration()));
-	}
+    /**
+     * Creates a shard consumer.
+     *
+     * @param fetcherRef reference to the owning fetcher
+     * @param recordPublisher the record publisher used to read records from kinesis
+     * @param subscribedShardStateIndex the state index of the shard this consumer is subscribed to
+     * @param subscribedShard the shard this consumer is subscribed to
+     * @param lastSequenceNum the sequence number in the shard to start consuming
+     * @param shardConsumerMetricsReporter the reporter to report metrics to
+     * @param shardDeserializer used to deserialize incoming records
+     */
+    public ShardConsumer(
+            KinesisDataFetcher<T> fetcherRef,
+            RecordPublisher recordPublisher,
+            Integer subscribedShardStateIndex,
+            StreamShardHandle subscribedShard,
+            SequenceNumber lastSequenceNum,
+            ShardConsumerMetricsReporter shardConsumerMetricsReporter,
+            KinesisDeserializationSchema<T> shardDeserializer) {
+        this.fetcherRef = checkNotNull(fetcherRef);
+        this.recordPublisher = checkNotNull(recordPublisher);
+        this.subscribedShardStateIndex = checkNotNull(subscribedShardStateIndex);
+        this.subscribedShard = checkNotNull(subscribedShard);
+        this.shardConsumerMetricsReporter = checkNotNull(shardConsumerMetricsReporter);
+        this.lastSequenceNum = checkNotNull(lastSequenceNum);
 
-	/** This constructor is exposed for testing purposes */
-	protected ShardConsumer(KinesisDataFetcher<T> fetcherRef,
-							Integer subscribedShardStateIndex,
-							KinesisStreamShard subscribedShard,
-							SequenceNumber lastSequenceNum,
-							KinesisProxyInterface kinesis) {
-		this.fetcherRef = checkNotNull(fetcherRef);
-		this.subscribedShardStateIndex = checkNotNull(subscribedShardStateIndex);
-		this.subscribedShard = checkNotNull(subscribedShard);
-		this.lastSequenceNum = checkNotNull(lastSequenceNum);
-		checkArgument(
-			!lastSequenceNum.equals(SentinelSequenceNumber.SENTINEL_SHARD_ENDING_SEQUENCE_NUM.get()),
-			"Should not start a ShardConsumer if the shard has already been completely read.");
+        checkArgument(
+                !lastSequenceNum.equals(
+                        SentinelSequenceNumber.SENTINEL_SHARD_ENDING_SEQUENCE_NUM.get()),
+                "Should not start a ShardConsumer if the shard has already been completely read.");
 
-		this.deserializer = fetcherRef.getClonedDeserializationSchema();
+        this.deserializer = shardDeserializer;
+    }
 
-		Properties consumerConfig = fetcherRef.getConsumerConfiguration();
-		this.kinesis = kinesis;
-		this.maxNumberOfRecordsPerFetch = Integer.valueOf(consumerConfig.getProperty(
-			ConsumerConfigConstants.SHARD_GETRECORDS_MAX,
-			Integer.toString(ConsumerConfigConstants.DEFAULT_SHARD_GETRECORDS_MAX)));
-		this.fetchIntervalMillis = Long.valueOf(consumerConfig.getProperty(
-			ConsumerConfigConstants.SHARD_GETRECORDS_INTERVAL_MILLIS,
-			Long.toString(ConsumerConfigConstants.DEFAULT_SHARD_GETRECORDS_INTERVAL_MILLIS)));
-	}
+    @Override
+    public void run() {
+        try {
+            while (isRunning()) {
+                final RecordPublisherRunResult result =
+                        recordPublisher.run(
+                                batch -> {
+                                    if (!batch.getDeaggregatedRecords().isEmpty()) {
+                                        LOG.debug(
+                                                "stream: {}, shard: {}, millis behind latest: {}, batch size: {}",
+                                                subscribedShard.getStreamName(),
+                                                subscribedShard.getShard().getShardId(),
+                                                batch.getMillisBehindLatest(),
+                                                batch.getDeaggregatedRecordSize());
+                                    }
+                                    for (UserRecord userRecord : batch.getDeaggregatedRecords()) {
+                                        if (filterDeaggregatedRecord(userRecord)) {
+                                            deserializeRecordForCollectionAndUpdateState(
+                                                    userRecord);
+                                        }
+                                    }
 
-	@SuppressWarnings("unchecked")
-	@Override
-	public void run() {
-		String nextShardItr;
+                                    shardConsumerMetricsReporter.setAverageRecordSizeBytes(
+                                            batch.getAverageRecordSizeBytes());
+                                    shardConsumerMetricsReporter.setNumberOfAggregatedRecords(
+                                            batch.getAggregatedRecordSize());
+                                    shardConsumerMetricsReporter.setNumberOfDeaggregatedRecords(
+                                            batch.getDeaggregatedRecordSize());
+                                    ofNullable(batch.getMillisBehindLatest())
+                                            .ifPresent(
+                                                    shardConsumerMetricsReporter
+                                                            ::setMillisBehindLatest);
 
-		try {
-			// before infinitely looping, we set the initial nextShardItr appropriately
+                                    return lastSequenceNum;
+                                });
 
-			if (lastSequenceNum.equals(SentinelSequenceNumber.SENTINEL_LATEST_SEQUENCE_NUM.get())) {
-				// if the shard is already closed, there will be no latest next record to get for this shard
-				if (subscribedShard.isClosed()) {
-					nextShardItr = null;
-				} else {
-					nextShardItr = kinesis.getShardIterator(subscribedShard, ShardIteratorType.LATEST.toString(), null);
-				}
-			} else if (lastSequenceNum.equals(SentinelSequenceNumber.SENTINEL_EARLIEST_SEQUENCE_NUM.get())) {
-				nextShardItr = kinesis.getShardIterator(subscribedShard, ShardIteratorType.TRIM_HORIZON.toString(), null);
-			} else if (lastSequenceNum.equals(SentinelSequenceNumber.SENTINEL_SHARD_ENDING_SEQUENCE_NUM.get())) {
-				nextShardItr = null;
-			} else {
-				// we will be starting from an actual sequence number (due to restore from failure).
-				// if the last sequence number refers to an aggregated record, we need to clean up any dangling sub-records
-				// from the last aggregated record; otherwise, we can simply start iterating from the record right after.
+                if (result == COMPLETE) {
+                    fetcherRef.updateState(
+                            subscribedShardStateIndex,
+                            SentinelSequenceNumber.SENTINEL_SHARD_ENDING_SEQUENCE_NUM.get());
+                    // we can close this consumer thread once we've reached the end of the
+                    // subscribed shard
+                    break;
+                } else if (result == CANCELLED) {
+                    final String errorMessage =
+                            "Shard consumer cancelled: " + subscribedShard.getShard().getShardId();
+                    LOG.info(errorMessage);
+                    throw new ShardConsumerCancelledException(errorMessage);
+                }
+            }
+        } catch (Throwable t) {
+            fetcherRef.stopWithError(t);
+        }
+    }
 
-				if (lastSequenceNum.isAggregated()) {
-					String itrForLastAggregatedRecord =
-						kinesis.getShardIterator(subscribedShard, ShardIteratorType.AT_SEQUENCE_NUMBER.toString(), lastSequenceNum.getSequenceNumber());
+    /**
+     * The loop in run() checks this before fetching next batch of records. Since this runnable will
+     * be executed by the ExecutorService {@code KinesisDataFetcher#shardConsumersExecutor}, this
+     * thread would be closed down by calling shutdownNow() on {@code
+     * KinesisDataFetcher#shardConsumersExecutor} and let the executor service interrupt all
+     * currently running {@link ShardConsumer}s. The AWS SDK resources must be shutdown prior to
+     * this thread in order to preserve classpath for teardown, therefore also check to see if the
+     * fetcher is still running.
+     */
+    private boolean isRunning() {
+        return !Thread.interrupted() && fetcherRef.isRunning();
+    }
 
-					// get only the last aggregated record
-					GetRecordsResult getRecordsResult = getRecords(itrForLastAggregatedRecord, 1);
+    /**
+     * Deserializes a record for collection, and accordingly updates the shard state in the fetcher.
+     * The last successfully collected sequence number in this shard consumer is also updated so
+     * that a {@link RecordPublisher} may be able to use the correct sequence number to refresh
+     * shard iterators if necessary.
+     *
+     * <p>Note that the server-side Kinesis timestamp is attached to the record when collected. When
+     * the user programs uses {@link TimeCharacteristic#EventTime}, this timestamp will be used by
+     * default.
+     *
+     * @param record record to deserialize and collect
+     */
+    private void deserializeRecordForCollectionAndUpdateState(final UserRecord record) {
+        ByteBuffer recordData = record.getData();
 
-					List<UserRecord> fetchedRecords = deaggregateRecords(
-						getRecordsResult.getRecords(),
-						subscribedShard.getShard().getHashKeyRange().getStartingHashKey(),
-						subscribedShard.getShard().getHashKeyRange().getEndingHashKey());
+        byte[] dataBytes = new byte[recordData.remaining()];
+        recordData.get(dataBytes);
 
-					long lastSubSequenceNum = lastSequenceNum.getSubSequenceNumber();
-					for (UserRecord record : fetchedRecords) {
-						// we have found a dangling sub-record if it has a larger subsequence number
-						// than our last sequence number; if so, collect the record and update state
-						if (record.getSubSequenceNumber() > lastSubSequenceNum) {
-							deserializeRecordForCollectionAndUpdateState(record);
-						}
-					}
+        final long approxArrivalTimestamp = record.getApproximateArrivalTimestamp().getTime();
 
-					// set the nextShardItr so we can continue iterating in the next while loop
-					nextShardItr = getRecordsResult.getNextShardIterator();
-				} else {
-					// the last record was non-aggregated, so we can simply start from the next record
-					nextShardItr = kinesis.getShardIterator(subscribedShard, ShardIteratorType.AFTER_SEQUENCE_NUMBER.toString(), lastSequenceNum.getSequenceNumber());
-				}
-			}
+        final T value;
+        try {
+            value =
+                    deserializer.deserialize(
+                            dataBytes,
+                            record.getPartitionKey(),
+                            record.getSequenceNumber(),
+                            approxArrivalTimestamp,
+                            subscribedShard.getStreamName(),
+                            subscribedShard.getShard().getShardId());
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
 
-			while(isRunning()) {
-				if (nextShardItr == null) {
-					fetcherRef.updateState(subscribedShardStateIndex, SentinelSequenceNumber.SENTINEL_SHARD_ENDING_SEQUENCE_NUM.get());
+        SequenceNumber collectedSequenceNumber =
+                (record.isAggregated())
+                        ? new SequenceNumber(
+                                record.getSequenceNumber(), record.getSubSequenceNumber())
+                        : new SequenceNumber(record.getSequenceNumber());
 
-					// we can close this consumer thread once we've reached the end of the subscribed shard
-					break;
-				} else {
-					if (fetchIntervalMillis != 0) {
-						Thread.sleep(fetchIntervalMillis);
-					}
+        fetcherRef.emitRecordAndUpdateState(
+                value, approxArrivalTimestamp, subscribedShardStateIndex, collectedSequenceNumber);
 
-					GetRecordsResult getRecordsResult = getRecords(nextShardItr, maxNumberOfRecordsPerFetch);
+        this.lastSequenceNum = collectedSequenceNumber;
+    }
 
-					// each of the Kinesis records may be aggregated, so we must deaggregate them before proceeding
-					List<UserRecord> fetchedRecords = deaggregateRecords(
-						getRecordsResult.getRecords(),
-						subscribedShard.getShard().getHashKeyRange().getStartingHashKey(),
-						subscribedShard.getShard().getHashKeyRange().getEndingHashKey());
+    /**
+     * Filters out aggregated records that have previously been processed. This method is to support
+     * restarting from a partially consumed aggregated sequence number.
+     *
+     * @param record the record to filter
+     * @return true if the record should be retained
+     */
+    private boolean filterDeaggregatedRecord(final UserRecord record) {
+        if (!lastSequenceNum.isAggregated()) {
+            return true;
+        }
 
-					for (UserRecord record : fetchedRecords) {
-						deserializeRecordForCollectionAndUpdateState(record);
-					}
+        return !record.getSequenceNumber().equals(lastSequenceNum.getSequenceNumber())
+                || record.getSubSequenceNumber() > lastSequenceNum.getSubSequenceNumber();
+    }
 
-					nextShardItr = getRecordsResult.getNextShardIterator();
-				}
-			}
-		} catch (Throwable t) {
-			fetcherRef.stopWithError(t);
-		}
-	}
+    /** An exception wrapper to indicate an error has been thrown from the shard consumer. */
+    abstract static class ShardConsumerException extends RuntimeException {
+        private static final long serialVersionUID = 7732343624482321663L;
 
-	/**
-	 * The loop in run() checks this before fetching next batch of records. Since this runnable will be executed
-	 * by the ExecutorService {@link KinesisDataFetcher#shardConsumersExecutor}, the only way to close down this thread
-	 * would be by calling shutdownNow() on {@link KinesisDataFetcher#shardConsumersExecutor} and let the executor service
-	 * interrupt all currently running {@link ShardConsumer}s.
-	 */
-	private boolean isRunning() {
-		return !Thread.interrupted();
-	}
+        public ShardConsumerException(final String message) {
+            super(message);
+        }
+    }
 
-	/**
-	 * Deserializes a record for collection, and accordingly updates the shard state in the fetcher. The last
-	 * successfully collected sequence number in this shard consumer is also updated so that
-	 * {@link ShardConsumer#getRecords(String, int)} may be able to use the correct sequence number to refresh shard
-	 * iterators if necessary.
-	 *
-	 * Note that the server-side Kinesis timestamp is attached to the record when collected. When the
-	 * user programs uses {@link TimeCharacteristic#EventTime}, this timestamp will be used by default.
-	 *
-	 * @param record record to deserialize and collect
-	 * @throws IOException
-	 */
-	private void deserializeRecordForCollectionAndUpdateState(UserRecord record)
-		throws IOException {
-		ByteBuffer recordData = record.getData();
+    /** An exception to indicate the shard consumer has been cancelled. */
+    static class ShardConsumerCancelledException extends ShardConsumerException {
+        private static final long serialVersionUID = 2707399313569728649L;
 
-		byte[] dataBytes = new byte[recordData.remaining()];
-		recordData.get(dataBytes);
-
-		final long approxArrivalTimestamp = record.getApproximateArrivalTimestamp().getTime();
-
-		final T value = deserializer.deserialize(
-			dataBytes,
-			record.getPartitionKey(),
-			record.getSequenceNumber(),
-			approxArrivalTimestamp,
-			subscribedShard.getStreamName(),
-			subscribedShard.getShard().getShardId());
-
-		SequenceNumber collectedSequenceNumber = (record.isAggregated())
-			? new SequenceNumber(record.getSequenceNumber(), record.getSubSequenceNumber())
-			: new SequenceNumber(record.getSequenceNumber());
-
-		fetcherRef.emitRecordAndUpdateState(
-			value,
-			approxArrivalTimestamp,
-			subscribedShardStateIndex,
-			collectedSequenceNumber);
-
-		lastSequenceNum = collectedSequenceNumber;
-	}
-
-	/**
-	 * Calls {@link KinesisProxyInterface#getRecords(String, int)}, while also handling unexpected
-	 * AWS {@link ExpiredIteratorException}s to assure that we get results and don't just fail on
-	 * such occasions. The returned shard iterator within the successful {@link GetRecordsResult} should
-	 * be used for the next call to this method.
-	 *
-	 * Note: it is important that this method is not called again before all the records from the last result have been
-	 * fully collected with {@link ShardConsumer#deserializeRecordForCollectionAndUpdateState(UserRecord)}, otherwise
-	 * {@link ShardConsumer#lastSequenceNum} may refer to a sub-record in the middle of an aggregated record, leading to
-	 * incorrect shard iteration if the iterator had to be refreshed.
-	 *
-	 * @param shardItr shard iterator to use
-	 * @param maxNumberOfRecords the maximum number of records to fetch for this getRecords attempt
-	 * @return get records result
-	 * @throws InterruptedException
-	 */
-	private GetRecordsResult getRecords(String shardItr, int maxNumberOfRecords) throws InterruptedException {
-		GetRecordsResult getRecordsResult = null;
-		while (getRecordsResult == null) {
-			try {
-				getRecordsResult = kinesis.getRecords(shardItr, maxNumberOfRecords);
-			} catch (ExpiredIteratorException eiEx) {
-				LOG.warn("Encountered an unexpected expired iterator {} for shard {};" +
-					" refreshing the iterator ...", shardItr, subscribedShard);
-				shardItr = kinesis.getShardIterator(subscribedShard, ShardIteratorType.AFTER_SEQUENCE_NUMBER.toString(), lastSequenceNum.getSequenceNumber());
-
-				// sleep for the fetch interval before the next getRecords attempt with the refreshed iterator
-				if (fetchIntervalMillis != 0) {
-					Thread.sleep(fetchIntervalMillis);
-				}
-			}
-		}
-		return getRecordsResult;
-	}
-
-	@SuppressWarnings("unchecked")
-	protected static List<UserRecord> deaggregateRecords(List<Record> records, String startingHashKey, String endingHashKey) {
-		return UserRecord.deaggregate(records, new BigInteger(startingHashKey), new BigInteger(endingHashKey));
-	}
+        public ShardConsumerCancelledException(final String message) {
+            super(message);
+        }
+    }
 }

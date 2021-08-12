@@ -19,30 +19,21 @@
 package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.WrappingRuntimeException;
 
 import static java.util.Objects.requireNonNull;
 
-/**
- * A special exception that signifies that the cause exception came from a chained operator.
- */
+/** A special exception that signifies that the cause exception came from a chained operator. */
 @Internal
-public class ExceptionInChainedOperatorException extends RuntimeException {
+public class ExceptionInChainedOperatorException extends WrappingRuntimeException {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	public ExceptionInChainedOperatorException(Throwable cause) {
-		this("Could not forward element to next operator", cause);
-	}
+    public ExceptionInChainedOperatorException(Throwable cause) {
+        this("Could not forward element to next operator", cause);
+    }
 
-	public ExceptionInChainedOperatorException(String message, Throwable cause) {
-		super(message, requireNonNull(cause));
-	}
-	
-	public Throwable getOriginalCause() {
-		Throwable ex = this;
-		do {
-			ex = ex.getCause();
-		} while (ex instanceof ExceptionInChainedOperatorException);
-		return ex; 
-	}
+    public ExceptionInChainedOperatorException(String message, Throwable cause) {
+        super(message, requireNonNull(cause));
+    }
 }

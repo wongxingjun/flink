@@ -18,28 +18,33 @@
 
 package org.apache.flink.api.common.functions.util;
 
-import java.util.List;
-
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.util.Collector;
 
+import java.util.List;
+
+/**
+ * A {@link Collector} that collects deep copies of its elements in a list.
+ *
+ * @param <T> The type of the collected elements.
+ */
 @Internal
 public class CopyingListCollector<T> implements Collector<T> {
 
-	private final List<T> list;
-	private final TypeSerializer<T> serializer;
+    private final List<T> list;
+    private final TypeSerializer<T> serializer;
 
-	public CopyingListCollector(List<T> list, TypeSerializer<T> serializer) {
-		this.list = list;
-		this.serializer = serializer;
-	}
+    public CopyingListCollector(List<T> list, TypeSerializer<T> serializer) {
+        this.list = list;
+        this.serializer = serializer;
+    }
 
-	@Override
-	public void collect(T record) {
-		list.add(serializer.copy(record));
-	}
+    @Override
+    public void collect(T record) {
+        list.add(serializer.copy(record));
+    }
 
-	@Override
-	public void close() {}
+    @Override
+    public void close() {}
 }

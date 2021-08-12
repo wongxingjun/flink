@@ -25,155 +25,120 @@ import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.io.DiscardingOutputFormat;
-import org.apache.flink.client.program.ProgramInvocationException;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-
+import org.apache.flink.runtime.client.JobExecutionException;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.TestLogger;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
 
-import static org.junit.Assert.*;
+import static org.apache.flink.util.ExceptionUtils.findThrowable;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
- * Tests for the system behavior in multiple corner cases
- *   - when null records are passed through the system.
- *   - when disjoint dataflows are executed
- *   - when accumulators are used chained after a non-udf operator.
- *   
- * The tests are bundled into one class to reuse the same test cluster. This speeds
- * up test execution, as the majority of the test time goes usually into starting/stopping the
- * test cluster.
+ * Tests for the system behavior in multiple corner cases - when null records are passed through the
+ * system. - when disjoint dataflows are executed - when accumulators are used chained after a
+ * non-udf operator.
+ *
+ * <p>The tests are bundled into one class to reuse the same test cluster. This speeds up test
+ * execution, as the majority of the test time goes usually into starting/stopping the test cluster.
  */
 @SuppressWarnings("serial")
-public class MiscellaneousIssuesITCase {
+public class MiscellaneousIssuesITCase extends TestLogger {
 
-	private static LocalFlinkMiniCluster cluster;
-	
-	@BeforeClass
-	public static void startCluster() {
-		try {
-			Configuration config = new Configuration();
-			config.setInteger(ConfigConstants.LOCAL_NUMBER_TASK_MANAGER, 2);
-			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, 3);
-			config.setInteger(ConfigConstants.TASK_MANAGER_MEMORY_SIZE_KEY, 12);
-			cluster = new LocalFlinkMiniCluster(config, false);
+    @ClassRule
+    public static final MiniClusterWithClientResource MINI_CLUSTER_RESOURCE =
+            new MiniClusterWithClientResource(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(2)
+                            .setNumberSlotsPerTaskManager(3)
+                            .build());
 
-			cluster.start();
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail("Failed to start test cluster: " + e.getMessage());
-		}
-	}
-	
-	@AfterClass
-	public static void shutdownCluster() {
-		try {
-			cluster.shutdown();
-			cluster = null;
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail("Failed to stop test cluster: " + e.getMessage());
-		}
-	}
-	
-	@Test
-	public void testNullValues() {
-		try {
-			ExecutionEnvironment env =
-					ExecutionEnvironment.createRemoteEnvironment("localhost", cluster.getLeaderRPCPort());
+    @Test
+    public void testNullValues() {
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(1);
 
-			env.setParallelism(1);
-			env.getConfig().disableSysoutLogging();
+            DataSet<String> data =
+                    env.fromElements("hallo")
+                            .map(
+                                    new MapFunction<String, String>() {
+                                        @Override
+                                        public String map(String value) throws Exception {
+                                            return null;
+                                        }
+                                    });
+            data.writeAsText("/tmp/myTest", FileSystem.WriteMode.OVERWRITE);
 
-			DataSet<String> data = env.fromElements("hallo")
-					.map(new MapFunction<String, String>() {
-						@Override
-						public String map(String value) throws Exception {
-							return null;
-						}
-					});
-			data.writeAsText("/tmp/myTest", FileSystem.WriteMode.OVERWRITE);
+            try {
+                env.execute();
+                fail("this should fail due to null values.");
+            } catch (JobExecutionException e) {
+                assertTrue(findThrowable(e, NullPointerException.class).isPresent());
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			try {
-				env.execute();
-				fail("this should fail due to null values.");
-			}
-			catch (ProgramInvocationException e) {
-				assertNotNull(e.getCause());
-				assertNotNull(e.getCause().getCause());
-				assertTrue(e.getCause().getCause() instanceof NullPointerException);
-			}
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+    @Test
+    public void testDisjointDataflows() {
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(5);
 
-	@Test
-	public void testDisjointDataflows() {
-		try {
-			ExecutionEnvironment env =
-					ExecutionEnvironment.createRemoteEnvironment("localhost", cluster.getLeaderRPCPort());
+            // generate two different flows
+            env.generateSequence(1, 10).output(new DiscardingOutputFormat<Long>());
+            env.generateSequence(1, 10).output(new DiscardingOutputFormat<Long>());
 
-			env.setParallelism(5);
-			env.getConfig().disableSysoutLogging();
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			// generate two different flows
-			env.generateSequence(1, 10).output(new DiscardingOutputFormat<Long>());
-			env.generateSequence(1, 10).output(new DiscardingOutputFormat<Long>());
+    @Test
+    public void testAccumulatorsAfterNoOp() {
 
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+        final String accName = "test_accumulator";
 
-	@Test
-	public void testAccumulatorsAfterNoOp() {
-		
-		final String ACC_NAME = "test_accumulator";
-		
-		try {
-			ExecutionEnvironment env =
-					ExecutionEnvironment.createRemoteEnvironment("localhost", cluster.getLeaderRPCPort());
+        try {
+            ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(6);
 
-			env.setParallelism(6);
-			env.getConfig().disableSysoutLogging();
-			
-			env.generateSequence(1, 1000000)
-					.rebalance()
-					.flatMap(new RichFlatMapFunction<Long, Long>() {
+            env.generateSequence(1, 1000000)
+                    .rebalance()
+                    .flatMap(
+                            new RichFlatMapFunction<Long, Long>() {
 
-						private LongCounter counter;
+                                private LongCounter counter;
 
-						@Override
-						public void open(Configuration parameters) {
-							counter = getRuntimeContext().getLongCounter(ACC_NAME);
-						}
+                                @Override
+                                public void open(Configuration parameters) {
+                                    counter = getRuntimeContext().getLongCounter(accName);
+                                }
 
-						@Override
-						public void flatMap(Long value, Collector<Long> out) {
-							counter.add(1L);
-						}
-					})
-					.output(new DiscardingOutputFormat<Long>());
+                                @Override
+                                public void flatMap(Long value, Collector<Long> out) {
+                                    counter.add(1L);
+                                }
+                            })
+                    .output(new DiscardingOutputFormat<Long>());
 
-			JobExecutionResult result = env.execute();
-			
-			assertEquals(1000000L, result.getAllAccumulatorResults().get(ACC_NAME));
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            JobExecutionResult result = env.execute();
+
+            assertEquals(1000000L, result.getAllAccumulatorResults().get(accName));
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 }

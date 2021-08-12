@@ -18,47 +18,30 @@
 ################################################################################
 
 # Start/stop a Flink JobManager.
-USAGE="Usage: jobmanager.sh (start (local|cluster) [host] [webui-port]|stop|stop-all)"
+USAGE="Usage: jobmanager.sh ((start|start-foreground) [host] [webui-port])|stop|stop-all"
 
 STARTSTOP=$1
-EXECUTIONMODE=$2
-HOST=$3 # optional when starting multiple instances
-WEBUIPORT=$4 # optional when starting multiple instances
+HOST=$2 # optional when starting multiple instances
+WEBUIPORT=$3 # optional when starting multiple instances
+
+if [[ $STARTSTOP != "start" ]] && [[ $STARTSTOP != "start-foreground" ]] && [[ $STARTSTOP != "stop" ]] && [[ $STARTSTOP != "stop-all" ]]; then
+  echo $USAGE
+  exit 1
+fi
 
 bin=`dirname "$0"`
 bin=`cd "$bin"; pwd`
 
 . "$bin"/config.sh
 
-if [[ $STARTSTOP == "start" ]]; then
-    if [ -z $EXECUTIONMODE ]; then
-        echo "Missing execution mode (local|cluster) argument. $USAGE."
-        exit 1
-    fi
+ENTRYPOINT=standalonesession
 
-    if [[ ! ${FLINK_JM_HEAP} =~ $IS_NUMBER ]] || [[ "${FLINK_JM_HEAP}" -lt "0" ]]; then
-        echo "[ERROR] Configured JobManager memory size is not a valid value. Please set '${KEY_JOBM_MEM_SIZE}' in ${FLINK_CONF_FILE}."
-        exit 1
-    fi
-
-    if [ "$EXECUTIONMODE" = "local" ]; then
-        if [[ ! ${FLINK_TM_HEAP} =~ $IS_NUMBER ]] || [[ "${FLINK_TM_HEAP}" -lt "0" ]]; then
-            echo "[ERROR] Configured TaskManager memory size is not a valid value. Please set ${KEY_TASKM_MEM_SIZE} in ${FLINK_CONF_FILE}."
-            exit 1
-        fi
-
-        FLINK_JM_HEAP=`expr $FLINK_JM_HEAP + $FLINK_TM_HEAP`
-    fi
-
-    if [ "${FLINK_JM_HEAP}" -gt "0" ]; then
-        export JVM_ARGS="$JVM_ARGS -Xms"$FLINK_JM_HEAP"m -Xmx"$FLINK_JM_HEAP"m"
-    fi
-
+if [[ $STARTSTOP == "start" ]] || [[ $STARTSTOP == "start-foreground" ]]; then
     # Add JobManager-specific JVM options
     export FLINK_ENV_JAVA_OPTS="${FLINK_ENV_JAVA_OPTS} ${FLINK_ENV_JAVA_OPTS_JM}"
+    parseJmArgsAndExportLogs "${ARGS[@]}"
 
-    # Startup parameters
-    args=("--configDir" "${FLINK_CONF_DIR}" "--executionMode" "${EXECUTIONMODE}")
+    args=("--configDir" "${FLINK_CONF_DIR}" "--executionMode" "cluster")
     if [ ! -z $HOST ]; then
         args+=("--host")
         args+=("${HOST}")
@@ -68,6 +51,14 @@ if [[ $STARTSTOP == "start" ]]; then
         args+=("--webui-port")
         args+=("${WEBUIPORT}")
     fi
+
+    if [ ! -z "${DYNAMIC_PARAMETERS}" ]; then
+        args+=(${DYNAMIC_PARAMETERS[@]})
+    fi
 fi
 
-"${FLINK_BIN_DIR}"/flink-daemon.sh $STARTSTOP jobmanager "${args[@]}"
+if [[ $STARTSTOP == "start-foreground" ]]; then
+    exec "${FLINK_BIN_DIR}"/flink-console.sh $ENTRYPOINT "${args[@]}"
+else
+    "${FLINK_BIN_DIR}"/flink-daemon.sh $STARTSTOP $ENTRYPOINT "${args[@]}"
+fi

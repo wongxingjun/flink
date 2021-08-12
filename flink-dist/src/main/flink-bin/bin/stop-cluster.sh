@@ -22,18 +22,8 @@ bin=`cd "$bin"; pwd`
 
 . "$bin"/config.sh
 
-# Stop TaskManager instance(s) using pdsh (Parallel Distributed Shell) when available
-readSlaves
-
-command -v pdsh >/dev/null 2>&1
-if [[ $? -ne 0 ]]; then
-    for slave in ${SLAVES[@]}; do
-        ssh -n $FLINK_SSH_OPTS $slave -- "nohup /bin/bash -l \"${FLINK_BIN_DIR}/taskmanager.sh\" stop &"
-    done
-else
-    PDSH_SSH_ARGS="" PDSH_SSH_ARGS_APPEND=$FLINK_SSH_OPTS pdsh -w $(IFS=, ; echo "${SLAVES[*]}") \
-        "nohup /bin/bash -l \"${FLINK_BIN_DIR}/taskmanager.sh\" stop"
-fi
+# Stop TaskManager instance(s)
+TMWorkers stop
 
 # Stop JobManager instance(s)
 shopt -s nocasematch
@@ -41,11 +31,17 @@ if [[ $HIGH_AVAILABILITY == "zookeeper" ]]; then
     # HA Mode
     readMasters
 
-    for master in ${MASTERS[@]}; do
-        ssh -n $FLINK_SSH_OPTS $master -- "nohup /bin/bash -l \"${FLINK_BIN_DIR}/jobmanager.sh\" stop &"
-    done
+    if [ ${MASTERS_ALL_LOCALHOST} = true ] ; then
+        for master in ${MASTERS[@]}; do
+            "$FLINK_BIN_DIR"/jobmanager.sh stop
+        done
+    else
+        for master in ${MASTERS[@]}; do
+            ssh -n $FLINK_SSH_OPTS $master -- "nohup /bin/bash -l \"${FLINK_BIN_DIR}/jobmanager.sh\" stop &"
+        done
+    fi
 
 else
-	  "$FLINK_BIN_DIR"/jobmanager.sh stop
+    "$FLINK_BIN_DIR"/jobmanager.sh stop
 fi
 shopt -u nocasematch

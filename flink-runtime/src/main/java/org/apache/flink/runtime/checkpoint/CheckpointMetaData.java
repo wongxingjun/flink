@@ -18,138 +18,77 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-import org.apache.flink.util.Preconditions;
-
 import java.io.Serializable;
 
-/**
- * Encapsulates all the meta data for a checkpoint.
- */
+/** Encapsulates all the meta data for a checkpoint. */
 public class CheckpointMetaData implements Serializable {
 
-	private static final long serialVersionUID = -2387652345781312442L;
+    private static final long serialVersionUID = -2387652345781312442L;
 
-	/** The ID of the checkpoint */
-	private final long checkpointId;
+    /** The ID of the checkpoint. */
+    private final long checkpointId;
 
-	/** The timestamp of the checkpoint */
-	private final long timestamp;
+    /** The timestamp of the checkpoint triggering. */
+    private final long timestamp;
 
-	private final CheckpointMetrics metrics;
+    /** The timestamp of the checkpoint receiving by this subtask. */
+    private final long receiveTimestamp;
 
-	public CheckpointMetaData(long checkpointId, long timestamp) {
-		this.checkpointId = checkpointId;
-		this.timestamp = timestamp;
-		this.metrics = new CheckpointMetrics();
-	}
+    public CheckpointMetaData(long checkpointId, long timestamp) {
+        this(checkpointId, timestamp, System.currentTimeMillis());
+    }
 
-	public CheckpointMetaData(
-			long checkpointId,
-			long timestamp,
-			long synchronousDurationMillis,
-			long asynchronousDurationMillis,
-			long bytesBufferedInAlignment,
-			long alignmentDurationNanos) {
-		this.checkpointId = checkpointId;
-		this.timestamp = timestamp;
-		this.metrics = new CheckpointMetrics(
-				bytesBufferedInAlignment,
-				alignmentDurationNanos,
-				synchronousDurationMillis,
-				asynchronousDurationMillis);
-	}
+    public CheckpointMetaData(long checkpointId, long timestamp, long receiveTimestamp) {
+        this.checkpointId = checkpointId;
+        this.timestamp = timestamp;
+        this.receiveTimestamp = receiveTimestamp;
+    }
 
-	public CheckpointMetaData(
-			long checkpointId,
-			long timestamp,
-			CheckpointMetrics metrics) {
-		this.checkpointId = checkpointId;
-		this.timestamp = timestamp;
-		this.metrics = Preconditions.checkNotNull(metrics);
-	}
+    public long getCheckpointId() {
+        return checkpointId;
+    }
 
-	public CheckpointMetrics getMetrics() {
-		return metrics;
-	}
+    public long getTimestamp() {
+        return timestamp;
+    }
 
-	public CheckpointMetaData setBytesBufferedInAlignment(long bytesBufferedInAlignment) {
-		Preconditions.checkArgument(bytesBufferedInAlignment >= 0);
-		this.metrics.setBytesBufferedInAlignment(bytesBufferedInAlignment);
-		return this;
-	}
+    public long getReceiveTimestamp() {
+        return receiveTimestamp;
+    }
 
-	public CheckpointMetaData setAlignmentDurationNanos(long alignmentDurationNanos) {
-		Preconditions.checkArgument(alignmentDurationNanos >= 0);
-		this.metrics.setAlignmentDurationNanos(alignmentDurationNanos);
-		return this;
-	}
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
 
-	public CheckpointMetaData setSyncDurationMillis(long syncDurationMillis) {
-		Preconditions.checkArgument(syncDurationMillis >= 0);
-		this.metrics.setSyncDurationMillis(syncDurationMillis);
-		return this;
-	}
+        CheckpointMetaData that = (CheckpointMetaData) o;
 
-	public CheckpointMetaData setAsyncDurationMillis(long asyncDurationMillis) {
-		Preconditions.checkArgument(asyncDurationMillis >= 0);
-		this.metrics.setAsyncDurationMillis(asyncDurationMillis);
-		return this;
-	}
+        return (checkpointId == that.checkpointId)
+                && (timestamp == that.timestamp)
+                && (receiveTimestamp == that.receiveTimestamp);
+    }
 
-	public long getCheckpointId() {
-		return checkpointId;
-	}
+    @Override
+    public int hashCode() {
+        int result = (int) (checkpointId ^ (checkpointId >>> 32));
+        result = 31 * result + (int) (timestamp ^ (timestamp >>> 32));
+        result = 31 * result + (int) (receiveTimestamp ^ (receiveTimestamp >>> 32));
+        return result;
+    }
 
-	public long getTimestamp() {
-		return timestamp;
-	}
-
-	public long getBytesBufferedInAlignment() {
-		return metrics.getBytesBufferedInAlignment();
-	}
-
-	public long getAlignmentDurationNanos() {
-		return metrics.getAlignmentDurationNanos();
-	}
-
-	public long getSyncDurationMillis() {
-		return metrics.getSyncDurationMillis();
-	}
-
-	public long getAsyncDurationMillis() {
-		return metrics.getAsyncDurationMillis();
-	}
-
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (o == null || getClass() != o.getClass()) {
-			return false;
-		}
-
-		CheckpointMetaData that = (CheckpointMetaData) o;
-
-		return (checkpointId == that.checkpointId)
-				&& (timestamp == that.timestamp)
-				&& (metrics.equals(that.metrics));
-	}
-
-	@Override
-	public int hashCode() {
-		int result = (int) (checkpointId ^ (checkpointId >>> 32));
-		result = 31 * result + (int) (timestamp ^ (timestamp >>> 32));
-		result = 31 * result + metrics.hashCode();
-		return result;
-	}
-
-	@Override
-	public String toString() {
-		return "CheckpointMetaData{" +
-				"checkpointId=" + checkpointId +
-				", timestamp=" + timestamp +
-				", metrics=" + metrics +
-				'}';
-	}
+    @Override
+    public String toString() {
+        return "CheckpointMetaData{"
+                + "checkpointId="
+                + checkpointId
+                + ", receiveTimestamp="
+                + receiveTimestamp
+                + ", timestamp="
+                + timestamp
+                + '}';
+    }
 }

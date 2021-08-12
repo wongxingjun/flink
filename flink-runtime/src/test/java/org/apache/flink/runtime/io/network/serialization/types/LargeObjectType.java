@@ -16,84 +16,84 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.io.network.serialization.types;
+
+import org.apache.flink.core.memory.DataInputView;
+import org.apache.flink.core.memory.DataOutputView;
+import org.apache.flink.testutils.serialization.types.SerializationTestType;
 
 import java.io.IOException;
 import java.util.Random;
 
-import org.apache.flink.core.memory.DataInputView;
-import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.runtime.io.network.api.serialization.types.SerializationTestType;
-
+/** A large {@link SerializationTestType}. */
 public class LargeObjectType implements SerializationTestType {
 
-	private static final int MIN_LEN = 12 * 1000 * 1000;
-	
-	private static final int MAX_LEN = 40 * 1000 * 1000;
+    private static final int MIN_LEN = 12 * 1000 * 1000;
 
-	private int len;
+    private static final int MAX_LEN = 40 * 1000 * 1000;
 
-	public LargeObjectType() {
-		this.len = 0;
-	}
+    private int len;
 
-	public LargeObjectType(int len) {
-		this.len = len;
-	}
+    public LargeObjectType() {
+        this.len = 0;
+    }
 
-	@Override
-	public LargeObjectType getRandom(Random rnd) {
-		int len = rnd.nextInt(MAX_LEN - MIN_LEN) + MIN_LEN;
-		return new LargeObjectType(len);
-	}
+    public LargeObjectType(int len) {
+        this.len = len;
+    }
 
-	@Override
-	public int length() {
-		return len + 4;
-	}
+    @Override
+    public LargeObjectType getRandom(Random rnd) {
+        int len = rnd.nextInt(MAX_LEN - MIN_LEN) + MIN_LEN;
+        return new LargeObjectType(len);
+    }
 
-	@Override
-	public void write(DataOutputView out) throws IOException {
-		out.writeInt(len);
-		for (int i = 0; i < len / 8; i++) {
-			out.writeLong(i);
-		}
-		for (int i = 0; i < len % 8; i++) {
-			out.write(i);
-		}
-	}
+    @Override
+    public int length() {
+        return len + 4;
+    }
 
-	@Override
-	public void read(DataInputView in) throws IOException {
-		final int len = in.readInt();
-		this.len = len;
-		
-		for (int i = 0; i < len / 8; i++) {
-			if (in.readLong() != i) {
-				throw new IOException("corrupt serialization");
-			}
-		}
-		
-		for (int i = 0; i < len % 8; i++) {
-			if (in.readByte() != i) {
-				throw new IOException("corrupt serialization");
-			}
-		}
-	}
+    @Override
+    public void write(DataOutputView out) throws IOException {
+        out.writeInt(len);
+        for (int i = 0; i < len / 8; i++) {
+            out.writeLong(i);
+        }
+        for (int i = 0; i < len % 8; i++) {
+            out.write(i);
+        }
+    }
 
-	@Override
-	public int hashCode() {
-		return len;
-	}
+    @Override
+    public void read(DataInputView in) throws IOException {
+        final int len = in.readInt();
+        this.len = len;
 
-	@Override
-	public boolean equals(Object obj) {
-		return (obj instanceof LargeObjectType) && ((LargeObjectType) obj).len == this.len;
-	}
-	
-	@Override
-	public String toString() {
-		return "Large Object " + len;
-	}
+        for (int i = 0; i < len / 8; i++) {
+            if (in.readLong() != i) {
+                throw new IOException("corrupt serialization");
+            }
+        }
+
+        for (int i = 0; i < len % 8; i++) {
+            if (in.readByte() != i) {
+                throw new IOException("corrupt serialization");
+            }
+        }
+    }
+
+    @Override
+    public int hashCode() {
+        return len;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        return (obj instanceof LargeObjectType) && ((LargeObjectType) obj).len == this.len;
+    }
+
+    @Override
+    public String toString() {
+        return "Large Object " + len;
+    }
 }

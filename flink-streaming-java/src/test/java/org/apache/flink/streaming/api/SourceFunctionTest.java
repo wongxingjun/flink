@@ -17,39 +17,41 @@
 
 package org.apache.flink.streaming.api;
 
-import static org.junit.Assert.assertEquals;
+import org.apache.flink.api.common.typeutils.base.IntSerializer;
+import org.apache.flink.core.testutils.CommonTestUtils;
+import org.apache.flink.streaming.api.functions.source.FromElementsFunction;
+import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.util.SourceFunctionUtil;
+
+import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.flink.api.common.typeutils.base.IntSerializer;
-import org.apache.flink.core.testutils.CommonTestUtils;
-import org.apache.flink.streaming.api.functions.source.FromElementsFunction;
-import org.apache.flink.streaming.api.functions.source.StatefulSequenceSource;
-import org.apache.flink.streaming.util.SourceFunctionUtil;
-import org.junit.Test;
+import static org.junit.Assert.assertEquals;
 
+/** Tests for {@link SourceFunction}. */
 public class SourceFunctionTest {
 
-	@Test
-	public void fromElementsTest() throws Exception {
-		List<Integer> expectedList = Arrays.asList(1, 2, 3);
-		List<Integer> actualList = SourceFunctionUtil.runSourceFunction(CommonTestUtils.createCopySerializable(
-				new FromElementsFunction<Integer>(
-						IntSerializer.INSTANCE,
-						1,
-						2,
-						3)));
-		assertEquals(expectedList, actualList);
-	}
+    @Test
+    public void fromElementsTest() throws Exception {
+        List<Integer> expectedList = Arrays.asList(1, 2, 3);
+        List<Integer> actualList =
+                SourceFunctionUtil.runSourceFunction(
+                        CommonTestUtils.createCopySerializable(
+                                new FromElementsFunction<Integer>(
+                                        IntSerializer.INSTANCE, 1, 2, 3)));
+        assertEquals(expectedList, actualList);
+    }
 
-	@Test
-	public void fromCollectionTest() throws Exception {
-		List<Integer> expectedList = Arrays.asList(1, 2, 3);
-		List<Integer> actualList = SourceFunctionUtil.runSourceFunction(
-				CommonTestUtils.createCopySerializable(new FromElementsFunction<Integer>(
-						IntSerializer.INSTANCE,
-						Arrays.asList(1, 2, 3))));
-		assertEquals(expectedList, actualList);
-	}
+    @Test
+    public void fromCollectionTest() throws Exception {
+        List<Integer> expectedList = Arrays.asList(1, 2, 3);
+        List<Integer> actualList =
+                SourceFunctionUtil.runSourceFunction(
+                        CommonTestUtils.createCopySerializable(
+                                new FromElementsFunction<Integer>(
+                                        IntSerializer.INSTANCE, Arrays.asList(1, 2, 3))));
+        assertEquals(expectedList, actualList);
+    }
 }

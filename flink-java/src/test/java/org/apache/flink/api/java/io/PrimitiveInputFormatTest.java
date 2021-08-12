@@ -18,172 +18,174 @@
 
 package org.apache.flink.api.java.io;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.FileInputSplit;
+import org.apache.flink.core.fs.Path;
+
+import org.junit.Test;
 
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 
-import org.junit.Test;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.FileInputSplit;
-import org.apache.flink.core.fs.Path;
-
+/** Tests for {@link PrimitiveInputFormat}. */
 public class PrimitiveInputFormatTest {
 
-	private static final Path PATH = new Path("an/ignored/file/");
+    private static final Path PATH = new Path("an/ignored/file/");
 
+    @Test
+    public void testStringInput() {
+        try {
+            final String fileContent = "abc||def||||";
+            final FileInputSplit split = createInputSplit(fileContent);
 
-	@Test
-	public void testStringInput() {
-		try {
-			final String fileContent = "abc||def||||";
-			final FileInputSplit split = createInputSplit(fileContent);
+            final PrimitiveInputFormat<String> format =
+                    new PrimitiveInputFormat<String>(PATH, "||", String.class);
 
-			final PrimitiveInputFormat<String> format = new PrimitiveInputFormat<String>(PATH, "||", String.class);
+            final Configuration parameters = new Configuration();
+            format.configure(parameters);
+            format.open(split);
 
-			final Configuration parameters = new Configuration();
-			format.configure(parameters);
-			format.open(split);
+            String result = null;
 
-			String result = null;
+            result = format.nextRecord(result);
+            assertEquals("abc", result);
 
-			result = format.nextRecord(result);
-			assertEquals("abc", result);
+            result = format.nextRecord(result);
+            assertEquals("def", result);
 
-			result = format.nextRecord(result);
-			assertEquals("def", result);
+            result = format.nextRecord(result);
+            assertEquals("", result);
 
-			result = format.nextRecord(result);
-			assertEquals("", result);
+            result = format.nextRecord(result);
+            assertNull(result);
+            assertTrue(format.reachedEnd());
+        } catch (Exception ex) {
+            ex.printStackTrace();
+            fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
+        }
+    }
 
-			result = format.nextRecord(result);
-			assertNull(result);
-			assertTrue(format.reachedEnd());
-		}
-		catch (Exception ex) {
-			ex.printStackTrace();
-			fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
-		}
-	}
+    @Test
+    public void testIntegerInput() throws IOException {
+        try {
+            final String fileContent = "111|222|";
+            final FileInputSplit split = createInputSplit(fileContent);
 
+            final PrimitiveInputFormat<Integer> format =
+                    new PrimitiveInputFormat<Integer>(PATH, "|", Integer.class);
 
+            format.configure(new Configuration());
+            format.open(split);
 
-	@Test
-	public void testIntegerInput() throws IOException {
-		try {
-			final String fileContent = "111|222|";
-			final FileInputSplit split = createInputSplit(fileContent);
+            Integer result = null;
+            result = format.nextRecord(result);
+            assertEquals(Integer.valueOf(111), result);
 
-			final PrimitiveInputFormat<Integer> format = new PrimitiveInputFormat<Integer>(PATH,"|", Integer.class);
+            result = format.nextRecord(result);
+            assertEquals(Integer.valueOf(222), result);
 
-			format.configure(new Configuration());
-			format.open(split);
+            result = format.nextRecord(result);
+            assertNull(result);
+            assertTrue(format.reachedEnd());
+        } catch (Exception ex) {
+            fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
+        }
+    }
 
-			Integer result = null;
-			result = format.nextRecord(result);
-			assertEquals(Integer.valueOf(111), result);
+    @Test
+    public void testDoubleInputLinewise() throws IOException {
+        try {
+            final String fileContent = "1.21\n2.23\n";
+            final FileInputSplit split = createInputSplit(fileContent);
 
-			result = format.nextRecord(result);
-			assertEquals(Integer.valueOf(222), result);
+            final PrimitiveInputFormat<Double> format =
+                    new PrimitiveInputFormat<Double>(PATH, Double.class);
 
-			result = format.nextRecord(result);
-			assertNull(result);
-			assertTrue(format.reachedEnd());
-		}
-		catch (Exception ex) {
-			fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
-		}
-	}
-	
+            format.configure(new Configuration());
+            format.open(split);
 
-	@Test
-	public void testDoubleInputLinewise() throws IOException {
-		try {
-			final String fileContent = "1.21\n2.23\n";
-			final FileInputSplit split = createInputSplit(fileContent);
+            Double result = null;
+            result = format.nextRecord(result);
+            assertEquals(Double.valueOf(1.21), result);
 
-			final PrimitiveInputFormat<Double> format = new PrimitiveInputFormat<Double>(PATH, Double.class);
+            result = format.nextRecord(result);
+            assertEquals(Double.valueOf(2.23), result);
 
-			format.configure(new Configuration());
-			format.open(split);
+            result = format.nextRecord(result);
+            assertNull(result);
+            assertTrue(format.reachedEnd());
+        } catch (Exception ex) {
+            fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
+        }
+    }
 
-			Double result = null;
-			result = format.nextRecord(result);
-			assertEquals(Double.valueOf(1.21), result);
+    @Test
+    public void testRemovingTrailingCR() {
+        try {
+            String first = "First line";
+            String second = "Second line";
+            String fileContent = first + "\r\n" + second + "\r\n";
+            final FileInputSplit split = createInputSplit(fileContent);
 
-			result = format.nextRecord(result);
-			assertEquals(Double.valueOf(2.23), result);
+            final PrimitiveInputFormat<String> format =
+                    new PrimitiveInputFormat<String>(PATH, String.class);
 
-			result = format.nextRecord(result);
-			assertNull(result);
-			assertTrue(format.reachedEnd());
-		}
-		catch (Exception ex) {
-			fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
-		}
-	}
+            format.configure(new Configuration());
+            format.open(split);
 
-	@Test
-	public void testRemovingTrailingCR() {
-		try {
-			String first = "First line";
-			String second = "Second line";
-			String fileContent = first + "\r\n" + second + "\r\n";
-			final FileInputSplit split = createInputSplit(fileContent);
+            String result = null;
 
-			final PrimitiveInputFormat<String> format = new PrimitiveInputFormat<String>(PATH ,String.class);
+            result = format.nextRecord(result);
+            assertEquals(first, result);
 
-			format.configure(new Configuration());
-			format.open(split);
+            result = format.nextRecord(result);
+            assertEquals(second, result);
+        } catch (Exception ex) {
+            fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
+        }
+    }
 
-			String result = null;
+    @Test(expected = IOException.class)
+    public void testFailingInput() throws IOException {
 
-			result = format.nextRecord(result);
-			assertEquals(first, result);
+        final String fileContent = "111|222|asdf|17";
+        final FileInputSplit split = createInputSplit(fileContent);
 
-			result = format.nextRecord(result);
-			assertEquals(second, result);
-		}
-		catch (Exception ex) {
-			fail("Test failed due to a " + ex.getClass().getName() + ": " + ex.getMessage());
-		}
-	}
-	
-	@Test(expected = IOException.class)
-	public void testFailingInput() throws IOException {
-		
-		final String fileContent = "111|222|asdf|17";
-		final FileInputSplit split = createInputSplit(fileContent);
+        final PrimitiveInputFormat<Integer> format =
+                new PrimitiveInputFormat<Integer>(PATH, "|", Integer.class);
 
-		final PrimitiveInputFormat<Integer> format = new PrimitiveInputFormat<Integer>(PATH,"|", Integer.class);
+        format.configure(new Configuration());
+        format.open(split);
 
-		format.configure(new Configuration());
-		format.open(split);
+        Integer result = null;
+        result = format.nextRecord(result);
+        assertEquals(Integer.valueOf(111), result);
 
-		Integer result = null;
-		result = format.nextRecord(result);
-		assertEquals(Integer.valueOf(111), result);
+        result = format.nextRecord(result);
+        assertEquals(Integer.valueOf(222), result);
 
-		result = format.nextRecord(result);
-		assertEquals(Integer.valueOf(222), result);
+        result = format.nextRecord(result);
+    }
 
-		result = format.nextRecord(result);
-	}
+    private FileInputSplit createInputSplit(String content) throws IOException {
+        File tempFile = File.createTempFile("test_contents", "tmp");
+        tempFile.deleteOnExit();
 
-	private FileInputSplit createInputSplit(String content) throws IOException {
-		File tempFile = File.createTempFile("test_contents", "tmp");
-		tempFile.deleteOnExit();
+        try (FileWriter wrt = new FileWriter(tempFile)) {
+            wrt.write(content);
+        }
 
-		try (FileWriter wrt = new FileWriter(tempFile)) {
-			wrt.write(content);
-		}
-
-		return new FileInputSplit(0, new Path(tempFile.toURI().toString()), 0, tempFile.length(), new String[] {"localhost"});
-	}
-
+        return new FileInputSplit(
+                0,
+                new Path(tempFile.toURI().toString()),
+                0,
+                tempFile.length(),
+                new String[] {"localhost"});
+    }
 }

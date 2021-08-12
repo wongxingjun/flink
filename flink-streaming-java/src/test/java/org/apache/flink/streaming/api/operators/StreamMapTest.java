@@ -17,8 +17,6 @@
 
 package org.apache.flink.streaming.api.operators;
 
-import java.util.concurrent.ConcurrentLinkedQueue;
-
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.configuration.Configuration;
@@ -26,103 +24,111 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.TestHarnessUtil;
+
 import org.junit.Assert;
 import org.junit.Test;
+
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * Tests for {@link StreamMap}. These test that:
  *
  * <ul>
- *     <li>RichFunction methods are called correctly</li>
- *     <li>Timestamps of processed elements match the input timestamp</li>
- *     <li>Watermarks are correctly forwarded</li>
+ *   <li>RichFunction methods are called correctly
+ *   <li>Timestamps of processed elements match the input timestamp
+ *   <li>Watermarks are correctly forwarded
  * </ul>
  */
 public class StreamMapTest {
 
-	private static class Map implements MapFunction<Integer, String> {
-		private static final long serialVersionUID = 1L;
+    private static class Map implements MapFunction<Integer, String> {
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public String map(Integer value) throws Exception {
-			return "+" + (value + 1);
-		}
-	}
-	
-	@Test
-	public void testMap() throws Exception {
-		StreamMap<Integer, String> operator = new StreamMap<Integer, String>(new Map());
+        @Override
+        public String map(Integer value) throws Exception {
+            return "+" + (value + 1);
+        }
+    }
 
-		OneInputStreamOperatorTestHarness<Integer, String> testHarness = new OneInputStreamOperatorTestHarness<Integer, String>(operator);
+    @Test
+    public void testMap() throws Exception {
+        StreamMap<Integer, String> operator = new StreamMap<Integer, String>(new Map());
 
-		long initialTime = 0L;
-		ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<Object>();
+        OneInputStreamOperatorTestHarness<Integer, String> testHarness =
+                new OneInputStreamOperatorTestHarness<Integer, String>(operator);
 
-		testHarness.open();
+        long initialTime = 0L;
+        ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<Object>();
 
-		testHarness.processElement(new StreamRecord<Integer>(1, initialTime + 1));
-		testHarness.processElement(new StreamRecord<Integer>(2, initialTime + 2));
-		testHarness.processWatermark(new Watermark(initialTime + 2));
-		testHarness.processElement(new StreamRecord<Integer>(3, initialTime + 3));
+        testHarness.open();
 
-		expectedOutput.add(new StreamRecord<String>("+2", initialTime + 1));
-		expectedOutput.add(new StreamRecord<String>("+3", initialTime + 2));
-		expectedOutput.add(new Watermark(initialTime + 2));
-		expectedOutput.add(new StreamRecord<String>("+4", initialTime + 3));
+        testHarness.processElement(new StreamRecord<Integer>(1, initialTime + 1));
+        testHarness.processElement(new StreamRecord<Integer>(2, initialTime + 2));
+        testHarness.processWatermark(new Watermark(initialTime + 2));
+        testHarness.processElement(new StreamRecord<Integer>(3, initialTime + 3));
 
-		TestHarnessUtil.assertOutputEquals("Output was not correct.", expectedOutput, testHarness.getOutput());
-	}
+        expectedOutput.add(new StreamRecord<String>("+2", initialTime + 1));
+        expectedOutput.add(new StreamRecord<String>("+3", initialTime + 2));
+        expectedOutput.add(new Watermark(initialTime + 2));
+        expectedOutput.add(new StreamRecord<String>("+4", initialTime + 3));
 
-	@Test
-	public void testOpenClose() throws Exception {
-		StreamMap<String, String> operator = new StreamMap<String, String>(new TestOpenCloseMapFunction());
+        TestHarnessUtil.assertOutputEquals(
+                "Output was not correct.", expectedOutput, testHarness.getOutput());
+    }
 
-		OneInputStreamOperatorTestHarness<String, String> testHarness = new OneInputStreamOperatorTestHarness<String, String>(operator);
+    @Test
+    public void testOpenClose() throws Exception {
+        StreamMap<String, String> operator =
+                new StreamMap<String, String>(new TestOpenCloseMapFunction());
 
-		long initialTime = 0L;
+        OneInputStreamOperatorTestHarness<String, String> testHarness =
+                new OneInputStreamOperatorTestHarness<String, String>(operator);
 
-		testHarness.open();
+        long initialTime = 0L;
 
-		testHarness.processElement(new StreamRecord<String>("Hello", initialTime));
+        testHarness.open();
 
-		testHarness.close();
+        testHarness.processElement(new StreamRecord<String>("Hello", initialTime));
 
-		Assert.assertTrue("RichFunction methods where not called.", TestOpenCloseMapFunction.closeCalled);
-		Assert.assertTrue("Output contains no elements.", testHarness.getOutput().size() > 0);
-	}
+        testHarness.close();
 
-	// This must only be used in one test, otherwise the static fields will be changed
-	// by several tests concurrently
-	private static class TestOpenCloseMapFunction extends RichMapFunction<String, String> {
-		private static final long serialVersionUID = 1L;
+        Assert.assertTrue(
+                "RichFunction methods where not called.", TestOpenCloseMapFunction.closeCalled);
+        Assert.assertTrue("Output contains no elements.", testHarness.getOutput().size() > 0);
+    }
 
-		public static boolean openCalled = false;
-		public static boolean closeCalled = false;
+    // This must only be used in one test, otherwise the static fields will be changed
+    // by several tests concurrently
+    private static class TestOpenCloseMapFunction extends RichMapFunction<String, String> {
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public void open(Configuration parameters) throws Exception {
-			super.open(parameters);
-			if (closeCalled) {
-				Assert.fail("Close called before open.");
-			}
-			openCalled = true;
-		}
+        public static boolean openCalled = false;
+        public static boolean closeCalled = false;
 
-		@Override
-		public void close() throws Exception {
-			super.close();
-			if (!openCalled) {
-				Assert.fail("Open was not called before close.");
-			}
-			closeCalled = true;
-		}
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            super.open(parameters);
+            if (closeCalled) {
+                Assert.fail("Close called before open.");
+            }
+            openCalled = true;
+        }
 
-		@Override
-		public String map(String value) throws Exception {
-			if (!openCalled) {
-				Assert.fail("Open was not called before run.");
-			}
-			return value;
-		}
-	}
+        @Override
+        public void close() throws Exception {
+            super.close();
+            if (!openCalled) {
+                Assert.fail("Open was not called before close.");
+            }
+            closeCalled = true;
+        }
+
+        @Override
+        public String map(String value) throws Exception {
+            if (!openCalled) {
+                Assert.fail("Open was not called before run.");
+            }
+            return value;
+        }
+    }
 }

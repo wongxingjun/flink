@@ -18,124 +18,286 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.checkpoint.stats.DisabledCheckpointStatsTracker;
-import org.apache.flink.runtime.concurrent.Executors;
+import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.runtime.checkpoint.CheckpointCoordinatorTestingUtils.CheckpointCoordinatorBuilder;
+import org.apache.flink.runtime.checkpoint.channel.InputChannelInfo;
+import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
+import org.apache.flink.runtime.concurrent.ManuallyTriggeredScheduledExecutor;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
+import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
-import org.apache.flink.runtime.jobgraph.JobStatus;
-import org.apache.flink.runtime.jobgraph.tasks.ExternalizedCheckpointSettings;
+import org.apache.flink.runtime.jobgraph.JobVertexID;
+import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.messages.checkpoint.AcknowledgeCheckpoint;
+import org.apache.flink.runtime.persistence.PossibleInconsistentStateException;
+import org.apache.flink.runtime.state.InputChannelStateHandle;
+import org.apache.flink.runtime.state.KeyedStateHandle;
+import org.apache.flink.runtime.state.OperatorStateHandle;
+import org.apache.flink.runtime.state.OperatorStreamStateHandle;
+import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
+import org.apache.flink.runtime.state.StreamStateHandle;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.TestLogger;
+
+import org.junit.Rule;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.powermock.api.mockito.PowerMockito;
-import org.powermock.core.classloader.annotations.PrepareForTest;
-import org.powermock.modules.junit4.PowerMockRunner;
+import org.junit.rules.TemporaryFolder;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
-@RunWith(PowerMockRunner.class)
-@PrepareForTest(PendingCheckpoint.class)
+/** Tests for failure of checkpoint coordinator. */
 public class CheckpointCoordinatorFailureTest extends TestLogger {
 
-	/**
-	 * Tests that a failure while storing a completed checkpoint in the completed checkpoint store
-	 * will properly fail the originating pending checkpoint and clean upt the completed checkpoint.
-	 */
-	@Test
-	public void testFailingCompletedCheckpointStoreAdd() throws Exception {
-		JobID jid = new JobID();
+    @Rule public TemporaryFolder tmpFolder = new TemporaryFolder();
 
-		final ExecutionAttemptID executionAttemptId = new ExecutionAttemptID();
-		final ExecutionVertex vertex = CheckpointCoordinatorTest.mockExecutionVertex(executionAttemptId);
+    /**
+     * Tests that a failure while storing a completed checkpoint in the completed checkpoint store
+     * will properly fail the originating pending checkpoint and clean upt the completed checkpoint.
+     */
+    @Test
+    public void testFailingCompletedCheckpointStoreAdd() throws Exception {
+        JobVertexID jobVertexId = new JobVertexID();
 
-		final long triggerTimestamp = 1L;
+        final ManuallyTriggeredScheduledExecutor manuallyTriggeredScheduledExecutor =
+                new ManuallyTriggeredScheduledExecutor();
 
-		// set up the coordinator and validate the initial state
-		CheckpointCoordinator coord = new CheckpointCoordinator(
-			jid,
-			600000,
-			600000,
-			0,
-			Integer.MAX_VALUE,
-			ExternalizedCheckpointSettings.none(),
-			new ExecutionVertex[]{vertex},
-			new ExecutionVertex[]{vertex},
-			new ExecutionVertex[]{vertex},
-			new StandaloneCheckpointIDCounter(),
-			new FailingCompletedCheckpointStore(),
-			null,
-			new DisabledCheckpointStatsTracker(),
-			Executors.directExecutor());
+        ExecutionGraph testGraph =
+                new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
+                        .addJobVertex(jobVertexId)
+                        .build();
 
-		coord.triggerCheckpoint(triggerTimestamp, false);
+        ExecutionVertex vertex = testGraph.getJobVertex(jobVertexId).getTaskVertices()[0];
 
-		assertEquals(1, coord.getNumberOfPendingCheckpoints());
+        // set up the coordinator and validate the initial state
+        CheckpointCoordinator coord =
+                new CheckpointCoordinatorBuilder()
+                        .setExecutionGraph(testGraph)
+                        .setCompletedCheckpointStore(
+                                new FailingCompletedCheckpointStore(
+                                        new Exception(
+                                                "The failing completed checkpoint store failed again... :-(")))
+                        .setTimer(manuallyTriggeredScheduledExecutor)
+                        .build();
 
-		PendingCheckpoint pendingCheckpoint = coord.getPendingCheckpoints().values().iterator().next();
+        coord.triggerCheckpoint(false);
 
-		assertFalse(pendingCheckpoint.isDiscarded());
+        manuallyTriggeredScheduledExecutor.triggerAll();
 
-		final long checkpointId =coord.getPendingCheckpoints().keySet().iterator().next();
+        assertEquals(1, coord.getNumberOfPendingCheckpoints());
 
-		final CheckpointMetaData checkpointMetaData = new CheckpointMetaData(checkpointId, triggerTimestamp);
-		AcknowledgeCheckpoint acknowledgeMessage = new AcknowledgeCheckpoint(jid, executionAttemptId, checkpointMetaData);
+        PendingCheckpoint pendingCheckpoint =
+                coord.getPendingCheckpoints().values().iterator().next();
 
-		CompletedCheckpoint completedCheckpoint = mock(CompletedCheckpoint.class);
-		PowerMockito.whenNew(CompletedCheckpoint.class).withAnyArguments().thenReturn(completedCheckpoint);
+        assertFalse(pendingCheckpoint.isDisposed());
 
-		try {
-			coord.receiveAcknowledgeMessage(acknowledgeMessage);
-			fail("Expected a checkpoint exception because the completed checkpoint store could not " +
-				"store the completed checkpoint.");
-		} catch (CheckpointException e) {
-			// ignore because we expected this exception
-		}
+        final long checkpointId = coord.getPendingCheckpoints().keySet().iterator().next();
 
-		// make sure that the pending checkpoint has been discarded after we could not complete it
-		assertTrue(pendingCheckpoint.isDiscarded());
+        KeyedStateHandle managedKeyedHandle = mock(KeyedStateHandle.class);
+        KeyedStateHandle rawKeyedHandle = mock(KeyedStateHandle.class);
+        OperatorStateHandle managedOpHandle = mock(OperatorStreamStateHandle.class);
+        OperatorStateHandle rawOpHandle = mock(OperatorStreamStateHandle.class);
+        InputChannelStateHandle inputChannelStateHandle =
+                new InputChannelStateHandle(
+                        new InputChannelInfo(0, 1),
+                        mock(StreamStateHandle.class),
+                        Collections.singletonList(1L));
+        ResultSubpartitionStateHandle resultSubpartitionStateHandle =
+                new ResultSubpartitionStateHandle(
+                        new ResultSubpartitionInfo(0, 1),
+                        mock(StreamStateHandle.class),
+                        Collections.singletonList(1L));
 
-		verify(completedCheckpoint).discard();
-	}
+        final OperatorSubtaskState operatorSubtaskState =
+                spy(
+                        OperatorSubtaskState.builder()
+                                .setManagedOperatorState(managedOpHandle)
+                                .setRawOperatorState(rawOpHandle)
+                                .setManagedKeyedState(managedKeyedHandle)
+                                .setRawKeyedState(rawKeyedHandle)
+                                .setInputChannelState(
+                                        StateObjectCollection.singleton(inputChannelStateHandle))
+                                .setResultSubpartitionState(
+                                        StateObjectCollection.singleton(
+                                                resultSubpartitionStateHandle))
+                                .build());
 
-	private static final class FailingCompletedCheckpointStore implements CompletedCheckpointStore {
+        TaskStateSnapshot subtaskState = spy(new TaskStateSnapshot());
+        subtaskState.putSubtaskStateByOperatorID(new OperatorID(), operatorSubtaskState);
 
-		@Override
-		public void recover() throws Exception {
-			throw new UnsupportedOperationException("Not implemented.");
-		}
+        when(subtaskState.getSubtaskStateByOperatorID(
+                        OperatorID.fromJobVertexID(vertex.getJobvertexId())))
+                .thenReturn(operatorSubtaskState);
 
-		@Override
-		public void addCheckpoint(CompletedCheckpoint checkpoint) throws Exception {
-			throw new Exception("The failing completed checkpoint store failed again... :-(");
-		}
+        AcknowledgeCheckpoint acknowledgeMessage =
+                new AcknowledgeCheckpoint(
+                        testGraph.getJobID(),
+                        vertex.getCurrentExecutionAttempt().getAttemptId(),
+                        checkpointId,
+                        new CheckpointMetrics(),
+                        subtaskState);
 
-		@Override
-		public CompletedCheckpoint getLatestCheckpoint() throws Exception {
-			throw new UnsupportedOperationException("Not implemented.");
-		}
+        try {
+            coord.receiveAcknowledgeMessage(acknowledgeMessage, "Unknown location");
+            fail(
+                    "Expected a checkpoint exception because the completed checkpoint store could not "
+                            + "store the completed checkpoint.");
+        } catch (CheckpointException e) {
+            // ignore because we expected this exception
+        }
 
-		@Override
-		public void shutdown(JobStatus jobStatus) throws Exception {
-			throw new UnsupportedOperationException("Not implemented.");
-		}
+        // make sure that the pending checkpoint has been discarded after we could not complete it
+        assertTrue(pendingCheckpoint.isDisposed());
 
-		@Override
-		public List<CompletedCheckpoint> getAllCheckpoints() throws Exception {
-			throw new UnsupportedOperationException("Not implemented.");
-		}
+        // make sure that the subtask state has been discarded after we could not complete it.
+        verify(operatorSubtaskState).discardState();
+        verify(operatorSubtaskState.getManagedOperatorState().iterator().next()).discardState();
+        verify(operatorSubtaskState.getRawOperatorState().iterator().next()).discardState();
+        verify(operatorSubtaskState.getManagedKeyedState().iterator().next()).discardState();
+        verify(operatorSubtaskState.getRawKeyedState().iterator().next()).discardState();
+        verify(operatorSubtaskState.getInputChannelState().iterator().next().getDelegate())
+                .discardState();
+        verify(operatorSubtaskState.getResultSubpartitionState().iterator().next().getDelegate())
+                .discardState();
+    }
 
-		@Override
-		public int getNumberOfRetainedCheckpoints() {
-			return -1;
-		}
-	}
+    @Test
+    public void testCleanupForGenericFailure() throws Exception {
+        testStoringFailureHandling(new FlinkRuntimeException("Expected exception"), 1);
+    }
+
+    @Test
+    public void testCleanupOmissionForPossibleInconsistentStateException() throws Exception {
+        testStoringFailureHandling(new PossibleInconsistentStateException(), 0);
+    }
+
+    private void testStoringFailureHandling(Exception failure, int expectedCleanupCalls)
+            throws Exception {
+        final JobVertexID jobVertexID1 = new JobVertexID();
+
+        final ExecutionGraph graph =
+                new CheckpointCoordinatorTestingUtils.CheckpointExecutionGraphBuilder()
+                        .addJobVertex(jobVertexID1)
+                        .build();
+
+        final ExecutionVertex vertex = graph.getJobVertex(jobVertexID1).getTaskVertices()[0];
+        final ExecutionAttemptID attemptId = vertex.getCurrentExecutionAttempt().getAttemptId();
+
+        final StandaloneCheckpointIDCounter checkpointIDCounter =
+                new StandaloneCheckpointIDCounter();
+
+        final ManuallyTriggeredScheduledExecutor manuallyTriggeredScheduledExecutor =
+                new ManuallyTriggeredScheduledExecutor();
+
+        final CompletedCheckpointStore completedCheckpointStore =
+                new FailingCompletedCheckpointStore(failure);
+
+        final AtomicInteger cleanupCallCount = new AtomicInteger(0);
+        final CheckpointCoordinator checkpointCoordinator =
+                new CheckpointCoordinatorBuilder()
+                        .setExecutionGraph(graph)
+                        .setCheckpointIDCounter(checkpointIDCounter)
+                        .setCheckpointsCleaner(
+                                new CheckpointsCleaner() {
+
+                                    private static final long serialVersionUID =
+                                            2029876992397573325L;
+
+                                    @Override
+                                    public void cleanCheckpointOnFailedStoring(
+                                            CompletedCheckpoint completedCheckpoint,
+                                            Executor executor) {
+                                        cleanupCallCount.incrementAndGet();
+                                        super.cleanCheckpointOnFailedStoring(
+                                                completedCheckpoint, executor);
+                                    }
+                                })
+                        .setCompletedCheckpointStore(completedCheckpointStore)
+                        .setTimer(manuallyTriggeredScheduledExecutor)
+                        .build();
+        checkpointCoordinator.triggerSavepoint(tmpFolder.newFolder().getAbsolutePath());
+        manuallyTriggeredScheduledExecutor.triggerAll();
+
+        try {
+            checkpointCoordinator.receiveAcknowledgeMessage(
+                    new AcknowledgeCheckpoint(
+                            graph.getJobID(), attemptId, checkpointIDCounter.getLast()),
+                    "unknown location");
+            fail("CheckpointException should have been thrown.");
+        } catch (CheckpointException e) {
+            assertThat(
+                    e.getCheckpointFailureReason(),
+                    is(CheckpointFailureReason.FINALIZE_CHECKPOINT_FAILURE));
+        }
+
+        assertThat(cleanupCallCount.get(), is(expectedCleanupCalls));
+    }
+
+    private static final class FailingCompletedCheckpointStore implements CompletedCheckpointStore {
+
+        private final Exception addCheckpointFailure;
+
+        public FailingCompletedCheckpointStore(Exception addCheckpointFailure) {
+            this.addCheckpointFailure = addCheckpointFailure;
+        }
+
+        @Override
+        public void recover() throws Exception {
+            throw new UnsupportedOperationException("Not implemented.");
+        }
+
+        @Override
+        public void addCheckpoint(
+                CompletedCheckpoint checkpoint,
+                CheckpointsCleaner checkpointsCleaner,
+                Runnable postCleanup)
+                throws Exception {
+            throw addCheckpointFailure;
+        }
+
+        @Override
+        public CompletedCheckpoint getLatestCheckpoint(boolean isPreferCheckpointForRecovery)
+                throws Exception {
+            throw new UnsupportedOperationException("Not implemented.");
+        }
+
+        @Override
+        public void shutdown(JobStatus jobStatus, CheckpointsCleaner checkpointsCleaner)
+                throws Exception {
+            throw new UnsupportedOperationException("Not implemented.");
+        }
+
+        @Override
+        public List<CompletedCheckpoint> getAllCheckpoints() throws Exception {
+            throw new UnsupportedOperationException("Not implemented.");
+        }
+
+        @Override
+        public int getNumberOfRetainedCheckpoints() {
+            return -1;
+        }
+
+        @Override
+        public int getMaxNumberOfRetainedCheckpoints() {
+            return 1;
+        }
+
+        @Override
+        public boolean requiresExternalizedCheckpoints() {
+            return false;
+        }
+    }
 }

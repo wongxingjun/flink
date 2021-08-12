@@ -18,13 +18,11 @@
 
 package org.apache.flink.core.fs;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.WrappingProxy;
 
 import java.io.Closeable;
 
-/**
- * {@link WrappingProxy} for {@link Closeable} that is also closeable.
- */
-public interface WrappingProxyCloseable<T extends Closeable> extends Closeable, WrappingProxy<T> {
-
-}
+/** {@link WrappingProxy} for {@link Closeable} that is also closeable. */
+@Internal
+public interface WrappingProxyCloseable<T extends Closeable> extends Closeable, WrappingProxy<T> {}

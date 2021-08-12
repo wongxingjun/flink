@@ -16,42 +16,38 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.api.java.io;
-
-import java.io.Serializable;
-import java.util.Iterator;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.io.GenericInputFormat;
 import org.apache.flink.api.common.io.NonParallelInput;
 
-/**
- * An input format that returns objects from an iterator.
- */
+import java.io.Serializable;
+import java.util.Iterator;
+
+/** An input format that returns objects from an iterator. */
 @PublicEvolving
 public class IteratorInputFormat<T> extends GenericInputFormat<T> implements NonParallelInput {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private Iterator<T> iterator; // input data as serializable iterator
-	
-	
-	public IteratorInputFormat(Iterator<T> iterator) {
-		if (!(iterator instanceof Serializable)) {
-			throw new IllegalArgumentException("The data source iterator must be serializable.");
-		}
-		
-		this.iterator = iterator;
-	}
+    private Iterator<T> iterator; // input data as serializable iterator
 
-	@Override
-	public boolean reachedEnd() {
-		return !this.iterator.hasNext();
-	}
+    public IteratorInputFormat(Iterator<T> iterator) {
+        if (!(iterator instanceof Serializable)) {
+            throw new IllegalArgumentException("The data source iterator must be serializable.");
+        }
 
-	@Override
-	public T nextRecord(T record) {
-		return this.iterator.next();
-	}
+        this.iterator = iterator;
+    }
+
+    @Override
+    public boolean reachedEnd() {
+        return !this.iterator.hasNext();
+    }
+
+    @Override
+    public T nextRecord(T record) {
+        return this.iterator.next();
+    }
 }

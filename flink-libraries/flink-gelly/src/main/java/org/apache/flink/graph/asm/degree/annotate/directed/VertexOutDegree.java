@@ -25,12 +25,10 @@ import org.apache.flink.graph.Vertex;
 import org.apache.flink.graph.asm.degree.annotate.DegreeAnnotationFunctions.DegreeCount;
 import org.apache.flink.graph.asm.degree.annotate.DegreeAnnotationFunctions.JoinVertexWithVertexDegree;
 import org.apache.flink.graph.asm.degree.annotate.DegreeAnnotationFunctions.MapEdgeToSourceId;
+import org.apache.flink.graph.utils.proxy.GraphAlgorithmWrappingBase;
 import org.apache.flink.graph.utils.proxy.GraphAlgorithmWrappingDataSet;
 import org.apache.flink.graph.utils.proxy.OptionalBoolean;
 import org.apache.flink.types.LongValue;
-import org.apache.flink.util.Preconditions;
-
-import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
 
 /**
  * Annotates vertices of a directed graph with the out-degree.
@@ -40,101 +38,75 @@ import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
  * @param <EV> edge value type
  */
 public class VertexOutDegree<K, VV, EV>
-extends GraphAlgorithmWrappingDataSet<K, VV, EV, Vertex<K, LongValue>> {
+        extends GraphAlgorithmWrappingDataSet<K, VV, EV, Vertex<K, LongValue>> {
 
-	// Optional configuration
-	private OptionalBoolean includeZeroDegreeVertices = new OptionalBoolean(false, true);
+    // Optional configuration
+    private OptionalBoolean includeZeroDegreeVertices = new OptionalBoolean(false, true);
 
-	private int parallelism = PARALLELISM_DEFAULT;
+    /**
+     * By default only the edge set is processed for the computation of degree. When this flag is
+     * set an additional join is performed against the vertex set in order to output vertices with
+     * an out-degree of zero.
+     *
+     * @param includeZeroDegreeVertices whether to output vertices with an out-degree of zero
+     * @return this
+     */
+    public VertexOutDegree<K, VV, EV> setIncludeZeroDegreeVertices(
+            boolean includeZeroDegreeVertices) {
+        this.includeZeroDegreeVertices.set(includeZeroDegreeVertices);
 
-	/**
-	 * By default only the edge set is processed for the computation of degree.
-	 * When this flag is set an additional join is performed against the vertex
-	 * set in order to output vertices with an out-degree of zero.
-	 *
-	 * @param includeZeroDegreeVertices whether to output vertices with an
-	 *                                  out-degree of zero
-	 * @return this
-	 */
-	public VertexOutDegree<K, VV, EV> setIncludeZeroDegreeVertices(boolean includeZeroDegreeVertices) {
-		this.includeZeroDegreeVertices.set(includeZeroDegreeVertices);
+        return this;
+    }
 
-		return this;
-	}
+    @Override
+    protected boolean canMergeConfigurationWith(GraphAlgorithmWrappingBase other) {
+        if (!super.canMergeConfigurationWith(other)) {
+            return false;
+        }
 
-	/**
-	 * Override the operator parallelism.
-	 *
-	 * @param parallelism operator parallelism
-	 * @return this
-	 */
-	public VertexOutDegree<K, VV, EV> setParallelism(int parallelism) {
-		Preconditions.checkArgument(parallelism > 0 || parallelism == PARALLELISM_DEFAULT,
-			"The parallelism must be greater than zero.");
+        VertexOutDegree rhs = (VertexOutDegree) other;
 
-		this.parallelism = parallelism;
+        return !includeZeroDegreeVertices.conflictsWith(rhs.includeZeroDegreeVertices);
+    }
 
-		return this;
-	}
+    @Override
+    protected void mergeConfiguration(GraphAlgorithmWrappingBase other) {
+        super.mergeConfiguration(other);
 
-	@Override
-	protected String getAlgorithmName() {
-		return VertexOutDegree.class.getName();
-	}
+        VertexOutDegree rhs = (VertexOutDegree) other;
 
-	@Override
-	protected boolean mergeConfiguration(GraphAlgorithmWrappingDataSet other) {
-		Preconditions.checkNotNull(other);
+        includeZeroDegreeVertices.mergeWith(rhs.includeZeroDegreeVertices);
+    }
 
-		if (! VertexOutDegree.class.isAssignableFrom(other.getClass())) {
-			return false;
-		}
+    @Override
+    public DataSet<Vertex<K, LongValue>> runInternal(Graph<K, VV, EV> input) throws Exception {
+        // s
+        DataSet<Vertex<K, LongValue>> sourceIds =
+                input.getEdges()
+                        .map(new MapEdgeToSourceId<>())
+                        .setParallelism(parallelism)
+                        .name("Edge to source ID");
 
-		VertexOutDegree rhs = (VertexOutDegree) other;
+        // s, d(s)
+        DataSet<Vertex<K, LongValue>> sourceDegree =
+                sourceIds
+                        .groupBy(0)
+                        .reduce(new DegreeCount<>())
+                        .setCombineHint(CombineHint.HASH)
+                        .setParallelism(parallelism)
+                        .name("Degree count");
 
-		// verify that configurations can be merged
+        if (includeZeroDegreeVertices.get()) {
+            sourceDegree =
+                    input.getVertices()
+                            .leftOuterJoin(sourceDegree)
+                            .where(0)
+                            .equalTo(0)
+                            .with(new JoinVertexWithVertexDegree<>())
+                            .setParallelism(parallelism)
+                            .name("Zero degree vertices");
+        }
 
-		if (includeZeroDegreeVertices.conflictsWith(rhs.includeZeroDegreeVertices)) {
-			return false;
-		}
-
-		// merge configurations
-
-		includeZeroDegreeVertices.mergeWith(rhs.includeZeroDegreeVertices);
-		parallelism = (parallelism == PARALLELISM_DEFAULT) ? rhs.parallelism :
-			((rhs.parallelism == PARALLELISM_DEFAULT) ? parallelism : Math.min(parallelism, rhs.parallelism));
-
-		return true;
-	}
-
-	@Override
-	public DataSet<Vertex<K, LongValue>> runInternal(Graph<K, VV, EV> input)
-			throws Exception {
-		// s
-		DataSet<Vertex<K, LongValue>> sourceIds = input
-			.getEdges()
-			.map(new MapEdgeToSourceId<K, EV>())
-				.setParallelism(parallelism)
-				.name("Edge to source ID");
-
-		// s, d(s)
-		DataSet<Vertex<K, LongValue>> sourceDegree = sourceIds
-			.groupBy(0)
-			.reduce(new DegreeCount<K>())
-			.setCombineHint(CombineHint.HASH)
-				.setParallelism(parallelism)
-				.name("Degree count");
-
-		if (includeZeroDegreeVertices.get()) {
-			sourceDegree = input.getVertices()
-				.leftOuterJoin(sourceDegree)
-				.where(0)
-				.equalTo(0)
-				.with(new JoinVertexWithVertexDegree<K, VV>())
-					.setParallelism(parallelism)
-					.name("Zero degree vertices");
-		}
-
-		return sourceDegree;
-	}
+        return sourceDegree;
+    }
 }

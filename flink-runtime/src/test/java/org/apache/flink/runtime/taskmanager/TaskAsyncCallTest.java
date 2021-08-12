@@ -22,243 +22,304 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.testutils.OneShotLatch;
-import org.apache.flink.runtime.blob.BlobKey;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
+import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
+import org.apache.flink.runtime.checkpoint.CheckpointMetricsBuilder;
+import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
+import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.execution.ExecutionState;
-import org.apache.flink.runtime.execution.librarycache.LibraryCacheManager;
+import org.apache.flink.runtime.execution.librarycache.TestingClassLoaderLease;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.JobInformation;
 import org.apache.flink.runtime.executiongraph.TaskInformation;
+import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
 import org.apache.flink.runtime.filecache.FileCache;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.io.network.NetworkEnvironment;
-import org.apache.flink.runtime.io.network.netty.PartitionProducerStateChecker;
+import org.apache.flink.runtime.io.network.NettyShuffleEnvironmentBuilder;
+import org.apache.flink.runtime.io.network.TaskEventDispatcher;
+import org.apache.flink.runtime.io.network.partition.NoOpResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionConsumableNotifier;
-import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
-import org.apache.flink.runtime.jobgraph.tasks.StatefulTask;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
-import org.apache.flink.runtime.query.TaskKvStateRegistry;
-import org.apache.flink.runtime.state.TaskStateHandles;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
+import org.apache.flink.runtime.query.KvStateRegistry;
+import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
+import org.apache.flink.runtime.state.TestTaskStateManager;
+import org.apache.flink.runtime.taskexecutor.KvStateService;
+import org.apache.flink.runtime.taskexecutor.PartitionProducerStateChecker;
+import org.apache.flink.runtime.taskexecutor.TestGlobalAggregateManager;
 import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
+import org.apache.flink.runtime.util.TestingUserCodeClassLoader;
 import org.apache.flink.util.SerializedValue;
+import org.apache.flink.util.TestLogger;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import java.net.URL;
 import java.util.Collections;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 
+import static org.hamcrest.Matchers.isOneOf;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
+import static org.junit.Assert.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
-public class TaskAsyncCallTest {
+/** Testing asynchronous call of {@link Task}. */
+public class TaskAsyncCallTest extends TestLogger {
 
-	private static final int NUM_CALLS = 1000;
-	
-	private static OneShotLatch awaitLatch;
-	private static OneShotLatch triggerLatch;
+    /** Number of expected checkpoints. */
+    private static int numCalls;
 
-	@Before
-	public void createQueuesAndActors() {
-		awaitLatch = new OneShotLatch();
-		triggerLatch = new OneShotLatch();
-	}
+    /** Triggered at the beginning of {@link CheckpointsInOrderInvokable#invoke()}. */
+    private static OneShotLatch awaitLatch;
 
+    /**
+     * Triggered when {@link CheckpointsInOrderInvokable#triggerCheckpointAsync(CheckpointMetaData,
+     * CheckpointOptions)} was called {@link #numCalls} times.
+     */
+    private static OneShotLatch triggerLatch;
 
-	// ------------------------------------------------------------------------
-	//  Tests 
-	// ------------------------------------------------------------------------
-	
-	@Test
-	public void testCheckpointCallsInOrder() {
-		try {
-			Task task = createTask();
-			task.startTaskThread();
-			
-			awaitLatch.await();
-			
-			for (int i = 1; i <= NUM_CALLS; i++) {
-				task.triggerCheckpointBarrier(i, 156865867234L);
-			}
-			
-			triggerLatch.await();
-			
-			assertFalse(task.isCanceledOrFailed());
+    private ShuffleEnvironment<?, ?> shuffleEnvironment;
 
-			ExecutionState currentState = task.getExecutionState();
-			if (currentState != ExecutionState.RUNNING && currentState != ExecutionState.FINISHED) {
-				fail("Task should be RUNNING or FINISHED, but is " + currentState);
-			}
-			
-			task.cancelExecution();
-			task.getExecutingThread().join();
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+    @Before
+    public void createQueuesAndActors() {
+        numCalls = 1000;
 
-	@Test
-	public void testMixedAsyncCallsInOrder() {
-		try {
-			Task task = createTask();
-			task.startTaskThread();
+        awaitLatch = new OneShotLatch();
+        triggerLatch = new OneShotLatch();
 
-			awaitLatch.await();
+        shuffleEnvironment = new NettyShuffleEnvironmentBuilder().build();
+    }
 
-			for (int i = 1; i <= NUM_CALLS; i++) {
-				task.triggerCheckpointBarrier(i, 156865867234L);
-				task.notifyCheckpointComplete(i);
-			}
+    @After
+    public void teardown() throws Exception {
+        if (shuffleEnvironment != null) {
+            shuffleEnvironment.close();
+        }
+    }
 
-			triggerLatch.await();
+    // ------------------------------------------------------------------------
+    //  Tests
+    // ------------------------------------------------------------------------
 
-			assertFalse(task.isCanceledOrFailed());
-			ExecutionState currentState = task.getExecutionState();
-			if (currentState != ExecutionState.RUNNING && currentState != ExecutionState.FINISHED) {
-				fail("Task should be RUNNING or FINISHED, but is " + currentState);
-			}
+    @Test
+    public void testCheckpointCallsInOrder() throws Exception {
 
-			task.cancelExecution();
-			task.getExecutingThread().join();
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
-	
-	private static Task createTask() throws Exception {
-		LibraryCacheManager libCache = mock(LibraryCacheManager.class);
-		when(libCache.getClassLoader(any(JobID.class))).thenReturn(ClassLoader.getSystemClassLoader());
-		
-		ResultPartitionManager partitionManager = mock(ResultPartitionManager.class);
-		ResultPartitionConsumableNotifier consumableNotifier = mock(ResultPartitionConsumableNotifier.class);
-		PartitionProducerStateChecker partitionProducerStateChecker = mock(PartitionProducerStateChecker.class);
-		Executor executor = mock(Executor.class);
-		NetworkEnvironment networkEnvironment = mock(NetworkEnvironment.class);
-		when(networkEnvironment.getResultPartitionManager()).thenReturn(partitionManager);
-		when(networkEnvironment.getDefaultIOMode()).thenReturn(IOManager.IOMode.SYNC);
-		when(networkEnvironment.createKvStateTaskRegistry(any(JobID.class), any(JobVertexID.class)))
-				.thenReturn(mock(TaskKvStateRegistry.class));
+        Task task = createTask(CheckpointsInOrderInvokable.class);
+        try (TaskCleaner ignored = new TaskCleaner(task)) {
+            task.startTaskThread();
 
-		JobInformation jobInformation = new JobInformation(
-			new JobID(),
-			"Job Name",
-			new SerializedValue<>(new ExecutionConfig()),
-			new Configuration(),
-			Collections.<BlobKey>emptyList(),
-			Collections.<URL>emptyList());
+            awaitLatch.await();
 
-		TaskInformation taskInformation = new TaskInformation(
-			new JobVertexID(),
-			"Test Task",
-			1,
-			1,
-			CheckpointsInOrderInvokable.class.getName(),
-			new Configuration());
+            for (int i = 1; i <= numCalls; i++) {
+                task.triggerCheckpointBarrier(
+                        i, 156865867234L, CheckpointOptions.forCheckpointWithDefaultLocation());
+            }
 
-		return new Task(
-			jobInformation,
-			taskInformation,
-			new ExecutionAttemptID(),
-			new AllocationID(),
-			0,
-			0,
-			Collections.<ResultPartitionDeploymentDescriptor>emptyList(),
-			Collections.<InputGateDeploymentDescriptor>emptyList(),
-			0,
-			new TaskStateHandles(),
-			mock(MemoryManager.class),
-			mock(IOManager.class),
-			networkEnvironment,
-			mock(BroadcastVariableManager.class),
-			mock(TaskManagerActions.class),
-			mock(InputSplitProvider.class),
-			mock(CheckpointResponder.class),
-			libCache,
-			mock(FileCache.class),
-			new TestingTaskManagerRuntimeInfo(),
-			mock(TaskMetricGroup.class),
-			consumableNotifier,
-			partitionProducerStateChecker,
-			executor);
-	}
+            triggerLatch.await();
 
-	public static class CheckpointsInOrderInvokable extends AbstractInvokable implements StatefulTask {
+            assertFalse(task.isCanceledOrFailed());
 
-		private volatile long lastCheckpointId = 0;
-		
-		private volatile Exception error;
-		
-		@Override
-		public void invoke() throws Exception {
-			awaitLatch.trigger();
-			
-			// wait forever (until canceled)
-			synchronized (this) {
-				while (error == null && lastCheckpointId < NUM_CALLS) {
-					wait();
-				}
-			}
-			
-			triggerLatch.trigger();
-			if (error != null) {
-				throw error;
-			}
-		}
+            ExecutionState currentState = task.getExecutionState();
+            assertThat(currentState, isOneOf(ExecutionState.RUNNING, ExecutionState.FINISHED));
+        }
+    }
 
-		@Override
-		public void setInitialState(TaskStateHandles taskStateHandles) throws Exception {}
+    @Test
+    public void testMixedAsyncCallsInOrder() throws Exception {
 
-		@Override
-		public boolean triggerCheckpoint(CheckpointMetaData checkpointMetaData) {
-			lastCheckpointId++;
-			if (checkpointMetaData.getCheckpointId() == lastCheckpointId) {
-				if (lastCheckpointId == NUM_CALLS) {
-					triggerLatch.trigger();
-				}
-			}
-			else if (this.error == null) {
-				this.error = new Exception("calls out of order");
-				synchronized (this) {
-					notifyAll();
-				}
-			}
-			return true;
-		}
+        Task task = createTask(CheckpointsInOrderInvokable.class);
+        try (TaskCleaner ignored = new TaskCleaner(task)) {
+            task.startTaskThread();
 
-		@Override
-		public void triggerCheckpointOnBarrier(CheckpointMetaData checkpointMetaData) throws Exception {
-			throw new UnsupportedOperationException("Should not be called");
-		}
+            awaitLatch.await();
 
-		@Override
-		public void abortCheckpointOnBarrier(long checkpointId, Throwable cause) {
-			throw new UnsupportedOperationException("Should not be called");
-		}
+            for (int i = 1; i <= numCalls; i++) {
+                task.triggerCheckpointBarrier(
+                        i, 156865867234L, CheckpointOptions.forCheckpointWithDefaultLocation());
+                task.notifyCheckpointComplete(i);
+            }
 
-		@Override
-		public void notifyCheckpointComplete(long checkpointId) {
-			if (checkpointId != lastCheckpointId && this.error == null) {
-				this.error = new Exception("calls out of order");
-				synchronized (this) {
-					notifyAll();
-				}
-			}
-		}
-	}
+            triggerLatch.await();
+
+            assertFalse(task.isCanceledOrFailed());
+
+            ExecutionState currentState = task.getExecutionState();
+            assertThat(currentState, isOneOf(ExecutionState.RUNNING, ExecutionState.FINISHED));
+        }
+    }
+
+    private Task createTask(Class<? extends AbstractInvokable> invokableClass) throws Exception {
+        final TestingClassLoaderLease classLoaderHandle =
+                TestingClassLoaderLease.newBuilder()
+                        .setGetOrResolveClassLoaderFunction(
+                                (permanentBlobKeys, urls) ->
+                                        TestingUserCodeClassLoader.newBuilder()
+                                                .setClassLoader(new TestUserCodeClassLoader())
+                                                .build())
+                        .build();
+
+        ResultPartitionConsumableNotifier consumableNotifier =
+                new NoOpResultPartitionConsumableNotifier();
+        PartitionProducerStateChecker partitionProducerStateChecker =
+                mock(PartitionProducerStateChecker.class);
+        Executor executor = mock(Executor.class);
+        TaskMetricGroup taskMetricGroup =
+                UnregisteredMetricGroups.createUnregisteredTaskMetricGroup();
+
+        JobInformation jobInformation =
+                new JobInformation(
+                        new JobID(),
+                        "Job Name",
+                        new SerializedValue<>(new ExecutionConfig()),
+                        new Configuration(),
+                        Collections.emptyList(),
+                        Collections.emptyList());
+
+        TaskInformation taskInformation =
+                new TaskInformation(
+                        new JobVertexID(),
+                        "Test Task",
+                        1,
+                        1,
+                        invokableClass.getName(),
+                        new Configuration());
+
+        return new Task(
+                jobInformation,
+                taskInformation,
+                new ExecutionAttemptID(),
+                new AllocationID(),
+                0,
+                0,
+                Collections.<ResultPartitionDeploymentDescriptor>emptyList(),
+                Collections.<InputGateDeploymentDescriptor>emptyList(),
+                mock(MemoryManager.class),
+                mock(IOManager.class),
+                shuffleEnvironment,
+                new KvStateService(new KvStateRegistry(), null, null),
+                mock(BroadcastVariableManager.class),
+                new TaskEventDispatcher(),
+                ExternalResourceInfoProvider.NO_EXTERNAL_RESOURCES,
+                new TestTaskStateManager(),
+                mock(TaskManagerActions.class),
+                mock(InputSplitProvider.class),
+                mock(CheckpointResponder.class),
+                new NoOpTaskOperatorEventGateway(),
+                new TestGlobalAggregateManager(),
+                classLoaderHandle,
+                mock(FileCache.class),
+                new TestingTaskManagerRuntimeInfo(),
+                taskMetricGroup,
+                consumableNotifier,
+                partitionProducerStateChecker,
+                executor);
+    }
+
+    /** Invokable for testing checkpoints. */
+    public static class CheckpointsInOrderInvokable extends AbstractInvokable {
+
+        private volatile long lastCheckpointId = 0;
+
+        private volatile Exception error;
+
+        public CheckpointsInOrderInvokable(Environment environment) {
+            super(environment);
+        }
+
+        @Override
+        public void invoke() throws Exception {
+            awaitLatch.trigger();
+
+            // wait forever (until canceled)
+            synchronized (this) {
+                while (error == null) {
+                    wait();
+                }
+            }
+
+            if (error != null) {
+                // exit method prematurely due to error but make sure that the tests can finish
+                triggerLatch.trigger();
+
+                throw error;
+            }
+        }
+
+        @Override
+        public Future<Boolean> triggerCheckpointAsync(
+                CheckpointMetaData checkpointMetaData, CheckpointOptions checkpointOptions) {
+            lastCheckpointId++;
+            if (checkpointMetaData.getCheckpointId() == lastCheckpointId) {
+                if (lastCheckpointId == numCalls) {
+                    triggerLatch.trigger();
+                }
+            } else if (this.error == null) {
+                this.error = new Exception("calls out of order");
+                synchronized (this) {
+                    notifyAll();
+                }
+            }
+            return CompletableFuture.completedFuture(true);
+        }
+
+        @Override
+        public void triggerCheckpointOnBarrier(
+                CheckpointMetaData checkpointMetaData,
+                CheckpointOptions checkpointOptions,
+                CheckpointMetricsBuilder checkpointMetrics) {
+            throw new UnsupportedOperationException("Should not be called");
+        }
+
+        @Override
+        public void abortCheckpointOnBarrier(long checkpointId, CheckpointException cause) {
+            throw new UnsupportedOperationException("Should not be called");
+        }
+
+        @Override
+        public Future<Void> notifyCheckpointCompleteAsync(long checkpointId) {
+            if (checkpointId != lastCheckpointId && this.error == null) {
+                this.error = new Exception("calls out of order");
+                synchronized (this) {
+                    notifyAll();
+                }
+            }
+            return CompletableFuture.completedFuture(null);
+        }
+    }
+
+    /**
+     * A {@link ClassLoader} that delegates everything to {@link
+     * ClassLoader#getSystemClassLoader()}.
+     */
+    private static class TestUserCodeClassLoader extends ClassLoader {
+        TestUserCodeClassLoader() {
+            super(ClassLoader.getSystemClassLoader());
+        }
+    }
+
+    private static class TaskCleaner implements AutoCloseable {
+
+        private final Task task;
+
+        private TaskCleaner(Task task) {
+            this.task = task;
+        }
+
+        @Override
+        public void close() throws Exception {
+            task.cancelExecution();
+            task.getExecutingThread().join(5000);
+        }
+    }
 }

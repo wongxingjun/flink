@@ -17,9 +17,11 @@
  */
 package org.apache.flink.api.scala.typeutils
 
+import java.util.function.Supplier
+
 import org.apache.flink.annotation.Internal
-import org.apache.flink.api.common.typeutils.TypeSerializer
-import org.apache.flink.core.memory.{DataOutputView, DataInputView}
+import org.apache.flink.api.common.typeutils.{SimpleTypeSerializerSnapshot, TypeSerializer, TypeSerializerSnapshot}
+import org.apache.flink.core.memory.{DataInputView, DataOutputView}
 
 /**
  * Serializer for cases where no serializer is required but the system still expects one. This
@@ -50,25 +52,29 @@ class NothingSerializer extends TypeSerializer[Any] {
   override def serialize(any: Any, target: DataOutputView): Unit =
     throw new RuntimeException("This must not be used. You encountered a bug.")
 
-
   override def deserialize(source: DataInputView): Any =
     throw new RuntimeException("This must not be used. You encountered a bug.")
 
   override def deserialize(reuse: Any, source: DataInputView): Any =
     throw new RuntimeException("This must not be used. You encountered a bug.")
 
+  override def snapshotConfiguration(): TypeSerializerSnapshot[Any] =
+    new NothingSerializerSnapshot
+
   override def equals(obj: Any): Boolean = {
     obj match {
-      case nothingSerializer: NothingSerializer => nothingSerializer.canEqual(this)
+      case nothingSerializer: NothingSerializer => true
       case _ => false
     }
-  }
-
-  override def canEqual(obj: scala.Any): Boolean = {
-    obj.isInstanceOf[NothingSerializer]
   }
 
   override def hashCode(): Int = {
     classOf[NothingSerializer].hashCode()
   }
+}
+
+class NothingSerializerSnapshot
+  extends SimpleTypeSerializerSnapshot[Any](new Supplier[TypeSerializer[Any]] {
+    override def get(): TypeSerializer[Any] = new NothingSerializer
+  }) {
 }

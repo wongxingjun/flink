@@ -20,158 +20,191 @@ package org.apache.flink.streaming.runtime.operators;
 
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
+import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.StreamMap;
 import org.apache.flink.streaming.runtime.tasks.OneInputStreamTask;
 import org.apache.flink.streaming.runtime.tasks.OneInputStreamTaskTestHarness;
-import org.apache.flink.streaming.runtime.tasks.StreamTask;
-import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeCallback;
+import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
+import org.apache.flink.streaming.runtime.tasks.StreamTask;
+import org.apache.flink.streaming.runtime.tasks.StreamTaskTestHarness;
+import org.apache.flink.util.TestLogger;
 
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
+
+import javax.annotation.Nullable;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.junit.Assert.*;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.fail;
 
-/**
- * Tests for the timer service of {@link org.apache.flink.streaming.runtime.tasks.StreamTask}.
- */
+/** Tests for the timer service of {@link org.apache.flink.streaming.runtime.tasks.StreamTask}. */
 @SuppressWarnings("serial")
-public class StreamTaskTimerTest {
+public class StreamTaskTimerTest extends TestLogger {
 
-	@Test
-	public void testOpenCloseAndTimestamps() throws Exception {
-		final OneInputStreamTask<String, String> mapTask = new OneInputStreamTask<>();
-		
-		final OneInputStreamTaskTestHarness<String, String> testHarness = new OneInputStreamTaskTestHarness<>(
-				mapTask, BasicTypeInfo.STRING_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO);
+    private StreamTaskTestHarness<?> testHarness;
+    private ProcessingTimeService timeService;
 
-		StreamConfig streamConfig = testHarness.getStreamConfig();
-		
-		StreamMap<String, String> mapOperator = new StreamMap<>(new DummyMapFunction<String>());
-		streamConfig.setStreamOperator(mapOperator);
+    @Before
+    public void setup() throws Exception {
+        testHarness = startTestHarness();
 
-		testHarness.invoke();
-		testHarness.waitForTaskRunning();
+        StreamTask<?, ?> task = testHarness.getTask();
+        timeService =
+                task.getProcessingTimeServiceFactory()
+                        .createProcessingTimeService(
+                                task.getMailboxExecutorFactory()
+                                        .createExecutor(
+                                                testHarness.getStreamConfig().getChainIndex()));
+    }
 
-		// first one spawns thread
-		mapTask.getProcessingTimeService().registerTimer(System.currentTimeMillis(), new ProcessingTimeCallback() {
-			@Override
-			public void onProcessingTime(long timestamp) {
-			}
-		});
+    @After
+    public void teardown() throws Exception {
+        stopTestHarness(testHarness, 4000L);
+    }
 
-		assertEquals(1, StreamTask.TRIGGER_THREAD_GROUP.activeCount());
+    @Test
+    public void testOpenCloseAndTimestamps() {
+        // first one spawns thread
+        timeService.registerTimer(System.currentTimeMillis(), timestamp -> {});
 
+        assertEquals(2, StreamTask.TRIGGER_THREAD_GROUP.activeCount());
+    }
 
-		testHarness.endInput();
-		testHarness.waitForTaskCompletion();
+    @Test
+    public void testErrorReporting() throws Exception {
+        AtomicReference<Throwable> errorRef = new AtomicReference<>();
+        OneShotLatch latch = new OneShotLatch();
+        testHarness
+                .getEnvironment()
+                .setExternalExceptionHandler(
+                        ex -> {
+                            errorRef.set(ex);
+                            latch.trigger();
+                        });
 
-		// thread needs to die in time
-		long deadline = System.currentTimeMillis() + 4000;
-		while (StreamTask.TRIGGER_THREAD_GROUP.activeCount() > 0 && System.currentTimeMillis() < deadline) {
-			Thread.sleep(10);
-		}
+        ProcessingTimeCallback callback =
+                timestamp -> {
+                    throw new Exception("Exception in Timer");
+                };
 
-		assertEquals("Trigger timer thread did not properly shut down",
-				0, StreamTask.TRIGGER_THREAD_GROUP.activeCount());
-	}
-	
-	@Test
-	public void checkScheduledTimestampe() {
-		try {
-			final OneInputStreamTask<String, String> mapTask = new OneInputStreamTask<>();
-			final OneInputStreamTaskTestHarness<String, String> testHarness = new OneInputStreamTaskTestHarness<>(mapTask, BasicTypeInfo.STRING_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO);
+        timeService.registerTimer(System.currentTimeMillis(), callback);
+        latch.await();
+        assertThat(errorRef.get(), instanceOf(Exception.class));
+    }
 
-			StreamConfig streamConfig = testHarness.getStreamConfig();
-			StreamMap<String, String> mapOperator = new StreamMap<>(new DummyMapFunction<String>());
-			streamConfig.setStreamOperator(mapOperator);
+    @Test
+    public void checkScheduledTimestamps() throws Exception {
+        final AtomicReference<Throwable> errorRef = new AtomicReference<>();
 
-			testHarness.invoke();
-			testHarness.waitForTaskRunning();
+        final long t1 = System.currentTimeMillis();
+        final long t2 = System.currentTimeMillis() - 200;
+        final long t3 = System.currentTimeMillis() + 100;
+        final long t4 = System.currentTimeMillis() + 200;
 
-			final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+        timeService.registerTimer(t1, new ValidatingProcessingTimeCallback(errorRef, t1, 0));
+        timeService.registerTimer(t2, new ValidatingProcessingTimeCallback(errorRef, t2, 1));
+        timeService.registerTimer(t3, new ValidatingProcessingTimeCallback(errorRef, t3, 2));
+        timeService.registerTimer(t4, new ValidatingProcessingTimeCallback(errorRef, t4, 3));
 
-			final long t1 = System.currentTimeMillis();
-			final long t2 = System.currentTimeMillis() - 200;
-			final long t3 = System.currentTimeMillis() + 100;
-			final long t4 = System.currentTimeMillis() + 200;
+        long deadline = System.currentTimeMillis() + 20000;
+        while (errorRef.get() == null
+                && ValidatingProcessingTimeCallback.numInSequence < 4
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(100);
+        }
 
-			ProcessingTimeService timeService = mapTask.getProcessingTimeService();
-			timeService.registerTimer(t1, new ValidatingProcessingTimeCallback(errorRef, t1, 0));
-			timeService.registerTimer(t2, new ValidatingProcessingTimeCallback(errorRef, t2, 1));
-			timeService.registerTimer(t3, new ValidatingProcessingTimeCallback(errorRef, t3, 2));
-			timeService.registerTimer(t4, new ValidatingProcessingTimeCallback(errorRef, t4, 3));
+        verifyNoException(errorRef.get());
+        assertEquals(4, ValidatingProcessingTimeCallback.numInSequence);
+    }
 
-			long deadline = System.currentTimeMillis() + 20000;
-			while (errorRef.get() == null &&
-					ValidatingProcessingTimeCallback.numInSequence < 4 &&
-					System.currentTimeMillis() < deadline)
-			{
-				Thread.sleep(100);
-			}
+    private static class ValidatingProcessingTimeCallback implements ProcessingTimeCallback {
 
-			// handle errors
-			if (errorRef.get() != null) {
-				errorRef.get().printStackTrace();
-				fail(errorRef.get().getMessage());
-			}
+        static int numInSequence;
 
-			assertEquals(4, ValidatingProcessingTimeCallback.numInSequence);
+        private final AtomicReference<Throwable> errorRef;
 
-			testHarness.endInput();
-			testHarness.waitForTaskCompletion();
+        private final long expectedTimestamp;
+        private final int expectedInSequence;
 
-			// wait until the trigger thread is shut down. otherwise, the other tests may become unstable
-			deadline = System.currentTimeMillis() + 4000;
-			while (StreamTask.TRIGGER_THREAD_GROUP.activeCount() > 0 && System.currentTimeMillis() < deadline) {
-				Thread.sleep(10);
-			}
+        private ValidatingProcessingTimeCallback(
+                AtomicReference<Throwable> errorRef,
+                long expectedTimestamp,
+                int expectedInSequence) {
+            this.errorRef = errorRef;
+            this.expectedTimestamp = expectedTimestamp;
+            this.expectedInSequence = expectedInSequence;
+        }
 
-			assertEquals("Trigger timer thread did not properly shut down",
-					0, StreamTask.TRIGGER_THREAD_GROUP.activeCount());
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+        @Override
+        public void onProcessingTime(long timestamp) {
+            try {
+                assertEquals(expectedTimestamp, timestamp);
+                assertEquals(expectedInSequence, numInSequence);
+                numInSequence++;
+            } catch (Throwable t) {
+                errorRef.compareAndSet(null, t);
+            }
+        }
+    }
 
-	private static class ValidatingProcessingTimeCallback implements ProcessingTimeCallback {
-		
-		static int numInSequence;
-		
-		private final AtomicReference<Throwable> errorRef;
-		
-		private final long expectedTimestamp;
-		private final int expectedInSequence;
+    private static void verifyNoException(@Nullable Throwable exception) {
+        if (exception != null) {
+            exception.printStackTrace();
+            fail(exception.getMessage());
+        }
+    }
 
-		private ValidatingProcessingTimeCallback(AtomicReference<Throwable> errorRef, long expectedTimestamp, int expectedInSequence) {
-			this.errorRef = errorRef;
-			this.expectedTimestamp = expectedTimestamp;
-			this.expectedInSequence = expectedInSequence;
-		}
+    // ------------------------------------------------------------------------
 
-		@Override
-		public void onProcessingTime(long timestamp) {
-			try {
-				assertEquals(expectedTimestamp, timestamp);
-				assertEquals(expectedInSequence, numInSequence);
-				numInSequence++;
-			}
-			catch (Throwable t) {
-				errorRef.compareAndSet(null, t);
-			}
-		}
-	}
-	
-	// ------------------------------------------------------------------------
-	
-	public static class DummyMapFunction<T> implements MapFunction<T, T> {
-		@Override
-		public T map(T value) {
-			return value;
-		}
-	}
+    /** Identity mapper. */
+    public static class DummyMapFunction<T> implements MapFunction<T, T> {
+        @Override
+        public T map(T value) {
+            return value;
+        }
+    }
+
+    private StreamTaskTestHarness<?> startTestHarness() throws Exception {
+        final OneInputStreamTaskTestHarness<String, String> testHarness =
+                new OneInputStreamTaskTestHarness<>(
+                        OneInputStreamTask::new,
+                        BasicTypeInfo.STRING_TYPE_INFO,
+                        BasicTypeInfo.STRING_TYPE_INFO);
+
+        testHarness.setupOutputForSingletonOperatorChain();
+
+        StreamConfig streamConfig = testHarness.getStreamConfig();
+        streamConfig.setChainIndex(0);
+        streamConfig.setStreamOperator(new StreamMap<String, String>(new DummyMapFunction<>()));
+
+        testHarness.invoke();
+        testHarness.waitForTaskRunning();
+
+        return testHarness;
+    }
+
+    private void stopTestHarness(StreamTaskTestHarness<?> testHarness, long timeout)
+            throws Exception {
+        testHarness.endInput();
+        testHarness.waitForTaskCompletion();
+
+        // thread needs to die in time
+        long deadline = System.currentTimeMillis() + timeout;
+        while (StreamTask.TRIGGER_THREAD_GROUP.activeCount() > 0
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+
+        assertEquals(
+                "Trigger timer thread did not properly shut down",
+                0,
+                StreamTask.TRIGGER_THREAD_GROUP.activeCount());
+    }
 }

@@ -17,62 +17,35 @@
 
 package org.apache.flink.test.streaming.api.outputformat;
 
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.util.StreamingProgramTestBase;
 import org.apache.flink.test.testdata.WordCountData;
-import org.apache.flink.util.Collector;
+import org.apache.flink.test.testfunctions.Tokenizer;
+import org.apache.flink.test.util.AbstractTestBase;
 
-public class CsvOutputFormatITCase extends StreamingProgramTestBase {
+import org.junit.Test;
 
-	protected String resultPath;
+/** Integration tests for {@link org.apache.flink.api.java.io.CsvOutputFormat}. */
+public class CsvOutputFormatITCase extends AbstractTestBase {
 
-	@Override
-	protected void preSubmit() throws Exception {
-		resultPath = getTempDirPath("result");
-	}
+    @Test
+    public void testProgram() throws Exception {
+        String resultPath = getTempDirPath("result");
 
-	@Override
-	protected void testProgram() throws Exception {
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-		DataStream<String> text = env.fromElements(WordCountData.TEXT);
+        DataStream<String> text = env.fromElements(WordCountData.TEXT);
 
-		DataStream<Tuple2<String, Integer>> counts = text
-				.flatMap(new Tokenizer())
-				.keyBy(0).sum(1);
+        DataStream<Tuple2<String, Integer>> counts = text.flatMap(new Tokenizer()).keyBy(0).sum(1);
 
-		counts.writeAsCsv(resultPath);
+        counts.writeAsCsv(resultPath);
 
-		env.execute("WriteAsCsvTest");
-	}
+        env.execute("WriteAsCsvTest");
 
-	@Override
-	protected void postSubmit() throws Exception {
-		//Strip the parentheses from the expected text like output
-		compareResultsByLinesInMemory(WordCountData.STREAMING_COUNTS_AS_TUPLES
-				.replaceAll("[\\\\(\\\\)]", ""), resultPath);
-	}
-
-	public static final class Tokenizer implements FlatMapFunction<String, Tuple2<String, Integer>> {
-		private static final long serialVersionUID = 1L;
-
-		@Override
-		public void flatMap(String value, Collector<Tuple2<String, Integer>> out)
-				throws Exception {
-			// normalize and split the line
-			String[] tokens = value.toLowerCase().split("\\W+");
-
-			// emit the pairs
-			for (String token : tokens) {
-				if (token.length() > 0) {
-					out.collect(new Tuple2<String, Integer>(token, 1));
-				}
-			}
-		}
-	}
-
+        // Strip the parentheses from the expected text like output
+        compareResultsByLinesInMemory(
+                WordCountData.STREAMING_COUNTS_AS_TUPLES.replaceAll("[\\\\(\\\\)]", ""),
+                resultPath);
+    }
 }
-

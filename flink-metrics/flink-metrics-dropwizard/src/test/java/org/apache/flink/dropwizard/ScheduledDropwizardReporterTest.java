@@ -18,214 +18,144 @@
 
 package org.apache.flink.dropwizard;
 
-import com.codahale.metrics.ScheduledReporter;
-import org.apache.flink.api.common.JobID;
-import org.apache.flink.configuration.ConfigConstants;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.dropwizard.metrics.DropwizardMeterWrapper;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.Histogram;
-import org.apache.flink.metrics.HistogramStatistics;
 import org.apache.flink.metrics.Meter;
 import org.apache.flink.metrics.MetricConfig;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
-import org.apache.flink.metrics.reporter.MetricReporter;
-import org.apache.flink.runtime.metrics.MetricRegistry;
-import org.apache.flink.runtime.metrics.MetricRegistryConfiguration;
-import org.apache.flink.runtime.metrics.groups.TaskManagerJobMetricGroup;
-import org.apache.flink.runtime.metrics.groups.TaskManagerMetricGroup;
-import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
-import org.apache.flink.util.AbstractID;
+import org.apache.flink.metrics.util.TestHistogram;
+import org.apache.flink.metrics.util.TestMeter;
+import org.apache.flink.metrics.util.TestMetricGroup;
+
+import com.codahale.metrics.ScheduledReporter;
 import org.junit.Test;
 
-import java.lang.reflect.InvocationTargetException;
-import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+/** Tests for the ScheduledDropwizardReporter. */
 public class ScheduledDropwizardReporterTest {
 
-	@Test
-	public void testInvalidCharacterReplacement() throws NoSuchMethodException, InvocationTargetException, IllegalAccessException {
-		ScheduledDropwizardReporter reporter = new ScheduledDropwizardReporter() {
-			@Override
-			public ScheduledReporter getReporter(MetricConfig config) {
-				return null;
-			}
-		};
+    @Test
+    public void testInvalidCharacterReplacement() {
+        ScheduledDropwizardReporter reporter =
+                new ScheduledDropwizardReporter() {
+                    @Override
+                    public ScheduledReporter getReporter(MetricConfig config) {
+                        return null;
+                    }
+                };
 
-		assertEquals("abc", reporter.filterCharacters("abc"));
-		assertEquals("a--b-c-", reporter.filterCharacters("a..b.c."));
-		assertEquals("ab-c", reporter.filterCharacters("a\"b.c"));
-	}
+        assertEquals("abc", reporter.filterCharacters("abc"));
+        assertEquals("a--b-c-", reporter.filterCharacters("a..b.c."));
+        assertEquals("ab-c", reporter.filterCharacters("a\"b.c"));
+    }
 
-	/**
-	 * Tests that the registered metrics' names don't contain invalid characters.
-	 */
-	@Test
-	public void testAddingMetrics() throws NoSuchFieldException, IllegalAccessException {
-		Configuration configuration = new Configuration();
-		String taskName = "test\"Ta\"..sk";
-		String jobName = "testJ\"ob:-!ax..?";
-		String hostname = "loc<>al\"::host\".:";
-		String taskManagerId = "tas:kMana::ger";
-		String counterName = "testCounter";
+    /** Tests that the registered metrics' names don't contain invalid characters. */
+    @Test
+    public void testAddingMetrics() {
+        final String scope = "scope";
+        final char delimiter = '_';
+        final String counterName = "testCounter";
 
-		configuration.setString(ConfigConstants.METRICS_REPORTERS_LIST, "test");
-		configuration.setString(
-				ConfigConstants.METRICS_REPORTER_PREFIX + "test." + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX,
-				"org.apache.flink.dropwizard.ScheduledDropwizardReporterTest$TestingScheduledDropwizardReporter");
+        final MetricGroup metricGroup =
+                TestMetricGroup.newBuilder()
+                        .setMetricIdentifierFunction(
+                                (metricName, characterFilter) ->
+                                        characterFilter
+                                                .orElse(s -> s)
+                                                .filterCharacters(scope + delimiter + metricName))
+                        .build();
 
-		configuration.setString(ConfigConstants.METRICS_SCOPE_NAMING_TASK, "<host>.<tm_id>.<job_name>");
-		configuration.setString(ConfigConstants.METRICS_SCOPE_DELIMITER, "_");
+        final TestingScheduledDropwizardReporter reporter =
+                new TestingScheduledDropwizardReporter();
 
-		MetricRegistryConfiguration metricRegistryConfiguration = MetricRegistryConfiguration.fromConfiguration(configuration);
+        SimpleCounter myCounter = new SimpleCounter();
+        com.codahale.metrics.Meter dropwizardMeter = new com.codahale.metrics.Meter();
+        DropwizardMeterWrapper meterWrapper = new DropwizardMeterWrapper(dropwizardMeter);
 
-		MetricRegistry metricRegistry = new MetricRegistry(metricRegistryConfiguration);
+        reporter.notifyOfAddedMetric(myCounter, counterName, metricGroup);
+        reporter.notifyOfAddedMetric(meterWrapper, "meter", metricGroup);
 
-		char delimiter = metricRegistry.getDelimiter();
+        Map<Counter, String> counters = reporter.getCounters();
+        assertTrue(counters.containsKey(myCounter));
 
-		TaskManagerMetricGroup tmMetricGroup = new TaskManagerMetricGroup(metricRegistry, hostname, taskManagerId);
-		TaskManagerJobMetricGroup tmJobMetricGroup = new TaskManagerJobMetricGroup(metricRegistry, tmMetricGroup, new JobID(), jobName);
-		TaskMetricGroup taskMetricGroup = new TaskMetricGroup(metricRegistry, tmJobMetricGroup, new AbstractID(), new AbstractID(), taskName, 0, 0);
+        Map<Meter, String> meters = reporter.getMeters();
+        assertTrue(meters.containsKey(meterWrapper));
 
-		SimpleCounter myCounter = new SimpleCounter();
-		com.codahale.metrics.Meter dropwizardMeter = new com.codahale.metrics.Meter();
-		DropwizardMeterWrapper meterWrapper = new DropwizardMeterWrapper(dropwizardMeter);
+        String expectedCounterName =
+                reporter.filterCharacters(scope)
+                        + delimiter
+                        + reporter.filterCharacters(counterName);
 
-		taskMetricGroup.counter(counterName, myCounter);
-		taskMetricGroup.meter("meter", meterWrapper);
+        assertEquals(expectedCounterName, counters.get(myCounter));
+    }
 
-		List<MetricReporter> reporters = metricRegistry.getReporters();
+    /**
+     * This test verifies that metrics are properly added and removed to/from the
+     * ScheduledDropwizardReporter and the underlying Dropwizard MetricRegistry.
+     */
+    @Test
+    public void testMetricCleanup() {
+        TestingScheduledDropwizardReporter rep = new TestingScheduledDropwizardReporter();
 
-		assertTrue(reporters.size() == 1);
-		MetricReporter metricReporter = reporters.get(0);
+        MetricGroup mp = new UnregisteredMetricsGroup();
 
-		assertTrue("Reporter should be of type ScheduledDropwizardReporter", metricReporter instanceof ScheduledDropwizardReporter);
+        Counter c = new SimpleCounter();
+        Meter m = new TestMeter();
+        Histogram h = new TestHistogram();
+        Gauge<?> g = () -> null;
 
-		TestingScheduledDropwizardReporter reporter = (TestingScheduledDropwizardReporter) metricReporter;
+        rep.notifyOfAddedMetric(c, "counter", mp);
+        assertEquals(1, rep.getCounters().size());
+        assertEquals(1, rep.registry.getCounters().size());
 
-		Map<Counter, String> counters = reporter.getCounters();
-		assertTrue(counters.containsKey(myCounter));
+        rep.notifyOfAddedMetric(m, "meter", mp);
+        assertEquals(1, rep.getMeters().size());
+        assertEquals(1, rep.registry.getMeters().size());
 
-		Map<Meter, String> meters = reporter.getMeters();
-		assertTrue(meters.containsKey(meterWrapper));
+        rep.notifyOfAddedMetric(h, "histogram", mp);
+        assertEquals(1, rep.getHistograms().size());
+        assertEquals(1, rep.registry.getHistograms().size());
 
-		String expectedCounterName = reporter.filterCharacters(hostname)
-			+ delimiter
-			+ reporter.filterCharacters(taskManagerId)
-			+ delimiter
-			+ reporter.filterCharacters(jobName)
-			+ delimiter
-			+ reporter.filterCharacters(counterName);
+        rep.notifyOfAddedMetric(g, "gauge", mp);
+        assertEquals(1, rep.getGauges().size());
+        assertEquals(1, rep.registry.getGauges().size());
 
-		assertEquals(expectedCounterName, counters.get(myCounter));
+        rep.notifyOfRemovedMetric(c, "counter", mp);
+        assertEquals(0, rep.getCounters().size());
+        assertEquals(0, rep.registry.getCounters().size());
 
-		metricRegistry.shutdown();
-	}
+        rep.notifyOfRemovedMetric(m, "meter", mp);
+        assertEquals(0, rep.getMeters().size());
+        assertEquals(0, rep.registry.getMeters().size());
 
-	/**
-	 * This test verifies that metrics are properly added and removed to/from the ScheduledDropwizardReporter and
-	 * the underlying Dropwizard MetricRegistry.
-	 */
-	@Test
-	public void testMetricCleanup() {
-		TestingScheduledDropwizardReporter rep = new TestingScheduledDropwizardReporter();
+        rep.notifyOfRemovedMetric(h, "histogram", mp);
+        assertEquals(0, rep.getHistograms().size());
+        assertEquals(0, rep.registry.getHistograms().size());
 
-		MetricGroup mp = new UnregisteredMetricsGroup();
+        rep.notifyOfRemovedMetric(g, "gauge", mp);
+        assertEquals(0, rep.getGauges().size());
+        assertEquals(0, rep.registry.getGauges().size());
+    }
 
-		Counter c = new SimpleCounter();
-		Meter m = new Meter() {
-			@Override
-			public void markEvent() {
-			}
+    /** Dummy test reporter. */
+    public static class TestingScheduledDropwizardReporter extends ScheduledDropwizardReporter {
 
-			@Override
-			public void markEvent(long n) {
-			}
+        @Override
+        public ScheduledReporter getReporter(MetricConfig config) {
+            return null;
+        }
 
-			@Override
-			public double getRate() {
-				return 0;
-			}
-
-			@Override
-			public long getCount() {
-				return 0;
-			}
-		};
-		Histogram h = new Histogram() {
-			@Override
-			public void update(long value) {
-
-			}
-
-			@Override
-			public long getCount() {
-				return 0;
-			}
-
-			@Override
-			public HistogramStatistics getStatistics() {
-				return null;
-			}
-		};
-		Gauge g = new Gauge() {
-			@Override
-			public Object getValue() {
-				return null;
-			}
-		};
-
-		rep.notifyOfAddedMetric(c, "counter", mp);
-		assertEquals(1, rep.getCounters().size());
-		assertEquals(1, rep.registry.getCounters().size());
-
-		rep.notifyOfAddedMetric(m, "meter", mp);
-		assertEquals(1, rep.getMeters().size());
-		assertEquals(1, rep.registry.getMeters().size());
-
-		rep.notifyOfAddedMetric(h, "histogram", mp);
-		assertEquals(1, rep.getHistograms().size());
-		assertEquals(1, rep.registry.getHistograms().size());
-
-		rep.notifyOfAddedMetric(g, "gauge", mp);
-		assertEquals(1, rep.getGauges().size());
-		assertEquals(1, rep.registry.getGauges().size());
-
-
-		rep.notifyOfRemovedMetric(c, "counter", mp);
-		assertEquals(0, rep.getCounters().size());
-		assertEquals(0, rep.registry.getCounters().size());
-
-		rep.notifyOfRemovedMetric(m, "meter", mp);
-		assertEquals(0, rep.getMeters().size());
-		assertEquals(0, rep.registry.getMeters().size());
-
-		rep.notifyOfRemovedMetric(h, "histogram", mp);
-		assertEquals(0, rep.getHistograms().size());
-		assertEquals(0, rep.registry.getHistograms().size());
-
-		rep.notifyOfRemovedMetric(g, "gauge", mp);
-		assertEquals(0, rep.getGauges().size());
-		assertEquals(0, rep.registry.getGauges().size());
-	}
-
-	public static class TestingScheduledDropwizardReporter extends ScheduledDropwizardReporter {
-
-		@Override
-		public ScheduledReporter getReporter(MetricConfig config) {
-			return null;
-		}
-
-		@Override
-		public void close() {
-			// don't do anything
-		}
-	}
+        @Override
+        public void close() {
+            // don't do anything
+        }
+    }
 }

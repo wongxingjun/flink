@@ -18,470 +18,805 @@
 package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.metrics.Counter;
+import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.execution.Environment;
-import org.apache.flink.runtime.io.network.api.CancelCheckpointMarker;
-import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
-import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
+import org.apache.flink.runtime.io.network.api.writer.RecordWriter;
+import org.apache.flink.runtime.io.network.api.writer.RecordWriterDelegate;
+import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
+import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.metrics.groups.OperatorMetricGroup;
+import org.apache.flink.runtime.operators.coordination.OperatorEvent;
+import org.apache.flink.runtime.operators.coordination.OperatorEventDispatcher;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
-import org.apache.flink.streaming.api.collector.selector.CopyingDirectedOutput;
-import org.apache.flink.streaming.api.collector.selector.DirectedOutput;
-import org.apache.flink.streaming.api.collector.selector.OutputSelector;
 import org.apache.flink.streaming.api.graph.StreamConfig;
+import org.apache.flink.streaming.api.graph.StreamConfig.InputConfig;
+import org.apache.flink.streaming.api.graph.StreamConfig.SourceInputConfig;
 import org.apache.flink.streaming.api.graph.StreamEdge;
+import org.apache.flink.streaming.api.operators.BoundedMultiInput;
+import org.apache.flink.streaming.api.operators.Input;
+import org.apache.flink.streaming.api.operators.MultipleInputStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.Output;
+import org.apache.flink.streaming.api.operators.SourceOperator;
 import org.apache.flink.streaming.api.operators.StreamOperator;
-import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
+import org.apache.flink.streaming.api.operators.StreamOperatorFactoryUtil;
+import org.apache.flink.streaming.api.operators.StreamTaskStateInitializer;
 import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
-import org.apache.flink.streaming.runtime.io.StreamRecordWriter;
-import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
-import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.io.StreamTaskSourceInput;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.util.XORShiftRandom;
+import org.apache.flink.streaming.runtime.tasks.mailbox.MailboxExecutorFactory;
+import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.OutputTag;
+import org.apache.flink.util.SerializedValue;
+
+import org.apache.flink.shaded.guava30.com.google.common.io.Closer;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import static org.apache.flink.util.ExceptionUtils.firstOrSuppressed;
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.apache.flink.util.Preconditions.checkState;
 
 /**
  * The {@code OperatorChain} contains all operators that are executed as one chain within a single
  * {@link StreamTask}.
- * 
- * @param <OUT> The type of elements accepted by the chain, i.e., the input type of the chain's
- *              head operator.
+ *
+ * <p>The main entry point to the chain is it's {@code mainOperator}. {@code mainOperator} is
+ * driving the execution of the {@link StreamTask}, by pulling the records from network inputs
+ * and/or source inputs and pushing produced records to the remaining chained operators.
+ *
+ * @param <OUT> The type of elements accepted by the chain, i.e., the input type of the chain's main
+ *     operator.
  */
 @Internal
-public class OperatorChain<OUT, OP extends StreamOperator<OUT>> {
-	
-	private static final Logger LOG = LoggerFactory.getLogger(OperatorChain.class);
-	
-	private final StreamOperator<?>[] allOperators;
+public class OperatorChain<OUT, OP extends StreamOperator<OUT>>
+        implements BoundedMultiInput, Closeable {
 
-	private final RecordWriterOutput<?>[] streamOutputs;
-	
-	private final Output<StreamRecord<OUT>> chainEntryPoint;
+    private static final Logger LOG = LoggerFactory.getLogger(OperatorChain.class);
 
-	private final OP headOperator;
+    private final RecordWriterOutput<?>[] streamOutputs;
 
-	public OperatorChain(StreamTask<OUT, OP> containingTask) {
-		
-		final ClassLoader userCodeClassloader = containingTask.getUserCodeClassLoader();
-		final StreamConfig configuration = containingTask.getConfiguration();
+    private final WatermarkGaugeExposingOutput<StreamRecord<OUT>> mainOperatorOutput;
 
-		headOperator = configuration.getStreamOperator(userCodeClassloader);
+    private final boolean finishedOnRestore;
 
-		// we read the chained configs, and the order of record writer registrations by output name
-		Map<Integer, StreamConfig> chainedConfigs = configuration.getTransitiveChainedTaskConfigs(userCodeClassloader);
-		chainedConfigs.put(configuration.getVertexID(), configuration);
+    /**
+     * For iteration, {@link StreamIterationHead} and {@link StreamIterationTail} used for executing
+     * feedback edges do not contain any operators, in which case, {@code mainOperatorWrapper} and
+     * {@code tailOperatorWrapper} are null.
+     *
+     * <p>Usually first operator in the chain is the same as {@link #mainOperatorWrapper}, but
+     * that's not the case if there are chained source inputs. In this case, one of the source
+     * inputs will be the first operator. For example the following operator chain is possible:
+     *
+     * <pre>
+     * first
+     *      \
+     *      main (multi-input) -> ... -> tail
+     *      /
+     * second
+     * </pre>
+     *
+     * <p>Where "first" and "second" (there can be more) are chained source operators. When it comes
+     * to things like closing, stat initialisation or state snapshotting, the operator chain is
+     * traversed: first, second, main, ..., tail or in reversed order: tail, ..., main, second,
+     * first
+     */
+    @Nullable private final StreamOperatorWrapper<OUT, OP> mainOperatorWrapper;
 
-		// create the final output stream writers
-		// we iterate through all the out edges from this job vertex and create a stream output
-		List<StreamEdge> outEdgesInOrder = configuration.getOutEdgesInOrder(userCodeClassloader);
-		Map<StreamEdge, RecordWriterOutput<?>> streamOutputMap = new HashMap<>(outEdgesInOrder.size());
-		this.streamOutputs = new RecordWriterOutput<?>[outEdgesInOrder.size()];
-		
-		// from here on, we need to make sure that the output writers are shut down again on failure
-		boolean success = false;
-		try {
-			for (int i = 0; i < outEdgesInOrder.size(); i++) {
-				StreamEdge outEdge = outEdgesInOrder.get(i);
-				RecordWriterOutput<?> streamOutput = createStreamOutput(
-						outEdge, chainedConfigs.get(outEdge.getSourceId()), i,
-						containingTask.getEnvironment(), containingTask.getName());
-	
-				this.streamOutputs[i] = streamOutput;
-				streamOutputMap.put(outEdge, streamOutput);
-			}
-	
-			// we create the chain of operators and grab the collector that leads into the chain
-			List<StreamOperator<?>> allOps = new ArrayList<>(chainedConfigs.size());
-			this.chainEntryPoint = createOutputCollector(containingTask, configuration,
-					chainedConfigs, userCodeClassloader, streamOutputMap, allOps);
+    @Nullable private final StreamOperatorWrapper<?, ?> firstOperatorWrapper;
+    @Nullable private final StreamOperatorWrapper<?, ?> tailOperatorWrapper;
 
-			if (headOperator != null) {
-				headOperator.setup(containingTask, configuration, getChainEntryPoint());
-			}
+    private final Map<SourceInputConfig, ChainedSource> chainedSources;
 
-			// add head operator to end of chain
-			allOps.add(headOperator);
+    private final int numOperators;
 
-			this.allOperators = allOps.toArray(new StreamOperator<?>[allOps.size()]);
-			
-			success = true;
-		}
-		finally {
-			// make sure we clean up after ourselves in case of a failure after acquiring
-			// the first resources
-			if (!success) {
-				for (RecordWriterOutput<?> output : this.streamOutputs) {
-					if (output != null) {
-						output.close();
-						output.clearBuffers();
-					}
-				}
-			}
-		}
-		
-	}
+    private final OperatorEventDispatcherImpl operatorEventDispatcher;
 
+    private final Closer closer = Closer.create();
 
-	public void broadcastCheckpointBarrier(long id, long timestamp) throws IOException {
-		try {
-			CheckpointBarrier barrier = new CheckpointBarrier(id, timestamp);
-			for (RecordWriterOutput<?> streamOutput : streamOutputs) {
-				streamOutput.broadcastEvent(barrier);
-			}
-		}
-		catch (InterruptedException e) {
-			throw new IOException("Interrupted while broadcasting checkpoint barrier");
-		}
-	}
+    public OperatorChain(
+            StreamTask<OUT, OP> containingTask,
+            RecordWriterDelegate<SerializationDelegate<StreamRecord<OUT>>> recordWriterDelegate,
+            boolean finishedOnRestore) {
 
-	public void broadcastCheckpointCancelMarker(long id) throws IOException {
-		try {
-			CancelCheckpointMarker barrier = new CancelCheckpointMarker(id);
-			for (RecordWriterOutput<?> streamOutput : streamOutputs) {
-				streamOutput.broadcastEvent(barrier);
-			}
-		}
-		catch (InterruptedException e) {
-			throw new IOException("Interrupted while broadcasting checkpoint cancellation");
-		}
-	}
+        this.operatorEventDispatcher =
+                new OperatorEventDispatcherImpl(
+                        containingTask.getEnvironment().getUserCodeClassLoader().asClassLoader(),
+                        containingTask.getEnvironment().getOperatorCoordinatorEventGateway());
 
-	public RecordWriterOutput<?>[] getStreamOutputs() {
-		return streamOutputs;
-	}
-	
-	public StreamOperator<?>[] getAllOperators() {
-		return allOperators;
-	}
+        final ClassLoader userCodeClassloader = containingTask.getUserCodeClassLoader();
+        final StreamConfig configuration = containingTask.getConfiguration();
 
-	public Output<StreamRecord<OUT>> getChainEntryPoint() {
-		return chainEntryPoint;
-	}
+        StreamOperatorFactory<OUT> operatorFactory =
+                configuration.getStreamOperatorFactory(userCodeClassloader);
 
-	/**
-	 *
-	 * This method should be called before finishing the record emission, to make sure any data
-	 * that is still buffered will be sent. It also ensures that all data sending related
-	 * exceptions are recognized.
-	 *
-	 * @throws IOException Thrown, if the buffered data cannot be pushed into the output streams.
-	 */
-	public void flushOutputs() throws IOException {
-		for (RecordWriterOutput<?> streamOutput : getStreamOutputs()) {
-			streamOutput.flush();
-		}
-	}
+        // we read the chained configs, and the order of record writer registrations by output name
+        Map<Integer, StreamConfig> chainedConfigs =
+                configuration.getTransitiveChainedTaskConfigsWithSelf(userCodeClassloader);
 
-	/**
-	 * This method releases all resources of the record writer output. It stops the output
-	 * flushing thread (if there is one) and releases all buffers currently held by the output
-	 * serializers.
-	 *
-	 * <p>This method should never fail.
-	 */
-	public void releaseOutputs() {
-		try {
-			for (RecordWriterOutput<?> streamOutput : streamOutputs) {
-				streamOutput.close();
-			}
-		}
-		finally {
-			// make sure that we release the buffers in any case
-			for (RecordWriterOutput<?> output : streamOutputs) {
-				output.clearBuffers();
-			}
-		}
-	}
+        // create the final output stream writers
+        // we iterate through all the out edges from this job vertex and create a stream output
+        List<StreamEdge> outEdgesInOrder = configuration.getOutEdgesInOrder(userCodeClassloader);
+        Map<StreamEdge, RecordWriterOutput<?>> streamOutputMap =
+                new HashMap<>(outEdgesInOrder.size());
+        this.streamOutputs = new RecordWriterOutput<?>[outEdgesInOrder.size()];
+        this.finishedOnRestore = finishedOnRestore;
 
-	public OP getHeadOperator() {
-		return headOperator;
-	}
+        // from here on, we need to make sure that the output writers are shut down again on failure
+        boolean success = false;
+        try {
+            createChainOutputs(
+                    outEdgesInOrder,
+                    recordWriterDelegate,
+                    chainedConfigs,
+                    containingTask,
+                    streamOutputMap);
 
-	public int getChainLength() {
-		return allOperators == null ? 0 : allOperators.length;
-	}
+            // we create the chain of operators and grab the collector that leads into the chain
+            List<StreamOperatorWrapper<?, ?>> allOpWrappers =
+                    new ArrayList<>(chainedConfigs.size());
+            this.mainOperatorOutput =
+                    createOutputCollector(
+                            containingTask,
+                            configuration,
+                            chainedConfigs,
+                            userCodeClassloader,
+                            streamOutputMap,
+                            allOpWrappers,
+                            containingTask.getMailboxExecutorFactory());
 
-	// ------------------------------------------------------------------------
-	//  initialization utilities
-	// ------------------------------------------------------------------------
-	
-	private static <T> Output<StreamRecord<T>> createOutputCollector(
-			StreamTask<?, ?> containingTask,
-			StreamConfig operatorConfig,
-			Map<Integer, StreamConfig> chainedConfigs,
-			ClassLoader userCodeClassloader,
-			Map<StreamEdge, RecordWriterOutput<?>> streamOutputs,
-			List<StreamOperator<?>> allOperators)
-	{
-		List<Tuple2<Output<StreamRecord<T>>, StreamEdge>> allOutputs = new ArrayList<>(4);
-		
-		// create collectors for the network outputs
-		for (StreamEdge outputEdge : operatorConfig.getNonChainedOutputs(userCodeClassloader)) {
-			@SuppressWarnings("unchecked")
-			RecordWriterOutput<T> output = (RecordWriterOutput<T>) streamOutputs.get(outputEdge);
-			
-			allOutputs.add(new Tuple2<Output<StreamRecord<T>>, StreamEdge>(output, outputEdge));
-		}
+            if (operatorFactory != null) {
+                Tuple2<OP, Optional<ProcessingTimeService>> mainOperatorAndTimeService =
+                        StreamOperatorFactoryUtil.createOperator(
+                                operatorFactory,
+                                containingTask,
+                                configuration,
+                                mainOperatorOutput,
+                                operatorEventDispatcher);
 
-		// Create collectors for the chained outputs
-		for (StreamEdge outputEdge : operatorConfig.getChainedOutputs(userCodeClassloader)) {
-			int outputId = outputEdge.getTargetId();
-			StreamConfig chainedOpConfig = chainedConfigs.get(outputId);
+                OP mainOperator = mainOperatorAndTimeService.f0;
+                mainOperator
+                        .getMetricGroup()
+                        .gauge(
+                                MetricNames.IO_CURRENT_OUTPUT_WATERMARK,
+                                mainOperatorOutput.getWatermarkGauge());
+                this.mainOperatorWrapper =
+                        createOperatorWrapper(
+                                mainOperator,
+                                containingTask,
+                                configuration,
+                                mainOperatorAndTimeService.f1,
+                                true);
 
-			Output<StreamRecord<T>> output = createChainedOperator(
-					containingTask, chainedOpConfig, chainedConfigs, userCodeClassloader, streamOutputs, allOperators);
-			allOutputs.add(new Tuple2<>(output, outputEdge));
-		}
-		
-		// if there are multiple outputs, or the outputs are directed, we need to
-		// wrap them as one output
-		
-		List<OutputSelector<T>> selectors = operatorConfig.getOutputSelectors(userCodeClassloader);
-		
-		if (selectors == null || selectors.isEmpty()) {
-			// simple path, no selector necessary
-			if (allOutputs.size() == 1) {
-				return allOutputs.get(0).f0;
-			}
-			else {
-				// send to N outputs. Note that this includes teh special case
-				// of sending to zero outputs
-				@SuppressWarnings({"unchecked", "rawtypes"})
-				Output<StreamRecord<T>>[] asArray = new Output[allOutputs.size()];
-				for (int i = 0; i < allOutputs.size(); i++) {
-					asArray[i] = allOutputs.get(i).f0;
-				}
+                // add main operator to end of chain
+                allOpWrappers.add(mainOperatorWrapper);
 
-				// This is the inverse of creating the normal ChainingOutput.
-				// If the chaining output does not copy we need to copy in the broadcast output,
-				// otherwise multi-chaining would not work correctly.
-				if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
-					return new CopyingBroadcastingOutputCollector<>(asArray);
-				} else  {
-					return new BroadcastingOutputCollector<>(asArray);
-				}
-			}
-		}
-		else {
-			// selector present, more complex routing necessary
+                this.tailOperatorWrapper = allOpWrappers.get(0);
+            } else {
+                checkState(allOpWrappers.size() == 0);
+                this.mainOperatorWrapper = null;
+                this.tailOperatorWrapper = null;
+            }
 
-			// This is the inverse of creating the normal ChainingOutput.
-			// If the chaining output does not copy we need to copy in the broadcast output,
-			// otherwise multi-chaining would not work correctly.
-			if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
-				return new CopyingDirectedOutput<>(selectors, allOutputs);
-			} else {
-				return new DirectedOutput<>(selectors, allOutputs);
-			}
-			
-		}
-	}
-	
-	private static <IN, OUT> Output<StreamRecord<IN>> createChainedOperator(
-			StreamTask<?, ?> containingTask,
-			StreamConfig operatorConfig,
-			Map<Integer, StreamConfig> chainedConfigs,
-			ClassLoader userCodeClassloader,
-			Map<StreamEdge, RecordWriterOutput<?>> streamOutputs,
-			List<StreamOperator<?>> allOperators)
-	{
-		// create the output that the operator writes to first. this may recursively create more operators
-		Output<StreamRecord<OUT>> output = createOutputCollector(
-				containingTask, operatorConfig, chainedConfigs, userCodeClassloader, streamOutputs, allOperators);
+            this.chainedSources =
+                    createChainedSources(
+                            containingTask,
+                            configuration.getInputs(userCodeClassloader),
+                            chainedConfigs,
+                            userCodeClassloader,
+                            allOpWrappers);
 
-		// now create the operator and give it the output collector to write its output to
-		OneInputStreamOperator<IN, OUT> chainedOperator = operatorConfig.getStreamOperator(userCodeClassloader);
-		chainedOperator.setup(containingTask, operatorConfig, output);
+            this.numOperators = allOpWrappers.size();
 
-		allOperators.add(chainedOperator);
+            firstOperatorWrapper = linkOperatorWrappers(allOpWrappers);
 
-		if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
-			return new ChainingOutput<>(chainedOperator);
-		}
-		else {
-			TypeSerializer<IN> inSerializer = operatorConfig.getTypeSerializerIn1(userCodeClassloader);
-			return new CopyingChainingOutput<>(chainedOperator, inSerializer);
-		}
-	}
-	
-	private static <T> RecordWriterOutput<T> createStreamOutput(
-			StreamEdge edge, StreamConfig upStreamConfig, int outputIndex,
-			Environment taskEnvironment,
-			String taskName)
-	{
-		TypeSerializer<T> outSerializer = upStreamConfig.getTypeSerializerOut(taskEnvironment.getUserClassLoader());
+            success = true;
+        } finally {
+            // make sure we clean up after ourselves in case of a failure after acquiring
+            // the first resources
+            if (!success) {
+                for (RecordWriterOutput<?> output : this.streamOutputs) {
+                    if (output != null) {
+                        output.close();
+                    }
+                }
+            }
+        }
+    }
 
-		@SuppressWarnings("unchecked")
-		StreamPartitioner<T> outputPartitioner = (StreamPartitioner<T>) edge.getPartitioner();
+    @VisibleForTesting
+    OperatorChain(
+            List<StreamOperatorWrapper<?, ?>> allOperatorWrappers,
+            RecordWriterOutput<?>[] streamOutputs,
+            WatermarkGaugeExposingOutput<StreamRecord<OUT>> mainOperatorOutput,
+            StreamOperatorWrapper<OUT, OP> mainOperatorWrapper) {
 
-		LOG.debug("Using partitioner {} for output {} of task ", outputPartitioner, outputIndex, taskName);
-		
-		ResultPartitionWriter bufferWriter = taskEnvironment.getWriter(outputIndex);
+        this.streamOutputs = checkNotNull(streamOutputs);
+        this.mainOperatorOutput = checkNotNull(mainOperatorOutput);
+        this.operatorEventDispatcher = null;
 
-		StreamRecordWriter<SerializationDelegate<StreamRecord<T>>> output = 
-				new StreamRecordWriter<>(bufferWriter, outputPartitioner, upStreamConfig.getBufferTimeout());
-		output.setMetricGroup(taskEnvironment.getMetricGroup().getIOMetricGroup());
-		
-		return new RecordWriterOutput<>(output, outSerializer);
-	}
-	
-	// ------------------------------------------------------------------------
-	//  Collectors for output chaining
-	// ------------------------------------------------------------------------ 
+        checkState(allOperatorWrappers != null && allOperatorWrappers.size() > 0);
+        this.mainOperatorWrapper = checkNotNull(mainOperatorWrapper);
+        this.tailOperatorWrapper = allOperatorWrappers.get(0);
+        this.numOperators = allOperatorWrappers.size();
+        this.chainedSources = Collections.emptyMap();
 
-	private static class ChainingOutput<T> implements Output<StreamRecord<T>> {
-		
-		protected final OneInputStreamOperator<T, ?> operator;
-		protected final Counter numRecordsIn;
+        firstOperatorWrapper = linkOperatorWrappers(allOperatorWrappers);
+        finishedOnRestore = false;
+    }
 
-		public ChainingOutput(OneInputStreamOperator<T, ?> operator) {
-			this.operator = operator;
-			this.numRecordsIn = ((OperatorMetricGroup) operator.getMetricGroup()).getIOMetricGroup().getNumRecordsInCounter();
-		}
+    private void createChainOutputs(
+            List<StreamEdge> outEdgesInOrder,
+            RecordWriterDelegate<SerializationDelegate<StreamRecord<OUT>>> recordWriterDelegate,
+            Map<Integer, StreamConfig> chainedConfigs,
+            StreamTask<OUT, OP> containingTask,
+            Map<StreamEdge, RecordWriterOutput<?>> streamOutputMap) {
+        for (int i = 0; i < outEdgesInOrder.size(); i++) {
+            StreamEdge outEdge = outEdgesInOrder.get(i);
 
-		@Override
-		public void collect(StreamRecord<T> record) {
-			try {
-				numRecordsIn.inc();
-				operator.setKeyContextElement1(record);
-				operator.processElement(record);
-			}
-			catch (Exception e) {
-				throw new ExceptionInChainedOperatorException(e);
-			}
-		}
+            RecordWriterOutput<?> streamOutput =
+                    createStreamOutput(
+                            recordWriterDelegate.getRecordWriter(i),
+                            outEdge,
+                            chainedConfigs.get(outEdge.getSourceId()),
+                            containingTask.getEnvironment());
 
-		@Override
-		public void emitWatermark(Watermark mark) {
-			try {
-				operator.processWatermark(mark);
-			}
-			catch (Exception e) {
-				throw new ExceptionInChainedOperatorException(e);
-			}
-		}
+            this.streamOutputs[i] = streamOutput;
+            streamOutputMap.put(outEdge, streamOutput);
+        }
+    }
 
-		@Override
-		public void emitLatencyMarker(LatencyMarker latencyMarker) {
-			try {
-				operator.processLatencyMarker(latencyMarker);
-			}
-			catch (Exception e) {
-				throw new ExceptionInChainedOperatorException(e);
-			}
-		}
+    @SuppressWarnings("rawtypes")
+    private Map<SourceInputConfig, ChainedSource> createChainedSources(
+            StreamTask<OUT, OP> containingTask,
+            InputConfig[] configuredInputs,
+            Map<Integer, StreamConfig> chainedConfigs,
+            ClassLoader userCodeClassloader,
+            List<StreamOperatorWrapper<?, ?>> allOpWrappers) {
+        if (Arrays.stream(configuredInputs)
+                .noneMatch(input -> input instanceof SourceInputConfig)) {
+            return Collections.emptyMap();
+        }
+        checkState(
+                mainOperatorWrapper.getStreamOperator() instanceof MultipleInputStreamOperator,
+                "Creating chained input is only supported with MultipleInputStreamOperator and MultipleInputStreamTask");
+        Map<SourceInputConfig, ChainedSource> chainedSourceInputs = new HashMap<>();
+        MultipleInputStreamOperator<?> multipleInputOperator =
+                (MultipleInputStreamOperator<?>) mainOperatorWrapper.getStreamOperator();
+        List<Input> operatorInputs = multipleInputOperator.getInputs();
 
-		@Override
-		public void close() {
-			try {
-				operator.close();
-			}
-			catch (Exception e) {
-				throw new ExceptionInChainedOperatorException(e);
-			}
-		}
-	}
+        int sourceInputGateIndex =
+                Arrays.stream(containingTask.getEnvironment().getAllInputGates())
+                                .mapToInt(IndexedInputGate::getInputGateIndex)
+                                .max()
+                                .orElse(-1)
+                        + 1;
 
-	private static final class CopyingChainingOutput<T> extends ChainingOutput<T> {
-		
-		private final TypeSerializer<T> serializer;
-		
-		public CopyingChainingOutput(OneInputStreamOperator<T, ?> operator, TypeSerializer<T> serializer) {
-			super(operator);
-			this.serializer = serializer;
-		}
+        for (int inputId = 0; inputId < configuredInputs.length; inputId++) {
+            if (!(configuredInputs[inputId] instanceof SourceInputConfig)) {
+                continue;
+            }
+            SourceInputConfig sourceInput = (SourceInputConfig) configuredInputs[inputId];
+            int sourceEdgeId = sourceInput.getInputEdge().getSourceId();
+            StreamConfig sourceInputConfig = chainedConfigs.get(sourceEdgeId);
+            OutputTag outputTag = sourceInput.getInputEdge().getOutputTag();
 
-		@Override
-		public void collect(StreamRecord<T> record) {
-			try {
-				numRecordsIn.inc();
-				StreamRecord<T> copy = record.copy(serializer.copy(record.getValue()));
-				operator.setKeyContextElement1(copy);
-				operator.processElement(copy);
-			}
-			catch (Exception e) {
-				throw new RuntimeException("Could not forward element to next operator", e);
-			}
-		}
-	}
-	
-	private static class BroadcastingOutputCollector<T> implements Output<StreamRecord<T>> {
-		
-		protected final Output<StreamRecord<T>>[] outputs;
+            WatermarkGaugeExposingOutput chainedSourceOutput =
+                    createChainedSourceOutput(
+                            containingTask,
+                            sourceInputConfig,
+                            userCodeClassloader,
+                            operatorInputs.get(inputId),
+                            (OperatorMetricGroup) multipleInputOperator.getMetricGroup(),
+                            outputTag);
 
-		private final Random RNG = new XORShiftRandom();
-		
-		public BroadcastingOutputCollector(Output<StreamRecord<T>>[] outputs) {
-			this.outputs = outputs;
-		}
+            SourceOperator<?, ?> sourceOperator =
+                    (SourceOperator<?, ?>)
+                            createOperator(
+                                    containingTask,
+                                    sourceInputConfig,
+                                    userCodeClassloader,
+                                    (WatermarkGaugeExposingOutput<StreamRecord<OUT>>)
+                                            chainedSourceOutput,
+                                    allOpWrappers,
+                                    true);
+            chainedSourceInputs.put(
+                    sourceInput,
+                    new ChainedSource(
+                            chainedSourceOutput,
+                            finishedOnRestore
+                                    ? new StreamTaskFinishedOnRestoreSourceInput<>(
+                                            sourceOperator, sourceInputGateIndex++, inputId)
+                                    : new StreamTaskSourceInput<>(
+                                            sourceOperator, sourceInputGateIndex++, inputId)));
+        }
+        return chainedSourceInputs;
+    }
 
-		@Override
-		public void emitWatermark(Watermark mark) {
-			for (Output<StreamRecord<T>> output : outputs) {
-				output.emitWatermark(mark);
-			}
-		}
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private WatermarkGaugeExposingOutput<StreamRecord> createChainedSourceOutput(
+            StreamTask<?, OP> containingTask,
+            StreamConfig sourceInputConfig,
+            ClassLoader userCodeClassloader,
+            Input input,
+            OperatorMetricGroup metricGroup,
+            OutputTag outputTag) {
 
-		@Override
-		public void emitLatencyMarker(LatencyMarker latencyMarker) {
-			if(outputs.length <= 0) {
-				// ignore
-			} else if(outputs.length == 1) {
-				outputs[0].emitLatencyMarker(latencyMarker);
-			} else {
-				// randomly select an output
-				outputs[RNG.nextInt(outputs.length)].emitLatencyMarker(latencyMarker);
-			}
-		}
+        WatermarkGaugeExposingOutput<StreamRecord> chainedSourceOutput;
+        if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
+            chainedSourceOutput = new ChainingOutput(input, metricGroup, outputTag);
+        } else {
+            TypeSerializer<?> inSerializer =
+                    sourceInputConfig.getTypeSerializerOut(userCodeClassloader);
+            chainedSourceOutput =
+                    new CopyingChainingOutput(input, inSerializer, metricGroup, outputTag);
+        }
+        /**
+         * Chained sources are closed when {@link
+         * org.apache.flink.streaming.runtime.io.StreamTaskSourceInput} are being closed.
+         */
+        return closer.register(chainedSourceOutput);
+    }
 
-		@Override
-		public void collect(StreamRecord<T> record) {
-			for (Output<StreamRecord<T>> output : outputs) {
-				output.collect(record);
-			}
-		}
+    public boolean isFinishedOnRestore() {
+        return finishedOnRestore;
+    }
 
-		@Override
-		public void close() {
-			for (Output<StreamRecord<T>> output : outputs) {
-				output.close();
-			}
-		}
-	}
+    public OperatorEventDispatcher getOperatorEventDispatcher() {
+        return operatorEventDispatcher;
+    }
 
-	/**
-	 * Special version of {@link BroadcastingOutputCollector} that performs a shallow copy of the
-	 * {@link StreamRecord} to ensure that multi-chaining works correctly.
-	 */
-	private static final class CopyingBroadcastingOutputCollector<T> extends BroadcastingOutputCollector<T> {
+    public void dispatchOperatorEvent(OperatorID operator, SerializedValue<OperatorEvent> event)
+            throws FlinkException {
+        operatorEventDispatcher.dispatchEventToHandlers(operator, event);
+    }
 
-		public CopyingBroadcastingOutputCollector(Output<StreamRecord<T>>[] outputs) {
-			super(outputs);
-		}
+    public void broadcastEvent(AbstractEvent event) throws IOException {
+        broadcastEvent(event, false);
+    }
 
-		@Override
-		public void collect(StreamRecord<T> record) {
+    public void broadcastEvent(AbstractEvent event, boolean isPriorityEvent) throws IOException {
+        for (RecordWriterOutput<?> streamOutput : streamOutputs) {
+            streamOutput.broadcastEvent(event, isPriorityEvent);
+        }
+    }
 
-			for (int i = 0; i < outputs.length - 1; i++) {
-				Output<StreamRecord<T>> output = outputs[i];
-				StreamRecord<T> shallowCopy = record.copy(record.getValue());
-				output.collect(shallowCopy);
-			}
+    public void prepareSnapshotPreBarrier(long checkpointId) throws Exception {
+        if (finishedOnRestore) {
+            return;
+        }
 
-			// don't copy for the last output
-			outputs[outputs.length - 1].collect(record);
-		}
-	}
+        // go forward through the operator chain and tell each operator
+        // to prepare the checkpoint
+        for (StreamOperatorWrapper<?, ?> operatorWrapper : getAllOperators()) {
+            if (!operatorWrapper.isClosed()) {
+                operatorWrapper.getStreamOperator().prepareSnapshotPreBarrier(checkpointId);
+            }
+        }
+    }
+
+    /**
+     * Ends the main operator input specified by {@code inputId}).
+     *
+     * @param inputId the input ID starts from 1 which indicates the first input.
+     */
+    @Override
+    public void endInput(int inputId) throws Exception {
+        if (mainOperatorWrapper != null) {
+            mainOperatorWrapper.endOperatorInput(inputId);
+        }
+    }
+
+    /**
+     * Initialize state and open all operators in the chain from <b>tail to heads</b>, contrary to
+     * {@link StreamOperator#close()} which happens <b>heads to tail</b> (see {@link
+     * #finishOperators(StreamTaskActionExecutor)}).
+     */
+    protected void initializeStateAndOpenOperators(
+            StreamTaskStateInitializer streamTaskStateInitializer) throws Exception {
+        if (finishedOnRestore) {
+            return;
+        }
+
+        for (StreamOperatorWrapper<?, ?> operatorWrapper : getAllOperators(true)) {
+            StreamOperator<?> operator = operatorWrapper.getStreamOperator();
+            operator.initializeState(streamTaskStateInitializer);
+            operator.open();
+        }
+    }
+
+    /**
+     * Closes all operators in a chain effect way. Closing happens from <b>heads to tail</b>
+     * operator in the chain, contrary to {@link StreamOperator#open()} which happens <b>tail to
+     * heads</b> (see {@link #initializeStateAndOpenOperators(StreamTaskStateInitializer)}).
+     */
+    protected void finishOperators(StreamTaskActionExecutor actionExecutor) throws Exception {
+        if (finishedOnRestore) {
+            return;
+        }
+
+        if (firstOperatorWrapper != null) {
+            firstOperatorWrapper.finish(actionExecutor);
+        }
+    }
+
+    /**
+     * Execute {@link StreamOperator#close()} of each operator in the chain of this {@link
+     * StreamTask}. Closing happens from <b>tail to head</b> operator in the chain.
+     */
+    protected void closeAllOperators() throws Exception {
+        if (finishedOnRestore) {
+            return;
+        }
+
+        Exception closingException = null;
+        for (StreamOperatorWrapper<?, ?> operatorWrapper : getAllOperators(true)) {
+            try {
+                operatorWrapper.close();
+            } catch (Exception e) {
+                closingException = firstOrSuppressed(e, closingException);
+            }
+        }
+        if (closingException != null) {
+            throw closingException;
+        }
+    }
+
+    public RecordWriterOutput<?>[] getStreamOutputs() {
+        return streamOutputs;
+    }
+
+    /** Returns an {@link Iterable} which traverses all operators in forward topological order. */
+    public Iterable<StreamOperatorWrapper<?, ?>> getAllOperators() {
+        return getAllOperators(false);
+    }
+
+    /**
+     * Returns an {@link Iterable} which traverses all operators in forward or reverse topological
+     * order.
+     */
+    public Iterable<StreamOperatorWrapper<?, ?>> getAllOperators(boolean reverse) {
+        return reverse
+                ? new StreamOperatorWrapper.ReadIterator(tailOperatorWrapper, true)
+                : new StreamOperatorWrapper.ReadIterator(mainOperatorWrapper, false);
+    }
+
+    public int getNumberOfOperators() {
+        return numOperators;
+    }
+
+    public WatermarkGaugeExposingOutput<StreamRecord<OUT>> getMainOperatorOutput() {
+        return mainOperatorOutput;
+    }
+
+    public WatermarkGaugeExposingOutput<StreamRecord<?>> getChainedSourceOutput(
+            SourceInputConfig sourceInput) {
+        checkArgument(
+                chainedSources.containsKey(sourceInput),
+                "Chained source with sourcedId = [%s] was not found",
+                sourceInput);
+        return chainedSources.get(sourceInput).getSourceOutput();
+    }
+
+    public List<Output<StreamRecord<?>>> getChainedSourceOutputs() {
+        return chainedSources.values().stream()
+                .map(ChainedSource::getSourceOutput)
+                .collect(Collectors.toList());
+    }
+
+    public StreamTaskSourceInput<?> getSourceTaskInput(SourceInputConfig sourceInput) {
+        checkArgument(
+                chainedSources.containsKey(sourceInput),
+                "Chained source with sourcedId = [%s] was not found",
+                sourceInput);
+        return chainedSources.get(sourceInput).getSourceTaskInput();
+    }
+
+    public List<StreamTaskSourceInput<?>> getSourceTaskInputs() {
+        return chainedSources.values().stream()
+                .map(ChainedSource::getSourceTaskInput)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * This method should be called before finishing the record emission, to make sure any data that
+     * is still buffered will be sent. It also ensures that all data sending related exceptions are
+     * recognized.
+     *
+     * @throws IOException Thrown, if the buffered data cannot be pushed into the output streams.
+     */
+    public void flushOutputs() throws IOException {
+        for (RecordWriterOutput<?> streamOutput : getStreamOutputs()) {
+            streamOutput.flush();
+        }
+    }
+
+    /**
+     * This method releases all resources of the record writer output. It stops the output flushing
+     * thread (if there is one) and releases all buffers currently held by the output serializers.
+     *
+     * <p>This method should never fail.
+     */
+    public void close() throws IOException {
+        closer.close();
+    }
+
+    @Nullable
+    public OP getMainOperator() {
+        return (mainOperatorWrapper == null) ? null : mainOperatorWrapper.getStreamOperator();
+    }
+
+    // ------------------------------------------------------------------------
+    //  initialization utilities
+    // ------------------------------------------------------------------------
+
+    private <T> WatermarkGaugeExposingOutput<StreamRecord<T>> createOutputCollector(
+            StreamTask<?, ?> containingTask,
+            StreamConfig operatorConfig,
+            Map<Integer, StreamConfig> chainedConfigs,
+            ClassLoader userCodeClassloader,
+            Map<StreamEdge, RecordWriterOutput<?>> streamOutputs,
+            List<StreamOperatorWrapper<?, ?>> allOperatorWrappers,
+            MailboxExecutorFactory mailboxExecutorFactory) {
+        List<Tuple2<WatermarkGaugeExposingOutput<StreamRecord<T>>, StreamEdge>> allOutputs =
+                new ArrayList<>(4);
+
+        // create collectors for the network outputs
+        for (StreamEdge outputEdge : operatorConfig.getNonChainedOutputs(userCodeClassloader)) {
+            @SuppressWarnings("unchecked")
+            RecordWriterOutput<T> output = (RecordWriterOutput<T>) streamOutputs.get(outputEdge);
+
+            allOutputs.add(new Tuple2<>(output, outputEdge));
+        }
+
+        // Create collectors for the chained outputs
+        for (StreamEdge outputEdge : operatorConfig.getChainedOutputs(userCodeClassloader)) {
+            int outputId = outputEdge.getTargetId();
+            StreamConfig chainedOpConfig = chainedConfigs.get(outputId);
+
+            WatermarkGaugeExposingOutput<StreamRecord<T>> output =
+                    createOperatorChain(
+                            containingTask,
+                            chainedOpConfig,
+                            chainedConfigs,
+                            userCodeClassloader,
+                            streamOutputs,
+                            allOperatorWrappers,
+                            outputEdge.getOutputTag(),
+                            mailboxExecutorFactory);
+            allOutputs.add(new Tuple2<>(output, outputEdge));
+        }
+
+        if (allOutputs.size() == 1) {
+            return allOutputs.get(0).f0;
+        } else {
+            // send to N outputs. Note that this includes the special case
+            // of sending to zero outputs
+            @SuppressWarnings({"unchecked"})
+            Output<StreamRecord<T>>[] asArray = new Output[allOutputs.size()];
+            for (int i = 0; i < allOutputs.size(); i++) {
+                asArray[i] = allOutputs.get(i).f0;
+            }
+
+            // This is the inverse of creating the normal ChainingOutput.
+            // If the chaining output does not copy we need to copy in the broadcast output,
+            // otherwise multi-chaining would not work correctly.
+            if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
+                return closer.register(new CopyingBroadcastingOutputCollector<>(asArray));
+            } else {
+                return closer.register(new BroadcastingOutputCollector<>(asArray));
+            }
+        }
+    }
+
+    /**
+     * Recursively create chain of operators that starts from the given {@param operatorConfig}.
+     * Operators are created tail to head and wrapped into an {@link WatermarkGaugeExposingOutput}.
+     */
+    private <IN, OUT> WatermarkGaugeExposingOutput<StreamRecord<IN>> createOperatorChain(
+            StreamTask<OUT, ?> containingTask,
+            StreamConfig operatorConfig,
+            Map<Integer, StreamConfig> chainedConfigs,
+            ClassLoader userCodeClassloader,
+            Map<StreamEdge, RecordWriterOutput<?>> streamOutputs,
+            List<StreamOperatorWrapper<?, ?>> allOperatorWrappers,
+            OutputTag<IN> outputTag,
+            MailboxExecutorFactory mailboxExecutorFactory) {
+        // create the output that the operator writes to first. this may recursively create more
+        // operators
+        WatermarkGaugeExposingOutput<StreamRecord<OUT>> chainedOperatorOutput =
+                createOutputCollector(
+                        containingTask,
+                        operatorConfig,
+                        chainedConfigs,
+                        userCodeClassloader,
+                        streamOutputs,
+                        allOperatorWrappers,
+                        mailboxExecutorFactory);
+
+        OneInputStreamOperator<IN, OUT> chainedOperator =
+                createOperator(
+                        containingTask,
+                        operatorConfig,
+                        userCodeClassloader,
+                        chainedOperatorOutput,
+                        allOperatorWrappers,
+                        false);
+
+        return wrapOperatorIntoOutput(
+                chainedOperator, containingTask, operatorConfig, userCodeClassloader, outputTag);
+    }
+
+    /**
+     * Create and return a single operator from the given {@param operatorConfig} that will be
+     * producing records to the {@param output}.
+     */
+    private <OUT, OP extends StreamOperator<OUT>> OP createOperator(
+            StreamTask<OUT, ?> containingTask,
+            StreamConfig operatorConfig,
+            ClassLoader userCodeClassloader,
+            WatermarkGaugeExposingOutput<StreamRecord<OUT>> output,
+            List<StreamOperatorWrapper<?, ?>> allOperatorWrappers,
+            boolean isHead) {
+
+        // now create the operator and give it the output collector to write its output to
+        Tuple2<OP, Optional<ProcessingTimeService>> chainedOperatorAndTimeService =
+                StreamOperatorFactoryUtil.createOperator(
+                        operatorConfig.getStreamOperatorFactory(userCodeClassloader),
+                        containingTask,
+                        operatorConfig,
+                        output,
+                        operatorEventDispatcher);
+
+        OP chainedOperator = chainedOperatorAndTimeService.f0;
+        allOperatorWrappers.add(
+                createOperatorWrapper(
+                        chainedOperator,
+                        containingTask,
+                        operatorConfig,
+                        chainedOperatorAndTimeService.f1,
+                        isHead));
+
+        chainedOperator
+                .getMetricGroup()
+                .gauge(
+                        MetricNames.IO_CURRENT_OUTPUT_WATERMARK,
+                        output.getWatermarkGauge()::getValue);
+        return chainedOperator;
+    }
+
+    private <IN, OUT> WatermarkGaugeExposingOutput<StreamRecord<IN>> wrapOperatorIntoOutput(
+            OneInputStreamOperator<IN, OUT> operator,
+            StreamTask<OUT, ?> containingTask,
+            StreamConfig operatorConfig,
+            ClassLoader userCodeClassloader,
+            OutputTag<IN> outputTag) {
+
+        WatermarkGaugeExposingOutput<StreamRecord<IN>> currentOperatorOutput;
+        if (containingTask.getExecutionConfig().isObjectReuseEnabled()) {
+            currentOperatorOutput = new ChainingOutput<>(operator, outputTag);
+        } else {
+            TypeSerializer<IN> inSerializer =
+                    operatorConfig.getTypeSerializerIn1(userCodeClassloader);
+            currentOperatorOutput = new CopyingChainingOutput<>(operator, inSerializer, outputTag);
+        }
+
+        // wrap watermark gauges since registered metrics must be unique
+        operator.getMetricGroup()
+                .gauge(
+                        MetricNames.IO_CURRENT_INPUT_WATERMARK,
+                        currentOperatorOutput.getWatermarkGauge()::getValue);
+
+        return closer.register(currentOperatorOutput);
+    }
+
+    private RecordWriterOutput<OUT> createStreamOutput(
+            RecordWriter<SerializationDelegate<StreamRecord<OUT>>> recordWriter,
+            StreamEdge edge,
+            StreamConfig upStreamConfig,
+            Environment taskEnvironment) {
+        OutputTag sideOutputTag = edge.getOutputTag(); // OutputTag, return null if not sideOutput
+
+        TypeSerializer outSerializer;
+
+        if (edge.getOutputTag() != null) {
+            // side output
+            outSerializer =
+                    upStreamConfig.getTypeSerializerSideOut(
+                            edge.getOutputTag(),
+                            taskEnvironment.getUserCodeClassLoader().asClassLoader());
+        } else {
+            // main output
+            outSerializer =
+                    upStreamConfig.getTypeSerializerOut(
+                            taskEnvironment.getUserCodeClassLoader().asClassLoader());
+        }
+
+        return closer.register(
+                new RecordWriterOutput<OUT>(
+                        recordWriter,
+                        outSerializer,
+                        sideOutputTag,
+                        edge.supportsUnalignedCheckpoints()));
+    }
+
+    /**
+     * Links operator wrappers in forward topological order.
+     *
+     * @param allOperatorWrappers is an operator wrapper list of reverse topological order
+     */
+    private StreamOperatorWrapper<?, ?> linkOperatorWrappers(
+            List<StreamOperatorWrapper<?, ?>> allOperatorWrappers) {
+        StreamOperatorWrapper<?, ?> previous = null;
+        for (StreamOperatorWrapper<?, ?> current : allOperatorWrappers) {
+            if (previous != null) {
+                previous.setPrevious(current);
+            }
+            current.setNext(previous);
+            previous = current;
+        }
+        return previous;
+    }
+
+    private <T, P extends StreamOperator<T>> StreamOperatorWrapper<T, P> createOperatorWrapper(
+            P operator,
+            StreamTask<?, ?> containingTask,
+            StreamConfig operatorConfig,
+            Optional<ProcessingTimeService> processingTimeService,
+            boolean isHead) {
+        return new StreamOperatorWrapper<>(
+                operator,
+                processingTimeService,
+                containingTask
+                        .getMailboxExecutorFactory()
+                        .createExecutor(operatorConfig.getChainIndex()),
+                isHead);
+    }
+
+    @Nullable
+    StreamOperator<?> getTailOperator() {
+        return (tailOperatorWrapper == null) ? null : tailOperatorWrapper.getStreamOperator();
+    }
+
+    /** Wrapper class to access the chained sources and their's outputs. */
+    public static class ChainedSource {
+        private final WatermarkGaugeExposingOutput<StreamRecord<?>> chainedSourceOutput;
+        private final StreamTaskSourceInput<?> sourceTaskInput;
+
+        public ChainedSource(
+                WatermarkGaugeExposingOutput<StreamRecord<?>> chainedSourceOutput,
+                StreamTaskSourceInput<?> sourceTaskInput) {
+            this.chainedSourceOutput = chainedSourceOutput;
+            this.sourceTaskInput = sourceTaskInput;
+        }
+
+        public WatermarkGaugeExposingOutput<StreamRecord<?>> getSourceOutput() {
+            return chainedSourceOutput;
+        }
+
+        public StreamTaskSourceInput<?> getSourceTaskInput() {
+            return sourceTaskInput;
+        }
+    }
 }

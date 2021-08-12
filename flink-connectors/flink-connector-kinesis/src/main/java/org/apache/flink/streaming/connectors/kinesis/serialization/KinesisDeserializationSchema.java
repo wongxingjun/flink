@@ -17,8 +17,9 @@
 
 package org.apache.flink.streaming.connectors.kinesis.serialization;
 
+import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
-import org.apache.flink.streaming.util.serialization.DeserializationSchema;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -30,28 +31,51 @@ import java.io.Serializable;
  *
  * @param <T> The type created by the keyed deserialization schema.
  */
+@PublicEvolving
 public interface KinesisDeserializationSchema<T> extends Serializable, ResultTypeQueryable<T> {
 
-	/**
-	 * Deserializes a Kinesis record's bytes
-	 *
-	 * @param recordValue the record's value as a byte array
-	 * @param partitionKey the record's partition key at the time of writing
-	 * @param seqNum the sequence number of this record in the Kinesis shard
-	 * @param approxArrivalTimestamp the server-side timestamp of when Kinesis received and stored the record
-	 * @param stream the name of the Kinesis stream that this record was sent to
-	 * @param shardId The identifier of the shard the record was sent to
-	 * @return the deserialized message as an Java object
-	 * @throws IOException
-	 */
-	T deserialize(byte[] recordValue, String partitionKey, String seqNum, long approxArrivalTimestamp, String stream, String shardId) throws IOException;
+    /**
+     * Initialization method for the schema. It is called before the actual working methods {@link
+     * #deserialize} and thus suitable for one time setup work.
+     *
+     * <p>The provided {@link DeserializationSchema.InitializationContext} can be used to access
+     * additional features such as e.g. registering user metrics.
+     *
+     * @param context Contextual information that can be used during initialization.
+     */
+    default void open(DeserializationSchema.InitializationContext context) throws Exception {}
 
-	/**
-	 * Method to decide whether the element signals the end of the stream. If
-	 * true is returned the element won't be emitted.
-	 *
-	 * @param nextElement the element to test for the end-of-stream signal
-	 * @return true if the element signals end of stream, false otherwise
-	 */
-	// TODO FLINK-4194 ADD SUPPORT FOR boolean isEndOfStream(T nextElement);
+    /**
+     * Deserializes a Kinesis record's bytes. If the record cannot be deserialized, {@code null} may
+     * be returned. This informs the Flink Kinesis Consumer to process the Kinesis record without
+     * producing any output for it, i.e. effectively "skipping" the record.
+     *
+     * @param recordValue the record's value as a byte array
+     * @param partitionKey the record's partition key at the time of writing
+     * @param seqNum the sequence number of this record in the Kinesis shard
+     * @param approxArrivalTimestamp the server-side timestamp of when Kinesis received and stored
+     *     the record
+     * @param stream the name of the Kinesis stream that this record was sent to
+     * @param shardId The identifier of the shard the record was sent to
+     * @return the deserialized message as an Java object ({@code null} if the message cannot be
+     *     deserialized).
+     * @throws IOException
+     */
+    T deserialize(
+            byte[] recordValue,
+            String partitionKey,
+            String seqNum,
+            long approxArrivalTimestamp,
+            String stream,
+            String shardId)
+            throws IOException;
+
+    /**
+     * Method to decide whether the element signals the end of the stream. If true is returned the
+     * element won't be emitted.
+     *
+     * @param nextElement the element to test for the end-of-stream signal
+     * @return true if the element signals end of stream, false otherwise
+     */
+    // TODO FLINK-4194 ADD SUPPORT FOR boolean isEndOfStream(T nextElement);
 }

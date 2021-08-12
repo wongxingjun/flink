@@ -18,70 +18,83 @@
 
 package org.apache.flink.graph.asm.simple.undirected;
 
-import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.api.java.io.DiscardingOutputFormat;
 import org.apache.flink.graph.Edge;
 import org.apache.flink.graph.Graph;
+import org.apache.flink.graph.asm.AsmTestBase;
+import org.apache.flink.graph.generator.TestUtils;
 import org.apache.flink.test.util.TestBaseUtils;
 import org.apache.flink.types.IntValue;
 import org.apache.flink.types.NullValue;
+
 import org.junit.Before;
 import org.junit.Test;
 
 import java.util.LinkedList;
 import java.util.List;
 
-public class SimplifyTest {
+/** Tests for {@link Simplify}. */
+public class SimplifyTest extends AsmTestBase {
 
-	protected Graph<IntValue,NullValue,NullValue> graph;
+    protected Graph<IntValue, NullValue, NullValue> graph;
 
-	@Before
-	public void setup() {
-		ExecutionEnvironment env = ExecutionEnvironment.createCollectionsEnvironment();
+    @Before
+    @Override
+    public void setup() throws Exception {
+        super.setup();
 
-		Object[][] edges = new Object[][]{
-			new Object[]{0, 0},
-			new Object[]{0, 1},
-			new Object[]{0, 1},
-			new Object[]{0, 2},
-			new Object[]{0, 2},
-			new Object[]{1, 0},
-			new Object[]{2, 2},
-		};
+        Object[][] edges =
+                new Object[][] {
+                    new Object[] {0, 0},
+                    new Object[] {0, 1},
+                    new Object[] {0, 1},
+                    new Object[] {0, 2},
+                    new Object[] {0, 2},
+                    new Object[] {1, 0},
+                    new Object[] {2, 2},
+                };
 
-		List<Edge<IntValue, NullValue>> edgeList = new LinkedList<>();
+        List<Edge<IntValue, NullValue>> edgeList = new LinkedList<>();
 
-		for (Object[] edge : edges) {
-			edgeList.add(new Edge<>(new IntValue((int) edge[0]), new IntValue((int) edge[1]), NullValue.getInstance()));
-		}
+        for (Object[] edge : edges) {
+            edgeList.add(
+                    new Edge<>(
+                            new IntValue((int) edge[0]),
+                            new IntValue((int) edge[1]),
+                            NullValue.getInstance()));
+        }
 
-		graph = Graph.fromCollection(edgeList, env);
-	}
+        graph = Graph.fromCollection(edgeList, env);
+    }
 
-	@Test
-	public void testWithFullFlip()
-			throws Exception {
-		String expectedResult =
-			"(0,1,(null))\n" +
-			"(0,2,(null))\n" +
-			"(1,0,(null))\n" +
-			"(2,0,(null))";
+    @Test
+    public void testWithFullFlip() throws Exception {
+        String expectedResult =
+                "(0,1,(null))\n" + "(0,2,(null))\n" + "(1,0,(null))\n" + "(2,0,(null))";
 
-		Graph<IntValue,NullValue,NullValue> simpleGraph = graph
-			.run(new Simplify<IntValue, NullValue, NullValue>(false));
+        Graph<IntValue, NullValue, NullValue> simpleGraph = graph.run(new Simplify<>(false));
 
-		TestBaseUtils.compareResultAsText(simpleGraph.getEdges().collect(), expectedResult);
-	}
+        TestBaseUtils.compareResultAsText(simpleGraph.getEdges().collect(), expectedResult);
+    }
 
-	@Test
-	public void testWithClipAndFlip()
-			throws Exception {
-		String expectedResult =
-			"(0,1,(null))\n" +
-			"(1,0,(null))";
+    @Test
+    public void testWithClipAndFlip() throws Exception {
+        String expectedResult = "(0,1,(null))\n" + "(1,0,(null))";
 
-		Graph<IntValue,NullValue,NullValue> simpleGraph = graph
-			.run(new Simplify<IntValue, NullValue, NullValue>(true));
+        Graph<IntValue, NullValue, NullValue> simpleGraph = graph.run(new Simplify<>(true));
 
-		TestBaseUtils.compareResultAsText(simpleGraph.getEdges().collect(), expectedResult);
-	}
+        TestBaseUtils.compareResultAsText(simpleGraph.getEdges().collect(), expectedResult);
+    }
+
+    @Test
+    public void testParallelism() throws Exception {
+        int parallelism = 2;
+
+        Graph<IntValue, NullValue, NullValue> simpleGraph = graph.run(new Simplify<>(true));
+
+        simpleGraph.getVertices().output(new DiscardingOutputFormat<>());
+        simpleGraph.getEdges().output(new DiscardingOutputFormat<>());
+
+        TestUtils.verifyParallelism(env, parallelism);
+    }
 }

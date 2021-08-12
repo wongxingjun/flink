@@ -20,22 +20,23 @@ package org.apache.flink.dropwizard.metrics;
 
 import org.apache.flink.metrics.Gauge;
 
+/** A wrapper that allows a Flink gauge to be used as a DropWizard gauge. */
 public class FlinkGaugeWrapper<T> implements com.codahale.metrics.Gauge<T> {
-	
-	private final Gauge<T> gauge;
 
-	public FlinkGaugeWrapper(Gauge<T> gauge) {
-		this.gauge = gauge;
-	}
+    private final Gauge<T> gauge;
 
-	@Override
-	public T getValue() {
-		return this.gauge.getValue();
-	}
+    public FlinkGaugeWrapper(Gauge<T> gauge) {
+        this.gauge = gauge;
+    }
 
-	public static <T> FlinkGaugeWrapper<T> fromGauge(Gauge<?> gauge) {
-		@SuppressWarnings("unchecked")
-		Gauge<T> typedGauge = (Gauge<T>) gauge;
-		return new FlinkGaugeWrapper<>(typedGauge);
-	}
+    @Override
+    public T getValue() {
+        return this.gauge.getValue();
+    }
+
+    public static <T> FlinkGaugeWrapper<T> fromGauge(Gauge<?> gauge) {
+        @SuppressWarnings("unchecked")
+        Gauge<T> typedGauge = (Gauge<T>) gauge;
+        return new FlinkGaugeWrapper<>(typedGauge);
+    }
 }

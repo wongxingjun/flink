@@ -18,176 +18,244 @@
 
 package org.apache.flink.core.fs;
 
+import org.apache.flink.core.testutils.CheckedThread;
+import org.apache.flink.util.AbstractCloseableRegistry;
+import org.apache.flink.util.ExceptionUtils;
+
+import org.junit.After;
 import org.junit.Assert;
-import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class SafetyNetCloseableRegistryTest {
+/** Tests for the {@link SafetyNetCloseableRegistry}. */
+public class SafetyNetCloseableRegistryTest
+        extends AbstractCloseableRegistryTest<
+                WrappingProxyCloseable<? extends Closeable>,
+                SafetyNetCloseableRegistry.PhantomDelegatingCloseableRef> {
 
-	private ProducerThread[] streamOpenThreads;
-	private SafetyNetCloseableRegistry closeableRegistry;
-	private AtomicInteger unclosedCounter;
+    @Rule public final TemporaryFolder tmpFolder = new TemporaryFolder();
 
-	@Before
-	public void setup() {
-		this.closeableRegistry = new SafetyNetCloseableRegistry();
-		this.unclosedCounter = new AtomicInteger(0);
-		this.streamOpenThreads = new ProducerThread[10];
-		for (int i = 0; i < streamOpenThreads.length; ++i) {
-			streamOpenThreads[i] = new ProducerThread(closeableRegistry, unclosedCounter, Integer.MAX_VALUE);
-		}
-	}
+    @Override
+    protected void registerCloseable(final Closeable closeable) throws IOException {
+        final WrappingProxyCloseable<Closeable> wrappingProxyCloseable =
+                new WrappingProxyCloseable<Closeable>() {
 
-	private void startThreads(int maxStreams) {
-		for (ProducerThread t : streamOpenThreads) {
-			t.setMaxStreams(maxStreams);
-			t.start();
-		}
-	}
+                    @Override
+                    public void close() throws IOException {
+                        closeable.close();
+                    }
 
-	private void joinThreads() throws InterruptedException {
-		for (Thread t : streamOpenThreads) {
-			t.join();
-		}
-	}
+                    @Override
+                    public Closeable getWrappedDelegate() {
+                        return closeable;
+                    }
+                };
+        closeableRegistry.registerCloseable(wrappingProxyCloseable);
+    }
 
-	@Test
-	public void testClose() throws Exception {
+    @Override
+    protected AbstractCloseableRegistry<
+                    WrappingProxyCloseable<? extends Closeable>,
+                    SafetyNetCloseableRegistry.PhantomDelegatingCloseableRef>
+            createRegistry() {
+        // SafetyNetCloseableRegistry has a global reaper thread to reclaim leaking resources,
+        // in normal cases, that thread will be interrupted in closing of last active registry
+        // and then shutdown in background. But in testing codes, some assertions need leaking
+        // resources reclaimed, so we override reaper thread to join itself on interrupt. Thus,
+        // after close of last active registry, we can assert post-close-invariants safely.
+        return new SafetyNetCloseableRegistry(JoinOnInterruptReaperThread::new);
+    }
 
-		startThreads(Integer.MAX_VALUE);
+    @Override
+    protected AbstractCloseableRegistryTest.ProducerThread<
+                    WrappingProxyCloseable<? extends Closeable>,
+                    SafetyNetCloseableRegistry.PhantomDelegatingCloseableRef>
+            createProducerThread(
+                    AbstractCloseableRegistry<
+                                    WrappingProxyCloseable<? extends Closeable>,
+                                    SafetyNetCloseableRegistry.PhantomDelegatingCloseableRef>
+                            registry,
+                    AtomicInteger unclosedCounter,
+                    int maxStreams) {
 
-		for (int i = 0; i < 5; ++i) {
-			System.gc();
-			Thread.sleep(40);
-		}
+        return new AbstractCloseableRegistryTest.ProducerThread<
+                WrappingProxyCloseable<? extends Closeable>,
+                SafetyNetCloseableRegistry.PhantomDelegatingCloseableRef>(
+                registry, unclosedCounter, maxStreams) {
 
-		closeableRegistry.close();
+            int count = 0;
 
-		joinThreads();
+            @Override
+            protected void createAndRegisterStream() throws IOException {
+                String debug = Thread.currentThread().getName() + " " + count;
+                TestStream testStream = new TestStream(refCount);
 
-		Assert.assertEquals(0, unclosedCounter.get());
+                // this method automatically registers the stream with the given registry.
+                @SuppressWarnings("unused")
+                ClosingFSDataInputStream pis =
+                        ClosingFSDataInputStream.wrapSafe(
+                                testStream,
+                                (SafetyNetCloseableRegistry) registry,
+                                debug); // reference dies here
+                ++count;
+            }
+        };
+    }
 
-		try {
+    @After
+    public void tearDown() {
+        Assert.assertFalse(SafetyNetCloseableRegistry.isReaperThreadRunning());
+    }
 
-			WrappingProxyCloseable<Closeable> testCloseable = new WrappingProxyCloseable<Closeable>() {
-				@Override
-				public Closeable getWrappedDelegate() {
-					return this;
-				}
+    @Test
+    public void testCorrectScopesForSafetyNet() throws Exception {
+        CheckedThread t1 =
+                new CheckedThread() {
 
-				@Override
-				public void close() throws IOException {
-					unclosedCounter.incrementAndGet();
-				}
-			};
+                    @Override
+                    public void go() throws Exception {
+                        try {
+                            FileSystem fs1 = FileSystem.getLocalFileSystem();
+                            // ensure no safety net in place
+                            Assert.assertFalse(fs1 instanceof SafetyNetWrapperFileSystem);
+                            FileSystemSafetyNet.initializeSafetyNetForThread();
+                            fs1 = FileSystem.getLocalFileSystem();
+                            // ensure safety net is in place now
+                            Assert.assertTrue(fs1 instanceof SafetyNetWrapperFileSystem);
 
-			closeableRegistry.registerClosable(testCloseable);
+                            Path tmp =
+                                    new Path(tmpFolder.newFolder().toURI().toString(), "test_file");
 
-			Assert.fail("Closed registry should not accept closeables!");
+                            try (FSDataOutputStream stream =
+                                    fs1.create(tmp, FileSystem.WriteMode.NO_OVERWRITE)) {
+                                CheckedThread t2 =
+                                        new CheckedThread() {
+                                            @Override
+                                            public void go() {
+                                                FileSystem fs2 = FileSystem.getLocalFileSystem();
+                                                // ensure the safety net does not leak here
+                                                Assert.assertFalse(
+                                                        fs2 instanceof SafetyNetWrapperFileSystem);
+                                                FileSystemSafetyNet.initializeSafetyNetForThread();
+                                                fs2 = FileSystem.getLocalFileSystem();
+                                                // ensure we can bring another safety net in place
+                                                Assert.assertTrue(
+                                                        fs2 instanceof SafetyNetWrapperFileSystem);
+                                                FileSystemSafetyNet
+                                                        .closeSafetyNetAndGuardedResourcesForThread();
+                                                fs2 = FileSystem.getLocalFileSystem();
+                                                // and that we can remove it again
+                                                Assert.assertFalse(
+                                                        fs2 instanceof SafetyNetWrapperFileSystem);
+                                            }
+                                        };
 
-		} catch (IOException expected) {
-			//expected
-		}
+                                t2.start();
+                                t2.sync();
 
-		Assert.assertEquals(1, unclosedCounter.get());
-	}
+                                // ensure stream is still open and was never closed by any
+                                // interferences
+                                stream.write(42);
+                                FileSystemSafetyNet.closeSafetyNetAndGuardedResourcesForThread();
 
-	@Test
-	public void testSafetyNetClose() throws Exception {
+                                // ensure leaking stream was closed
+                                try {
+                                    stream.write(43);
+                                    Assert.fail();
+                                } catch (IOException ignore) {
 
-		startThreads(20);
+                                }
+                                fs1 = FileSystem.getLocalFileSystem();
+                                // ensure safety net was removed
+                                Assert.assertFalse(fs1 instanceof SafetyNetWrapperFileSystem);
+                            } finally {
+                                fs1.delete(tmp, false);
+                            }
+                        } catch (Exception e) {
+                            Assert.fail(ExceptionUtils.stringifyException(e));
+                        }
+                    }
+                };
 
-		joinThreads();
+        t1.start();
+        t1.sync();
+    }
 
-		for (int i = 0; i < 5 && unclosedCounter.get() > 0; ++i) {
-			System.gc();
-			Thread.sleep(50);
-		}
+    @Test
+    public void testSafetyNetClose() throws Exception {
+        setup(20);
+        startThreads();
 
-		Assert.assertEquals(0, unclosedCounter.get());
-		closeableRegistry.close();
-	}
+        joinThreads();
 
-	private static final class ProducerThread extends Thread {
+        for (int i = 0; i < 5 && unclosedCounter.get() > 0; ++i) {
+            System.gc();
+            Thread.sleep(50);
+        }
 
-		private final SafetyNetCloseableRegistry registry;
-		private final AtomicInteger refCount;
-		private int maxStreams;
+        Assert.assertEquals(0, unclosedCounter.get());
+        closeableRegistry.close();
+    }
 
-		public ProducerThread(SafetyNetCloseableRegistry registry, AtomicInteger refCount, int maxStreams) {
-			this.registry = registry;
-			this.refCount = refCount;
-			this.maxStreams = maxStreams;
-		}
+    @Test
+    public void testReaperThreadSpawnAndStop() throws Exception {
+        Assert.assertFalse(SafetyNetCloseableRegistry.isReaperThreadRunning());
 
-		public int getMaxStreams() {
-			return maxStreams;
-		}
+        try (SafetyNetCloseableRegistry ignored = new SafetyNetCloseableRegistry()) {
+            Assert.assertTrue(SafetyNetCloseableRegistry.isReaperThreadRunning());
 
-		public void setMaxStreams(int maxStreams) {
-			this.maxStreams = maxStreams;
-		}
+            try (SafetyNetCloseableRegistry ignored2 = new SafetyNetCloseableRegistry()) {
+                Assert.assertTrue(SafetyNetCloseableRegistry.isReaperThreadRunning());
+            }
+            Assert.assertTrue(SafetyNetCloseableRegistry.isReaperThreadRunning());
+        }
+        Assert.assertFalse(SafetyNetCloseableRegistry.isReaperThreadRunning());
+    }
 
-		@Override
-		public void run() {
-			try {
-				int count = 0;
-				while (maxStreams > 0) {
-					String debug = Thread.currentThread().getName() + " " + count;
-					TestStream testStream = new TestStream(refCount);
-					refCount.incrementAndGet();
-					ClosingFSDataInputStream pis = ClosingFSDataInputStream.wrapSafe(testStream, registry, debug); //reference dies here
+    /**
+     * Test whether failure to start thread in {@link SafetyNetCloseableRegistry} constructor can
+     * lead to failure of subsequent state check.
+     */
+    @Test
+    public void testReaperThreadStartFailed() throws Exception {
 
-					try {
-						Thread.sleep(2);
-					} catch (InterruptedException e) {
+        try {
+            new SafetyNetCloseableRegistry(() -> new OutOfMemoryReaperThread());
+        } catch (java.lang.OutOfMemoryError error) {
+        }
+        Assert.assertFalse(SafetyNetCloseableRegistry.isReaperThreadRunning());
 
-					}
+        // the OOM error will not lead to failure of subsequent constructor call.
+        SafetyNetCloseableRegistry closeableRegistry = new SafetyNetCloseableRegistry();
+        Assert.assertTrue(SafetyNetCloseableRegistry.isReaperThreadRunning());
 
-					if (maxStreams != Integer.MAX_VALUE) {
-						--maxStreams;
-					}
-					++count;
-				}
-			} catch (Exception ex) {
+        closeableRegistry.close();
+    }
 
-			}
-		}
-	}
+    private static class JoinOnInterruptReaperThread
+            extends SafetyNetCloseableRegistry.CloseableReaperThread {
+        @Override
+        public void interrupt() {
+            super.interrupt();
+            try {
+                join();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
 
-	private static final class TestStream extends FSDataInputStream {
+    private static class OutOfMemoryReaperThread
+            extends SafetyNetCloseableRegistry.CloseableReaperThread {
 
-		private AtomicInteger refCount;
-
-		public TestStream(AtomicInteger refCount) {
-			this.refCount = refCount;
-		}
-
-		@Override
-		public void seek(long desired) throws IOException {
-
-		}
-
-		@Override
-		public long getPos() throws IOException {
-			return 0;
-		}
-
-		@Override
-		public int read() throws IOException {
-			return 0;
-		}
-
-		@Override
-		public void close() throws IOException {
-			if (refCount != null) {
-				refCount.decrementAndGet();
-				refCount = null;
-			}
-		}
-	}
+        @Override
+        public synchronized void start() {
+            throw new java.lang.OutOfMemoryError();
+        }
+    }
 }

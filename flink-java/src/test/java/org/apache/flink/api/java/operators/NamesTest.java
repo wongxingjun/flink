@@ -18,11 +18,6 @@
 
 package org.apache.flink.api.java.operators;
 
-import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
 import org.apache.flink.api.common.Plan;
 import org.apache.flink.api.common.functions.FilterFunction;
 import org.apache.flink.api.common.functions.FlatJoinFunction;
@@ -35,99 +30,121 @@ import org.apache.flink.api.java.operators.translation.PlanFilterOperator;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Visitor;
+
 import org.junit.Assert;
 import org.junit.Test;
 
-/**
- * Test proper automated assignment of the transformation's name, if not set by the user.
- */
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+/** Test proper automated assignment of the transformation's name, if not set by the user. */
 @SuppressWarnings("serial")
 public class NamesTest implements Serializable {
 
-	@Test
-	public void testDefaultName() {
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    @Test
+    public void testDefaultName() {
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		DataSet<String> strs = env.fromCollection(Arrays.asList("a", "b"));
+        DataSet<String> strs = env.fromCollection(Arrays.asList("a", "b"));
 
+        // WARNING: The test will fail if this line is being moved down in the file (the line-number
+        // is hard-coded)
+        strs.filter(
+                        new FilterFunction<String>() {
+                            private static final long serialVersionUID = 1L;
 
-		// WARNING: The test will fail if this line is being moved down in the file (the line-number is hard-coded)
-		strs.filter(new FilterFunction<String>() {
-			private static final long serialVersionUID = 1L;
+                            @Override
+                            public boolean filter(String value) throws Exception {
+                                return value.equals("a");
+                            }
+                        })
+                .output(new DiscardingOutputFormat<String>());
+        Plan plan = env.createProgramPlan();
+        testForName("Filter at testDefaultName(NamesTest.java:54)", plan);
+    }
 
-			@Override
-			public boolean filter(String value) throws Exception {
-				return value.equals("a");
-			}
-		}).output(new DiscardingOutputFormat<String>());
-		Plan plan = env.createProgramPlan();
-		testForName("Filter at testDefaultName(NamesTest.java:55)", plan);
-	}
+    @Test
+    public void testGivenName() {
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-	@Test
-	public void testGivenName() {
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        DataSet<String> strs = env.fromCollection(Arrays.asList("a", "b"));
+        strs.filter(
+                        new FilterFunction<String>() {
+                            private static final long serialVersionUID = 1L;
 
-		DataSet<String> strs = env.fromCollection(Arrays.asList("a", "b"));
-		strs.filter(new FilterFunction<String>() {
-			private static final long serialVersionUID = 1L;
-			@Override
-			public boolean filter(String value) throws Exception {
-				return value.equals("a");
-			}
-		}).name("GivenName").output(new DiscardingOutputFormat<String>());
-		Plan plan = env.createProgramPlan();
-		testForName("GivenName", plan);
-	}
+                            @Override
+                            public boolean filter(String value) throws Exception {
+                                return value.equals("a");
+                            }
+                        })
+                .name("GivenName")
+                .output(new DiscardingOutputFormat<String>());
+        Plan plan = env.createProgramPlan();
+        testForName("GivenName", plan);
+    }
 
-	@Test
-	public void testJoinWith() {
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    @Test
+    public void testJoinWith() {
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		List<Tuple1<String>> strLi = new ArrayList<Tuple1<String>>();
-		strLi.add(new Tuple1<String>("a"));
-		strLi.add(new Tuple1<String>("b"));
+        List<Tuple1<String>> strLi = new ArrayList<Tuple1<String>>();
+        strLi.add(new Tuple1<String>("a"));
+        strLi.add(new Tuple1<String>("b"));
 
-		DataSet<Tuple1<String>> strs = env.fromCollection(strLi);
-		DataSet<Tuple1<String>> strs1 = env.fromCollection(strLi);
-		strs.join(strs1).where(0).equalTo(0).with(new FlatJoinFunction<Tuple1<String>, Tuple1<String>, String>() {
-			@Override
-			public void join(Tuple1<String> first, Tuple1<String> second,
-							 Collector<String> out) throws Exception {
-				//
-			}
-		})
-				.output(new DiscardingOutputFormat<String>());
-		Plan plan = env.createProgramPlan();
-		plan.accept(new Visitor<Operator<?>>() {
-			@Override
-			public boolean preVisit(Operator<?> visitable) {
-				if(visitable instanceof InnerJoinOperatorBase) {
-					Assert.assertEquals("Join at testJoinWith(NamesTest.java:93)", visitable.getName());
-				}
-				return true;
-			}
-			@Override
-			public void postVisit(Operator<?> visitable) {}
-		});
-	}
+        DataSet<Tuple1<String>> strs = env.fromCollection(strLi);
+        DataSet<Tuple1<String>> strs1 = env.fromCollection(strLi);
+        strs.join(strs1)
+                .where(0)
+                .equalTo(0)
+                .with(
+                        new FlatJoinFunction<Tuple1<String>, Tuple1<String>, String>() {
+                            @Override
+                            public void join(
+                                    Tuple1<String> first,
+                                    Tuple1<String> second,
+                                    Collector<String> out)
+                                    throws Exception {
+                                //
+                            }
+                        })
+                .output(new DiscardingOutputFormat<String>());
+        Plan plan = env.createProgramPlan();
+        plan.accept(
+                new Visitor<Operator<?>>() {
+                    @Override
+                    public boolean preVisit(Operator<?> visitable) {
+                        if (visitable instanceof InnerJoinOperatorBase) {
+                            Assert.assertEquals(
+                                    "Join at testJoinWith(NamesTest.java:101)",
+                                    visitable.getName());
+                        }
+                        return true;
+                    }
 
-	private static void testForName(final String expected, Plan plan) {
-		plan.accept(new Visitor<Operator<?>>() {
-			@Override
-			public boolean preVisit(Operator<?> visitable) {
-				if(visitable instanceof PlanFilterOperator<?>) {
-					// cast is actually not required. Its just a check for the right element
-					PlanFilterOperator<?> filterOp = (PlanFilterOperator<?>) visitable;
-					Assert.assertEquals(expected, filterOp.getName());
-				}
-				return true;
-			}
+                    @Override
+                    public void postVisit(Operator<?> visitable) {}
+                });
+    }
 
-			@Override
-			public void postVisit(Operator<?> visitable) {
-				//
-			}
-		});
-	}
+    private static void testForName(final String expected, Plan plan) {
+        plan.accept(
+                new Visitor<Operator<?>>() {
+                    @Override
+                    public boolean preVisit(Operator<?> visitable) {
+                        if (visitable instanceof PlanFilterOperator<?>) {
+                            // cast is actually not required. Its just a check for the right element
+                            PlanFilterOperator<?> filterOp = (PlanFilterOperator<?>) visitable;
+                            Assert.assertEquals(expected, filterOp.getName());
+                        }
+                        return true;
+                    }
+
+                    @Override
+                    public void postVisit(Operator<?> visitable) {
+                        //
+                    }
+                });
+    }
 }

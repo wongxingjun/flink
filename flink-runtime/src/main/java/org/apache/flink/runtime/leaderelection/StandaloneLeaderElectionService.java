@@ -18,7 +18,10 @@
 
 package org.apache.flink.runtime.leaderelection;
 
+import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.util.Preconditions;
+
+import javax.annotation.Nonnull;
 
 import java.util.UUID;
 
@@ -30,34 +33,36 @@ import java.util.UUID;
  */
 public class StandaloneLeaderElectionService implements LeaderElectionService {
 
-	private LeaderContender contender = null;
+    private LeaderContender contender = null;
 
-	@Override
-	public void start(LeaderContender newContender) throws Exception {
-		if (contender != null) {
-			// Service was already started
-			throw new IllegalArgumentException("Leader election service cannot be started multiple times.");
-		}
+    @Override
+    public void start(LeaderContender newContender) throws Exception {
+        if (contender != null) {
+            // Service was already started
+            throw new IllegalArgumentException(
+                    "Leader election service cannot be started multiple times.");
+        }
 
-		contender = Preconditions.checkNotNull(newContender);
+        contender = Preconditions.checkNotNull(newContender);
 
-		// directly grant leadership to the given contender
-		contender.grantLeadership(null);
-	}
+        // directly grant leadership to the given contender
+        contender.grantLeadership(HighAvailabilityServices.DEFAULT_LEADER_ID);
+    }
 
-	@Override
-	public void stop() {
-		if (contender != null) {
-			contender.revokeLeadership();
-			contender = null;
-		}
-	}
+    @Override
+    public void stop() {
+        if (contender != null) {
+            contender.revokeLeadership();
+            contender = null;
+        }
+    }
 
-	@Override
-	public void confirmLeaderSessionID(UUID leaderSessionID) {}
+    @Override
+    public void confirmLeadership(UUID leaderSessionID, String leaderAddress) {}
 
-	@Override
-	public boolean hasLeadership() {
-		return true;
-	}
+    @Override
+    public boolean hasLeadership(@Nonnull UUID leaderSessionId) {
+        return (contender != null
+                && HighAvailabilityServices.DEFAULT_LEADER_ID.equals(leaderSessionId));
+    }
 }

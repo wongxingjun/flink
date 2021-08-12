@@ -16,25 +16,24 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.iterative.concurrent;
 
 class StringPair {
 
-	private final String first;
+    private final String first;
 
-	private final String second;
+    private final String second;
 
-	StringPair(String first, String second) {
-		this.first = first;
-		this.second = second;
-	}
+    StringPair(String first, String second) {
+        this.first = first;
+        this.second = second;
+    }
 
-	public String getFirst() {
-		return first;
-	}
+    public String getFirst() {
+        return first;
+    }
 
-	public String getSecond() {
-		return second;
-	}
+    public String getSecond() {
+        return second;
+    }
 }

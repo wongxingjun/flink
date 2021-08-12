@@ -19,139 +19,188 @@
 package org.apache.flink.runtime.state.heap;
 
 import org.apache.flink.api.common.state.ListState;
-import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.api.common.state.State;
+import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.common.typeutils.base.ListSerializer;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
-import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
-import org.apache.flink.runtime.state.KeyedStateBackend;
+import org.apache.flink.queryablestate.client.state.serialization.KvStateSerializer;
+import org.apache.flink.runtime.state.internal.InternalListState;
 import org.apache.flink.util.Preconditions;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
-import java.util.Map;
+import java.util.List;
 
 /**
- * Heap-backed partitioned {@link org.apache.flink.api.common.state.ListState} that is snapshotted
- * into files.
- * 
+ * Heap-backed partitioned {@link ListState} that is snapshotted into files.
+ *
  * @param <K> The type of the key.
  * @param <N> The type of the namespace.
  * @param <V> The type of the value.
  */
-public class HeapListState<K, N, V>
-		extends AbstractHeapState<K, N, ArrayList<V>, ListState<V>, ListStateDescriptor<V>>
-		implements ListState<V> {
+class HeapListState<K, N, V> extends AbstractHeapMergingState<K, N, V, List<V>, Iterable<V>>
+        implements InternalListState<K, N, V> {
+    /**
+     * Creates a new key/value state for the given hash map of key/value pairs.
+     *
+     * @param stateTable The state table for which this state is associated to.
+     * @param keySerializer The serializer for the keys.
+     * @param valueSerializer The serializer for the state.
+     * @param namespaceSerializer The serializer for the namespace.
+     * @param defaultValue The default value for the state.
+     */
+    private HeapListState(
+            StateTable<K, N, List<V>> stateTable,
+            TypeSerializer<K> keySerializer,
+            TypeSerializer<List<V>> valueSerializer,
+            TypeSerializer<N> namespaceSerializer,
+            List<V> defaultValue) {
+        super(stateTable, keySerializer, valueSerializer, namespaceSerializer, defaultValue);
+    }
 
-	/**
-	 * Creates a new key/value state for the given hash map of key/value pairs.
-	 *
-	 * @param backend The state backend backing that created this state.
-	 * @param stateDesc The state identifier for the state. This contains name
-	 *                           and can create a default state value.
-	 * @param stateTable The state tab;e to use in this kev/value state. May contain initial state.
-	 */
-	public HeapListState(
-			KeyedStateBackend<K> backend,
-			ListStateDescriptor<V> stateDesc,
-			StateTable<K, N, ArrayList<V>> stateTable,
-			TypeSerializer<K> keySerializer,
-			TypeSerializer<N> namespaceSerializer) {
-		super(backend, stateDesc, stateTable, keySerializer, namespaceSerializer);
-	}
+    @Override
+    public TypeSerializer<K> getKeySerializer() {
+        return keySerializer;
+    }
 
-	@Override
-	public Iterable<V> get() {
-		Preconditions.checkState(currentNamespace != null, "No namespace set.");
-		Preconditions.checkState(backend.getCurrentKey() != null, "No key set.");
+    @Override
+    public TypeSerializer<N> getNamespaceSerializer() {
+        return namespaceSerializer;
+    }
 
-		Map<N, Map<K, ArrayList<V>>> namespaceMap =
-				stateTable.get(backend.getCurrentKeyGroupIndex());
+    @Override
+    public TypeSerializer<List<V>> getValueSerializer() {
+        return valueSerializer;
+    }
 
-		if (namespaceMap == null) {
-			return null;
-		}
+    // ------------------------------------------------------------------------
+    //  state access
+    // ------------------------------------------------------------------------
 
-		Map<K, ArrayList<V>> keyedMap = namespaceMap.get(currentNamespace);
+    @Override
+    public Iterable<V> get() {
+        return getInternal();
+    }
 
-		if (keyedMap == null) {
-			return null;
-		}
+    @Override
+    public void add(V value) {
+        Preconditions.checkNotNull(value, "You cannot add null to a ListState.");
 
-		return keyedMap.get(backend.<K>getCurrentKey());
-	}
+        final N namespace = currentNamespace;
 
-	@Override
-	public void add(V value) {
-		Preconditions.checkState(currentNamespace != null, "No namespace set.");
-		Preconditions.checkState(backend.getCurrentKey() != null, "No key set.");
+        final StateTable<K, N, List<V>> map = stateTable;
+        List<V> list = map.get(namespace);
 
-		if (value == null) {
-			clear();
-			return;
-		}
+        if (list == null) {
+            list = new ArrayList<>();
+            map.put(namespace, list);
+        }
+        list.add(value);
+    }
 
-		Map<N, Map<K, ArrayList<V>>> namespaceMap =
-				stateTable.get(backend.getCurrentKeyGroupIndex());
+    @Override
+    public byte[] getSerializedValue(
+            final byte[] serializedKeyAndNamespace,
+            final TypeSerializer<K> safeKeySerializer,
+            final TypeSerializer<N> safeNamespaceSerializer,
+            final TypeSerializer<List<V>> safeValueSerializer)
+            throws Exception {
 
-		if (namespaceMap == null) {
-			namespaceMap = createNewMap();
-			stateTable.set(backend.getCurrentKeyGroupIndex(), namespaceMap);
-		}
+        Preconditions.checkNotNull(serializedKeyAndNamespace);
+        Preconditions.checkNotNull(safeKeySerializer);
+        Preconditions.checkNotNull(safeNamespaceSerializer);
+        Preconditions.checkNotNull(safeValueSerializer);
 
-		Map<K, ArrayList<V>> keyedMap = namespaceMap.get(currentNamespace);
+        Tuple2<K, N> keyAndNamespace =
+                KvStateSerializer.deserializeKeyAndNamespace(
+                        serializedKeyAndNamespace, safeKeySerializer, safeNamespaceSerializer);
 
-		if (keyedMap == null) {
-			keyedMap = createNewMap();
-			namespaceMap.put(currentNamespace, keyedMap);
-		}
+        List<V> result = stateTable.get(keyAndNamespace.f0, keyAndNamespace.f1);
 
-		ArrayList<V> list = keyedMap.get(backend.<K>getCurrentKey());
+        if (result == null) {
+            return null;
+        }
 
-		if (list == null) {
-			list = new ArrayList<>();
-			keyedMap.put(backend.<K>getCurrentKey(), list);
-		}
-		list.add(value);
-	}
-	
-	@Override
-	public byte[] getSerializedValue(K key, N namespace) throws Exception {
-		Preconditions.checkState(namespace != null, "No namespace given.");
-		Preconditions.checkState(key != null, "No key given.");
+        final TypeSerializer<V> dupSerializer =
+                ((ListSerializer<V>) safeValueSerializer).getElementSerializer();
 
-		Map<N, Map<K, ArrayList<V>>> namespaceMap =
-				stateTable.get(KeyGroupRangeAssignment.assignToKeyGroup(key, backend.getNumberOfKeyGroups()));
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputViewStreamWrapper view = new DataOutputViewStreamWrapper(baos);
 
-		if (namespaceMap == null) {
-			return null;
-		}
+        // write the same as RocksDB writes lists, with one ',' separator
+        for (int i = 0; i < result.size(); i++) {
+            dupSerializer.serialize(result.get(i), view);
+            if (i < result.size() - 1) {
+                view.writeByte(',');
+            }
+        }
+        view.flush();
 
-		Map<K, ArrayList<V>> keyedMap = namespaceMap.get(currentNamespace);
+        return baos.toByteArray();
+    }
 
-		if (keyedMap == null) {
-			return null;
-		}
+    // ------------------------------------------------------------------------
+    //  state merging
+    // ------------------------------------------------------------------------
 
-		ArrayList<V> result = keyedMap.get(key);
+    @Override
+    protected List<V> mergeState(List<V> a, List<V> b) {
+        a.addAll(b);
+        return a;
+    }
 
-		if (result == null) {
-			return null;
-		}
+    @Override
+    public void update(List<V> values) throws Exception {
+        Preconditions.checkNotNull(values, "List of values to add cannot be null.");
 
-		TypeSerializer<V> serializer = stateDesc.getSerializer();
+        if (values.isEmpty()) {
+            clear();
+            return;
+        }
 
-		ByteArrayOutputStream baos = new ByteArrayOutputStream();
-		DataOutputViewStreamWrapper view = new DataOutputViewStreamWrapper(baos);
+        List<V> newStateList = new ArrayList<>();
+        for (V v : values) {
+            Preconditions.checkNotNull(v, "You cannot add null to a ListState.");
+            newStateList.add(v);
+        }
 
-		// write the same as RocksDB writes lists, with one ',' separator
-		for (int i = 0; i < result.size(); i++) {
-			serializer.serialize(result.get(i), view);
-			if (i < result.size() -1) {
-				view.writeByte(',');
-			}
-		}
-		view.flush();
+        stateTable.put(currentNamespace, newStateList);
+    }
 
-		return baos.toByteArray();
-	}
+    @Override
+    public void addAll(List<V> values) throws Exception {
+        Preconditions.checkNotNull(values, "List of values to add cannot be null.");
+
+        if (!values.isEmpty()) {
+            stateTable.transform(
+                    currentNamespace,
+                    values,
+                    (previousState, value) -> {
+                        if (previousState == null) {
+                            previousState = new ArrayList<>();
+                        }
+                        for (V v : value) {
+                            Preconditions.checkNotNull(v, "You cannot add null to a ListState.");
+                            previousState.add(v);
+                        }
+                        return previousState;
+                    });
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static <E, K, N, SV, S extends State, IS extends S> IS create(
+            StateDescriptor<S, SV> stateDesc,
+            StateTable<K, N, SV> stateTable,
+            TypeSerializer<K> keySerializer) {
+        return (IS)
+                new HeapListState<>(
+                        (StateTable<K, N, List<E>>) stateTable,
+                        keySerializer,
+                        (TypeSerializer<List<E>>) stateTable.getStateSerializer(),
+                        stateTable.getNamespaceSerializer(),
+                        (List<E>) stateDesc.getDefaultValue());
+    }
 }

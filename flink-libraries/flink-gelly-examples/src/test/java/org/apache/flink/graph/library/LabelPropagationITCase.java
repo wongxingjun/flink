@@ -24,56 +24,58 @@ import org.apache.flink.graph.Vertex;
 import org.apache.flink.graph.examples.data.LabelPropagationData;
 import org.apache.flink.test.util.MultipleProgramsTestBase;
 import org.apache.flink.types.NullValue;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.util.List;
 
+/** Tests for {@link LabelPropagation}. */
 @RunWith(Parameterized.class)
 public class LabelPropagationITCase extends MultipleProgramsTestBase {
 
-	public LabelPropagationITCase(TestExecutionMode mode){
-		super(mode);
-	}
+    public LabelPropagationITCase(TestExecutionMode mode) {
+        super(mode);
+    }
 
     private String expectedResult;
 
-	@Test
-	public void testSingleIteration() throws Exception {
-		/*
-		 * Test one iteration of label propagation example with a simple graph
-		 */
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    @Test
+    public void testSingleIteration() throws Exception {
+        /*
+         * Test one iteration of label propagation example with a simple graph
+         */
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		Graph<Long, Long, NullValue> inputGraph = Graph.fromDataSet(
-				LabelPropagationData.getDefaultVertexSet(env),
-				LabelPropagationData.getDefaultEdgeDataSet(env), env);
+        Graph<Long, Long, NullValue> inputGraph =
+                Graph.fromDataSet(
+                        LabelPropagationData.getDefaultVertexSet(env),
+                        LabelPropagationData.getDefaultEdgeDataSet(env),
+                        env);
 
-        List<Vertex<Long, Long>> result = inputGraph
-			.run(new LabelPropagation<Long, Long, NullValue>(1))
-			.collect();
+        List<Vertex<Long, Long>> result = inputGraph.run(new LabelPropagation<>(1)).collect();
 
-		expectedResult = LabelPropagationData.LABELS_AFTER_1_ITERATION;
-		compareResultAsTuples(result, expectedResult);
-	}
+        expectedResult = LabelPropagationData.LABELS_AFTER_1_ITERATION;
+        compareResultAsTuples(result, expectedResult);
+    }
 
-	@Test
-	public void testTieBreaker() throws Exception {
-		/*
-		 * Test the label propagation example where a tie must be broken
-		 */
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    @Test
+    public void testTieBreaker() throws Exception {
+        /*
+         * Test the label propagation example where a tie must be broken
+         */
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		Graph<Long, Long, NullValue> inputGraph = Graph.fromDataSet(
-				LabelPropagationData.getTieVertexSet(env),
-				LabelPropagationData.getTieEdgeDataSet(env), env);
+        Graph<Long, Long, NullValue> inputGraph =
+                Graph.fromDataSet(
+                        LabelPropagationData.getTieVertexSet(env),
+                        LabelPropagationData.getTieEdgeDataSet(env),
+                        env);
 
-        List<Vertex<Long, Long>> result = inputGraph
-			.run(new LabelPropagation<Long, Long, NullValue>(1))
-			.collect();
+        List<Vertex<Long, Long>> result = inputGraph.run(new LabelPropagation<>(1)).collect();
 
-		expectedResult = LabelPropagationData.LABELS_WITH_TIE;
-		compareResultAsTuples(result, expectedResult);
-	}
+        expectedResult = LabelPropagationData.LABELS_WITH_TIE;
+        compareResultAsTuples(result, expectedResult);
+    }
 }

@@ -20,13 +20,15 @@ package org.apache.flink.api.scala.typeutils
 import org.apache.flink.annotation.Internal
 import org.apache.flink.api.common.typeutils.TypeSerializer
 import org.apache.flink.api.java.typeutils.runtime.TupleSerializerBase
-import org.apache.flink.core.memory.{DataOutputView, DataInputView}
+import org.apache.flink.core.memory.{DataInputView, DataOutputView}
+import org.apache.flink.types.NullFieldException
 
 /**
  * Serializer for Case Classes. Creation and access is different from
  * our Java Tuples so we have to treat them differently.
  */
 @Internal
+@SerialVersionUID(7341356073446263475L)
 abstract class CaseClassSerializer[T <: Product](
     clazz: Class[T],
     scalaFieldSerializers: Array[TypeSerializer[_]])
@@ -46,7 +48,7 @@ abstract class CaseClassSerializer[T <: Product](
     val result = super.clone().asInstanceOf[CaseClassSerializer[T]]
 
     // achieve a deep copy by duplicating the field serializers
-    result.fieldSerializers.transform(_.duplicate())
+    result.fieldSerializers = result.fieldSerializers.map(_.duplicate())
     result.fields = null
     result.instanceCreationFailed = false
 
@@ -84,20 +86,31 @@ abstract class CaseClassSerializer[T <: Product](
   }
 
   def copy(from: T): T = {
-    initArray()
-    var i = 0
-    while (i < arity) {
-      fields(i) = fieldSerializers(i).copy(from.productElement(i).asInstanceOf[AnyRef])
-      i += 1
+    if (from == null) {
+      null.asInstanceOf[T]
     }
-    createInstance(fields)
+    else {
+      initArray()
+      var i = 0
+      while (i < arity) {
+        fields(i) = fieldSerializers(i).copy(from.productElement(i).asInstanceOf[AnyRef])
+        i += 1
+      }
+      createInstance(fields)
+    }
   }
 
   def serialize(value: T, target: DataOutputView) {
     var i = 0
     while (i < arity) {
       val serializer = fieldSerializers(i).asInstanceOf[TypeSerializer[Any]]
-      serializer.serialize(value.productElement(i), target)
+      val o = value.productElement(i)
+      try
+        serializer.serialize(o, target)
+      catch {
+        case e: NullPointerException =>
+          throw new NullFieldException(i, e)
+      }
       i += 1
     }
   }

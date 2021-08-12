@@ -17,41 +17,46 @@
 
 package org.apache.flink.streaming.runtime.partitioner;
 
-import java.util.Random;
-
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.runtime.io.network.api.writer.SubtaskStateMapper;
 import org.apache.flink.runtime.plugable.SerializationDelegate;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
+import java.util.Random;
+
 /**
- * Partitioner that distributes the data equally by selecting one output channel
- * randomly.
- * 
- * @param <T>
- *            Type of the Tuple
+ * Partitioner that distributes the data equally by selecting one output channel randomly.
+ *
+ * @param <T> Type of the Tuple
  */
 @Internal
 public class ShufflePartitioner<T> extends StreamPartitioner<T> {
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private Random random = new Random();
+    private Random random = new Random();
 
-	private int[] returnArray = new int[1];
+    @Override
+    public int selectChannel(SerializationDelegate<StreamRecord<T>> record) {
+        return random.nextInt(numberOfChannels);
+    }
 
-	@Override
-	public int[] selectChannels(SerializationDelegate<StreamRecord<T>> record,
-			int numberOfOutputChannels) {
-		returnArray[0] = random.nextInt(numberOfOutputChannels);
-		return returnArray;
-	}
+    @Override
+    public SubtaskStateMapper getDownstreamSubtaskStateMapper() {
+        return SubtaskStateMapper.ROUND_ROBIN;
+    }
 
-	@Override
-	public StreamPartitioner<T> copy() {
-		return new ShufflePartitioner<T>();
-	}
+    @Override
+    public StreamPartitioner<T> copy() {
+        return new ShufflePartitioner<T>();
+    }
 
-	@Override
-	public String toString() {
-		return "SHUFFLE";
-	}
+    @Override
+    public boolean isPointwise() {
+        return false;
+    }
+
+    @Override
+    public String toString() {
+        return "SHUFFLE";
+    }
 }

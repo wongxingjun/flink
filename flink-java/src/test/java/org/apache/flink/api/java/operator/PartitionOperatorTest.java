@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.api.java.operator;
 
 import org.apache.flink.api.common.InvalidProgramException;
@@ -25,21 +26,22 @@ import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.operators.DataSource;
 import org.apache.flink.api.java.tuple.Tuple2;
+
 import org.junit.Test;
 
 import java.io.Serializable;
 
+/** Tests for partitioning. */
 public class PartitionOperatorTest {
 
+    /** Custom data type, for testing purposes. */
     public static class CustomPojo implements Serializable, Comparable<CustomPojo> {
         private Integer number;
         private String name;
 
-        public CustomPojo() {
-        }
+        public CustomPojo() {}
 
-        public CustomPojo(Integer number,
-                   String name) {
+        public CustomPojo(Integer number, String name) {
             this.number = number;
             this.name = name;
         }
@@ -66,15 +68,14 @@ public class PartitionOperatorTest {
         }
     }
 
+    /** Custom data type with nested type, for testing purposes. */
     public static class NestedPojo implements Serializable {
         private CustomPojo nested;
         private Long outer;
 
-        public NestedPojo() {
-        }
+        public NestedPojo() {}
 
-        public NestedPojo(CustomPojo nested,
-                          Long outer) {
+        public NestedPojo(CustomPojo nested, Long outer) {
             this.nested = nested;
             this.outer = outer;
         }
@@ -103,8 +104,7 @@ public class PartitionOperatorTest {
                 new Tuple2<>(3, "third"),
                 new Tuple2<>(4, "fourth"),
                 new Tuple2<>(5, "fifth"),
-                new Tuple2<>(6, "sixth")
-        );
+                new Tuple2<>(6, "sixth"));
     }
 
     private DataSet<CustomPojo> getPojoDataSet(ExecutionEnvironment env) {
@@ -114,8 +114,7 @@ public class PartitionOperatorTest {
                 new CustomPojo(3, "third"),
                 new CustomPojo(4, "fourth"),
                 new CustomPojo(5, "fifth"),
-                new CustomPojo(6, "sixth")
-        );
+                new CustomPojo(6, "sixth"));
     }
 
     private DataSet<NestedPojo> getNestedPojoDataSet(ExecutionEnvironment env) {
@@ -125,8 +124,7 @@ public class PartitionOperatorTest {
                 new NestedPojo(new CustomPojo(3, "third"), 3L),
                 new NestedPojo(new CustomPojo(4, "fourth"), 4L),
                 new NestedPojo(new CustomPojo(5, "fifth"), 5L),
-                new NestedPojo(new CustomPojo(6, "sixth"), 6L)
-        );
+                new NestedPojo(new CustomPojo(6, "sixth"), 6L));
     }
 
     @Test
@@ -229,12 +227,12 @@ public class PartitionOperatorTest {
     public void testRangePartitionWithEmptyIndicesKey() throws Exception {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-        final DataSource<Tuple2<Tuple2<Integer, Integer>, Integer>> ds = env.fromElements(
-                new Tuple2<>(new Tuple2<>(1, 1), 1),
-                new Tuple2<>(new Tuple2<>(2, 2), 2),
-                new Tuple2<>(new Tuple2<>(2, 2), 2)
-        );
-        ds.partitionByRange(new int[]{});
+        final DataSource<Tuple2<Tuple2<Integer, Integer>, Integer>> ds =
+                env.fromElements(
+                        new Tuple2<>(new Tuple2<>(1, 1), 1),
+                        new Tuple2<>(new Tuple2<>(2, 2), 2),
+                        new Tuple2<>(new Tuple2<>(2, 2), 2));
+        ds.partitionByRange(new int[] {});
     }
 
     @Test(expected = IndexOutOfBoundsException.class)
@@ -281,11 +279,11 @@ public class PartitionOperatorTest {
     public void testRangePartitionByComplexKeyWithOrders() throws Exception {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-        final DataSource<Tuple2<Tuple2<Integer, Integer>, Integer>> ds = env.fromElements(
-                new Tuple2<>(new Tuple2<>(1, 1), 1),
-                new Tuple2<>(new Tuple2<>(2, 2), 2),
-                new Tuple2<>(new Tuple2<>(2, 2), 2)
-        );
+        final DataSource<Tuple2<Tuple2<Integer, Integer>, Integer>> ds =
+                env.fromElements(
+                        new Tuple2<>(new Tuple2<>(1, 1), 1),
+                        new Tuple2<>(new Tuple2<>(2, 2), 2),
+                        new Tuple2<>(new Tuple2<>(2, 2), 2));
         ds.partitionByRange(0, 1).withOrders(Order.ASCENDING, Order.DESCENDING);
     }
 
@@ -293,11 +291,11 @@ public class PartitionOperatorTest {
     public void testRangePartitionByComplexKeyWithTooManyOrders() throws Exception {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-        final DataSource<Tuple2<Tuple2<Integer, Integer>, Integer>> ds = env.fromElements(
-                new Tuple2<>(new Tuple2<>(1, 1), 1),
-                new Tuple2<>(new Tuple2<>(2, 2), 2),
-                new Tuple2<>(new Tuple2<>(2, 2), 2)
-        );
+        final DataSource<Tuple2<Tuple2<Integer, Integer>, Integer>> ds =
+                env.fromElements(
+                        new Tuple2<>(new Tuple2<>(1, 1), 1),
+                        new Tuple2<>(new Tuple2<>(2, 2), 2),
+                        new Tuple2<>(new Tuple2<>(2, 2), 2));
         ds.partitionByRange(0).withOrders(Order.ASCENDING, Order.DESCENDING);
     }
 
@@ -306,12 +304,14 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<NestedPojo> ds = getNestedPojoDataSet(env);
-        ds.partitionByRange(new KeySelector<NestedPojo, CustomPojo>() {
-            @Override
-            public CustomPojo getKey(NestedPojo value) throws Exception {
-                return value.getNested();
-            }
-        }).withOrders(Order.ASCENDING);
+        ds.partitionByRange(
+                        new KeySelector<NestedPojo, CustomPojo>() {
+                            @Override
+                            public CustomPojo getKey(NestedPojo value) throws Exception {
+                                return value.getNested();
+                            }
+                        })
+                .withOrders(Order.ASCENDING);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -319,12 +319,14 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<NestedPojo> ds = getNestedPojoDataSet(env);
-        ds.partitionByRange(new KeySelector<NestedPojo, CustomPojo>() {
-            @Override
-            public CustomPojo getKey(NestedPojo value) throws Exception {
-                return value.getNested();
-            }
-        }).withOrders(Order.ASCENDING, Order.DESCENDING);
+        ds.partitionByRange(
+                        new KeySelector<NestedPojo, CustomPojo>() {
+                            @Override
+                            public CustomPojo getKey(NestedPojo value) throws Exception {
+                                return value.getNested();
+                            }
+                        })
+                .withOrders(Order.ASCENDING, Order.DESCENDING);
     }
 
     @Test
@@ -332,13 +334,14 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<Tuple2<Integer, String>> ds = getTupleDataSet(env);
-        ds.partitionCustom(new Partitioner<Integer>() {
-            @Override
-            public int partition(Integer key,
-                                 int numPartitions) {
-                return 1;
-            }
-        }, 0);
+        ds.partitionCustom(
+                new Partitioner<Integer>() {
+                    @Override
+                    public int partition(Integer key, int numPartitions) {
+                        return 1;
+                    }
+                },
+                0);
     }
 
     @Test(expected = InvalidProgramException.class)
@@ -346,13 +349,14 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<Tuple2<Integer, String>> ds = getTupleDataSet(env);
-        ds.partitionCustom(new Partitioner<Integer>() {
-            @Override
-            public int partition(Integer key,
-                                 int numPartitions) {
-                return 1;
-            }
-        }, 1);
+        ds.partitionCustom(
+                new Partitioner<Integer>() {
+                    @Override
+                    public int partition(Integer key, int numPartitions) {
+                        return 1;
+                    }
+                },
+                1);
     }
 
     @Test
@@ -360,13 +364,14 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<CustomPojo> ds = getPojoDataSet(env);
-        ds.partitionCustom(new Partitioner<Integer>() {
-            @Override
-            public int partition(Integer key,
-                                 int numPartitions) {
-                return 1;
-            }
-        }, "number");
+        ds.partitionCustom(
+                new Partitioner<Integer>() {
+                    @Override
+                    public int partition(Integer key, int numPartitions) {
+                        return 1;
+                    }
+                },
+                "number");
     }
 
     @Test(expected = InvalidProgramException.class)
@@ -374,13 +379,14 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<CustomPojo> ds = getPojoDataSet(env);
-        ds.partitionCustom(new Partitioner<Integer>() {
-            @Override
-            public int partition(Integer key,
-                                 int numPartitions) {
-                return 1;
-            }
-        }, "name");
+        ds.partitionCustom(
+                new Partitioner<Integer>() {
+                    @Override
+                    public int partition(Integer key, int numPartitions) {
+                        return 1;
+                    }
+                },
+                "name");
     }
 
     @Test
@@ -388,20 +394,18 @@ public class PartitionOperatorTest {
         final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
         final DataSet<CustomPojo> ds = getPojoDataSet(env);
-        ds.partitionCustom(new Partitioner<Integer>() {
-            @Override
-            public int partition(Integer key,
-                                 int numPartitions) {
-                return 1;
-            }
-        }, new KeySelector<CustomPojo, Integer>() {
-            @Override
-            public Integer getKey(CustomPojo value) throws Exception {
-                return value.getNumber();
-            }
-        });
+        ds.partitionCustom(
+                new Partitioner<Integer>() {
+                    @Override
+                    public int partition(Integer key, int numPartitions) {
+                        return 1;
+                    }
+                },
+                new KeySelector<CustomPojo, Integer>() {
+                    @Override
+                    public Integer getKey(CustomPojo value) throws Exception {
+                        return value.getNumber();
+                    }
+                });
     }
-
-
-
 }

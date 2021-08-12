@@ -18,303 +18,227 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.ByteBufAllocator;
-import io.netty.buffer.CompositeByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.util.internal.PlatformDependent;
+import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
+import org.apache.flink.shaded.netty4.io.netty.buffer.CompositeByteBuf;
+import org.apache.flink.shaded.netty4.io.netty.buffer.PooledByteBufAllocator;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.Option;
 
 import java.lang.reflect.Field;
+import java.util.Optional;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
- * Wrapper around Netty's {@link PooledByteBufAllocator} with strict control
- * over the number of created arenas.
+ * Extends around Netty's {@link PooledByteBufAllocator} with strict control over the number of
+ * created arenas.
  */
-public class NettyBufferPool implements ByteBufAllocator {
+public class NettyBufferPool extends PooledByteBufAllocator {
 
-	private static final Logger LOG = LoggerFactory.getLogger(NettyBufferPool.class);
+    private static final Logger LOG = LoggerFactory.getLogger(NettyBufferPool.class);
 
-	/** The wrapped buffer allocator. */
-	private final PooledByteBufAllocator alloc;
+    /** <tt>PoolArena&lt;ByteBuffer&gt;[]</tt> via Reflection. */
+    private final Object[] directArenas;
 
-	/** PoolArena<ByteBuffer>[] via Reflection. */
-	private final Object[] directArenas;
+    /** Configured number of arenas. */
+    private final int numberOfArenas;
 
-	/** Configured number of arenas. */
-	private final int numberOfArenas;
+    /** Configured chunk size for the arenas. */
+    private final int chunkSize;
 
-	/** Configured chunk size for the arenas. */
-	private final int chunkSize;
+    /** We strictly prefer direct buffers and disallow heap allocations. */
+    private static final boolean PREFER_DIRECT = true;
 
-	/**
-	 * Creates Netty's buffer pool with the specified number of direct arenas.
-	 *
-	 * @param numberOfArenas Number of arenas (recommended: 2 * number of task
-	 *                       slots)
-	 */
-	public NettyBufferPool(int numberOfArenas) {
-		checkArgument(numberOfArenas >= 1, "Number of arenas");
-		this.numberOfArenas = numberOfArenas;
+    /**
+     * Arenas allocate chunks of pageSize << maxOrder bytes. With these defaults, this results in
+     * chunks of 4 MB.
+     *
+     * @see #MAX_ORDER
+     */
+    private static final int PAGE_SIZE = 8192;
 
-		if (!PlatformDependent.hasUnsafe()) {
-			LOG.warn("Using direct buffers, but sun.misc.Unsafe not available.");
-		}
+    /**
+     * Arenas allocate chunks of pageSize << maxOrder bytes. With these defaults, this results in
+     * chunks of 4 MB, which is smaller than the previous default (16 MB) to further reduce the
+     * netty memory overhead. According to the test result, after introducing client side zero-copy
+     * in FLINK-10742, 4 MB is enough to support large-scale netty shuffle.
+     *
+     * @see #PAGE_SIZE
+     */
+    private static final int MAX_ORDER = 9;
 
-		// We strictly prefer direct buffers and disallow heap allocations.
-		boolean preferDirect = true;
+    /**
+     * Creates Netty's buffer pool with the specified number of direct arenas.
+     *
+     * @param numberOfArenas Number of arenas (recommended: 2 * number of task slots)
+     */
+    public NettyBufferPool(int numberOfArenas) {
+        super(
+                PREFER_DIRECT,
+                // No heap arenas, please.
+                0,
+                // Number of direct arenas. Each arena allocates a chunk of 4 MB, i.e.
+                // we allocate numDirectArenas * 4 MB of direct memory. This can grow
+                // to multiple chunks per arena during runtime, but this should only
+                // happen with a large amount of connections per task manager. We
+                // control the memory allocations with low/high watermarks when writing
+                // to the TCP channels. Chunks are allocated lazily.
+                numberOfArenas,
+                PAGE_SIZE,
+                MAX_ORDER);
 
-		// Arenas allocate chunks of pageSize << maxOrder bytes. With these
-		// defaults, this results in chunks of 16 MB.
-		int pageSize = 8192;
-		int maxOrder = 11;
+        checkArgument(numberOfArenas >= 1, "Number of arenas");
+        this.numberOfArenas = numberOfArenas;
 
-		this.chunkSize = pageSize << maxOrder;
+        // Arenas allocate chunks of pageSize << maxOrder bytes. With these
+        // defaults, this results in chunks of 4 MB.
 
-		// Number of direct arenas. Each arena allocates a chunk of 16 MB, i.e.
-		// we allocate numDirectArenas * 16 MB of direct memory. This can grow
-		// to multiple chunks per arena during runtime, but this should only
-		// happen with a large amount of connections per task manager. We
-		// control the memory allocations with low/high watermarks when writing
-		// to the TCP channels. Chunks are allocated lazily.
-		int numDirectArenas = numberOfArenas;
+        this.chunkSize = PAGE_SIZE << MAX_ORDER;
 
-		// No heap arenas, please.
-		int numHeapArenas = 0;
+        Object[] allocDirectArenas = null;
+        try {
+            Field directArenasField = PooledByteBufAllocator.class.getDeclaredField("directArenas");
+            directArenasField.setAccessible(true);
 
-		this.alloc = new PooledByteBufAllocator(
-				preferDirect,
-				numHeapArenas,
-				numDirectArenas,
-				pageSize,
-				maxOrder);
+            allocDirectArenas = (Object[]) directArenasField.get(this);
+        } catch (Exception ignored) {
+            LOG.warn("Memory statistics not available");
+        } finally {
+            this.directArenas = allocDirectArenas;
+        }
+    }
 
-		Object[] allocDirectArenas = null;
-		try {
-			Field directArenasField = alloc.getClass()
-					.getDeclaredField("directArenas");
-			directArenasField.setAccessible(true);
+    /**
+     * Returns the number of arenas.
+     *
+     * @return Number of arenas.
+     */
+    int getNumberOfArenas() {
+        return numberOfArenas;
+    }
 
-			allocDirectArenas = (Object[]) directArenasField.get(alloc);
-		} catch (Exception ignored) {
-			LOG.warn("Memory statistics not available");
-		} finally {
-			this.directArenas = allocDirectArenas;
-		}
-	}
+    /**
+     * Returns the chunk size.
+     *
+     * @return Chunk size.
+     */
+    int getChunkSize() {
+        return chunkSize;
+    }
 
-	/**
-	 * Returns the number of arenas.
-	 *
-	 * @return Number of arenas.
-	 */
-	int getNumberOfArenas() {
-		return numberOfArenas;
-	}
+    // ------------------------------------------------------------------------
+    // Direct pool arena stats via Reflection. This is not safe when upgrading
+    // Netty versions, but we are currently bound to the version we have (see
+    // commit d92e422). In newer Netty versions these statistics are exposed.
+    // ------------------------------------------------------------------------
 
-	/**
-	 * Returns the chunk size.
-	 *
-	 * @return Chunk size.
-	 */
-	int getChunkSize() {
-		return chunkSize;
-	}
+    /**
+     * Returns the number of currently allocated bytes.
+     *
+     * <p>The stats are gathered via Reflection and are mostly relevant for debugging purposes.
+     *
+     * @return Number of currently allocated bytes.
+     * @throws NoSuchFieldException Error getting the statistics (should not happen when the Netty
+     *     version stays the same).
+     * @throws IllegalAccessException Error getting the statistics (should not happen when the Netty
+     *     version stays the same).
+     */
+    public Optional<Long> getNumberOfAllocatedBytes()
+            throws NoSuchFieldException, IllegalAccessException {
 
-	// ------------------------------------------------------------------------
-	// Direct pool arena stats via Reflection. This is not safe when upgrading
-	// Netty versions, but we are currently bound to the version we have (see
-	// commit d92e422). In newer Netty versions these statistics are exposed.
-	// ------------------------------------------------------------------------
+        if (directArenas != null) {
+            long numChunks = 0;
+            for (Object arena : directArenas) {
+                numChunks += getNumberOfAllocatedChunks(arena, "qInit");
+                numChunks += getNumberOfAllocatedChunks(arena, "q000");
+                numChunks += getNumberOfAllocatedChunks(arena, "q025");
+                numChunks += getNumberOfAllocatedChunks(arena, "q050");
+                numChunks += getNumberOfAllocatedChunks(arena, "q075");
+                numChunks += getNumberOfAllocatedChunks(arena, "q100");
+            }
 
-	/**
-	 * Returns the number of currently allocated bytes.
-	 *
-	 * <p>The stats are gathered via Reflection and are mostly relevant for
-	 * debugging purposes.
-	 *
-	 * @return Number of currently allocated bytes.
-	 *
-	 * @throws NoSuchFieldException   Error getting the statistics (should not
-	 *                                happen when the Netty version stays the
-	 *                                same).
-	 * @throws IllegalAccessException Error getting the statistics (should not
-	 *                                happen when the Netty version stays the
-	 *                                same).
-	 */
-	public Option<Long> getNumberOfAllocatedBytes()
-			throws NoSuchFieldException, IllegalAccessException {
+            long allocatedBytes = numChunks * chunkSize;
+            return Optional.of(allocatedBytes);
+        } else {
+            return Optional.empty();
+        }
+    }
 
-		if (directArenas != null) {
-			long numChunks = 0;
-			for (Object arena : directArenas) {
-				numChunks += getNumberOfAllocatedChunks(arena, "qInit");
-				numChunks += getNumberOfAllocatedChunks(arena, "q000");
-				numChunks += getNumberOfAllocatedChunks(arena, "q025");
-				numChunks += getNumberOfAllocatedChunks(arena, "q050");
-				numChunks += getNumberOfAllocatedChunks(arena, "q075");
-				numChunks += getNumberOfAllocatedChunks(arena, "q100");
-			}
+    /**
+     * Returns the number of allocated bytes of the given arena and chunk list.
+     *
+     * @param arena Arena to gather statistics about.
+     * @param chunkListFieldName Chunk list to check.
+     * @return Number of total allocated bytes by this arena.
+     * @throws NoSuchFieldException Error getting the statistics (should not happen when the Netty
+     *     version stays the same).
+     * @throws IllegalAccessException Error getting the statistics (should not happen when the Netty
+     *     version stays the same).
+     */
+    private long getNumberOfAllocatedChunks(Object arena, String chunkListFieldName)
+            throws NoSuchFieldException, IllegalAccessException {
 
-			long allocatedBytes = numChunks * chunkSize;
-			return Option.apply(allocatedBytes);
-		} else {
-			return Option.empty();
-		}
-	}
+        // Each PoolArena<ByteBuffer> stores its allocated PoolChunk<ByteBuffer>
+        // instances grouped by usage (field qInit, q000, q025, etc.) in
+        // PoolChunkList<ByteBuffer> lists. Each list has zero or more
+        // PoolChunk<ByteBuffer> instances.
 
-	/**
-	 * Returns the number of allocated bytes of the given arena and chunk list.
-	 *
-	 * @param arena              Arena to gather statistics about.
-	 * @param chunkListFieldName Chunk list to check.
-	 *
-	 * @return Number of total allocated bytes by this arena.
-	 *
-	 * @throws NoSuchFieldException   Error getting the statistics (should not
-	 *                                happen when the Netty version stays the
-	 *                                same).
-	 * @throws IllegalAccessException Error getting the statistics (should not
-	 *                                happen when the Netty version stays the
-	 *                                same).
-	 */
-	private long getNumberOfAllocatedChunks(Object arena, String chunkListFieldName)
-			throws NoSuchFieldException, IllegalAccessException {
+        // Chunk list of arena
+        Field chunkListField =
+                arena.getClass().getSuperclass().getDeclaredField(chunkListFieldName);
+        chunkListField.setAccessible(true);
+        Object chunkList = chunkListField.get(arena);
 
-		// Each PoolArena<ByteBuffer> stores its allocated PoolChunk<ByteBuffer>
-		// instances grouped by usage (field qInit, q000, q025, etc.) in
-		// PoolChunkList<ByteBuffer> lists. Each list has zero or more
-		// PoolChunk<ByteBuffer> instances.
+        // Count the chunks in the list
+        Field headChunkField = chunkList.getClass().getDeclaredField("head");
+        headChunkField.setAccessible(true);
+        Object headChunk = headChunkField.get(chunkList);
 
-		// Chunk list of arena
-		Field chunkListField = arena.getClass().getSuperclass()
-				.getDeclaredField(chunkListFieldName);
-		chunkListField.setAccessible(true);
-		Object chunkList = chunkListField.get(arena);
+        if (headChunk == null) {
+            return 0;
+        } else {
+            int numChunks = 0;
 
-		// Count the chunks in the list
-		Field headChunkField = chunkList.getClass().getDeclaredField("head");
-		headChunkField.setAccessible(true);
-		Object headChunk = headChunkField.get(chunkList);
+            Object current = headChunk;
 
-		if (headChunk == null) {
-			return 0;
-		} else {
-			int numChunks = 0;
+            while (current != null) {
+                Field nextChunkField = headChunk.getClass().getDeclaredField("next");
+                nextChunkField.setAccessible(true);
+                current = nextChunkField.get(current);
+                numChunks++;
+            }
 
-			Object current = headChunk;
+            return numChunks;
+        }
+    }
 
-			while (current != null) {
-				Field nextChunkField = headChunk.getClass().getDeclaredField("next");
-				nextChunkField.setAccessible(true);
-				current = nextChunkField.get(current);
-				numChunks++;
-			}
+    // ------------------------------------------------------------------------
+    // Fakes heap buffer allocations with direct buffers currently.
+    // ------------------------------------------------------------------------
 
-			return numChunks;
-		}
-	}
+    @Override
+    public ByteBuf heapBuffer() {
+        return directBuffer();
+    }
 
-	// ------------------------------------------------------------------------
-	// Delegate calls to the allocated and prohibit heap buffer allocations
-	// ------------------------------------------------------------------------
+    @Override
+    public ByteBuf heapBuffer(int initialCapacity) {
+        return directBuffer(initialCapacity);
+    }
 
-	@Override
-	public ByteBuf buffer() {
-		return alloc.buffer();
-	}
+    @Override
+    public ByteBuf heapBuffer(int initialCapacity, int maxCapacity) {
+        return directBuffer(initialCapacity, maxCapacity);
+    }
 
-	@Override
-	public ByteBuf buffer(int initialCapacity) {
-		return alloc.buffer(initialCapacity);
-	}
+    @Override
+    public CompositeByteBuf compositeHeapBuffer() {
+        return compositeDirectBuffer();
+    }
 
-	@Override
-	public ByteBuf buffer(int initialCapacity, int maxCapacity) {
-		return alloc.buffer(initialCapacity, maxCapacity);
-	}
-
-	@Override
-	public ByteBuf ioBuffer() {
-		return alloc.ioBuffer();
-	}
-
-	@Override
-	public ByteBuf ioBuffer(int initialCapacity) {
-		return alloc.ioBuffer(initialCapacity);
-	}
-
-	@Override
-	public ByteBuf ioBuffer(int initialCapacity, int maxCapacity) {
-		return alloc.ioBuffer(initialCapacity, maxCapacity);
-	}
-
-	@Override
-	public ByteBuf heapBuffer() {
-		throw new UnsupportedOperationException("Heap buffer");
-	}
-
-	@Override
-	public ByteBuf heapBuffer(int initialCapacity) {
-		throw new UnsupportedOperationException("Heap buffer");
-	}
-
-	@Override
-	public ByteBuf heapBuffer(int initialCapacity, int maxCapacity) {
-		throw new UnsupportedOperationException("Heap buffer");
-	}
-
-	@Override
-	public ByteBuf directBuffer() {
-		return alloc.directBuffer();
-	}
-
-	@Override
-	public ByteBuf directBuffer(int initialCapacity) {
-		return alloc.directBuffer(initialCapacity);
-	}
-
-	@Override
-	public ByteBuf directBuffer(int initialCapacity, int maxCapacity) {
-		return alloc.directBuffer(initialCapacity, maxCapacity);
-	}
-
-	@Override
-	public CompositeByteBuf compositeBuffer() {
-		return alloc.compositeBuffer();
-	}
-
-	@Override
-	public CompositeByteBuf compositeBuffer(int maxNumComponents) {
-		return alloc.compositeBuffer(maxNumComponents);
-	}
-
-	@Override
-	public CompositeByteBuf compositeHeapBuffer() {
-		throw new UnsupportedOperationException("Heap buffer");
-	}
-
-	@Override
-	public CompositeByteBuf compositeHeapBuffer(int maxNumComponents) {
-		throw new UnsupportedOperationException("Heap buffer");
-	}
-
-	@Override
-	public CompositeByteBuf compositeDirectBuffer() {
-		return alloc.compositeDirectBuffer();
-	}
-
-	@Override
-	public CompositeByteBuf compositeDirectBuffer(int maxNumComponents) {
-		return alloc.compositeDirectBuffer(maxNumComponents);
-	}
-
-	@Override
-	public boolean isDirectBufferPooled() {
-		return alloc.isDirectBufferPooled();
-	}
+    @Override
+    public CompositeByteBuf compositeHeapBuffer(int maxNumComponents) {
+        return compositeDirectBuffer(maxNumComponents);
+    }
 }

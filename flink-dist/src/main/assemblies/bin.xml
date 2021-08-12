@@ -28,35 +28,80 @@ under the License.
 	<includeBaseDirectory>true</includeBaseDirectory>
 	<baseDirectory>flink-${project.version}</baseDirectory>
 
-	<!-- Include flink-python.jar in lib/ -->
 	<dependencySets>
 		<dependencySet>
 			<outputDirectory>lib</outputDirectory>
 			<unpack>false</unpack>
-			<useTransitiveDependencies>true</useTransitiveDependencies>
 			<useProjectArtifact>false</useProjectArtifact>
 			<useProjectAttachments>false</useProjectAttachments>
+			<useTransitiveDependencies>true</useTransitiveDependencies>
 			<useTransitiveFiltering>true</useTransitiveFiltering>
 
 			<includes>
-				<include>org.apache.flink:flink-python_2.10</include>
-				<include>org.slf4j:slf4j-log4j12</include>
-				<include>log4j:log4j</include>
+				<include>org.apache.logging.log4j:log4j-api</include>
+				<include>org.apache.logging.log4j:log4j-core</include>
+				<include>org.apache.logging.log4j:log4j-slf4j-impl</include>
+				<include>org.apache.logging.log4j:log4j-1.2-api</include>
 			</includes>
+		</dependencySet>
+		<dependencySet>
+			<outputDirectory>lib</outputDirectory>
+			<unpack>false</unpack>
+			<includes>
+				<include>org.apache.flink:flink-shaded-zookeeper-3:jar:${zookeeper.version}-${flink.shaded.version}</include>
+			</includes>
+			<outputFileNameMapping>flink-shaded-zookeeper-${zookeeper.version}.jar</outputFileNameMapping>
 		</dependencySet>
 	</dependencySets>
 
 	<files>
-		<!-- copy fat jar -->
+		<!-- copy flink-dist fat jar -->
 		<file>
-			<source>target/flink-dist_2.10-${project.version}.jar</source>
+			<source>target/flink-dist_${scala.binary.version}-${project.version}.jar</source>
 			<outputDirectory>lib/</outputDirectory>
 			<fileMode>0644</fileMode>
 		</file>
 
+		<!-- copy bash utils -->
+		<file>
+			<source>target/bash-java-utils.jar</source>
+			<outputDirectory>bin/</outputDirectory>
+			<fileMode>0644</fileMode>
+		</file>
+
+		<!-- Table/SQL Uber JAR -->
+		<file>
+			<source>../flink-table/flink-table-uber/target/flink-table-uber_${scala.binary.version}-${project.version}.jar</source>
+			<outputDirectory>lib/</outputDirectory>
+			<destName>flink-table_${scala.binary.version}-${project.version}.jar</destName>
+			<fileMode>0644</fileMode>
+		</file>
+
+		<!-- Built-in formats -->
+		<file>
+			<source>../flink-formats/flink-csv/target/flink-csv-${project.version}.jar</source>
+			<outputDirectory>lib/</outputDirectory>
+			<destName>flink-csv-${project.version}.jar</destName>
+			<fileMode>0644</fileMode>
+		</file>
+
+		<file>
+			<source>../flink-formats/flink-json/target/flink-json-${project.version}.jar</source>
+			<outputDirectory>lib/</outputDirectory>
+			<destName>flink-json-${project.version}.jar</destName>
+			<fileMode>0644</fileMode>
+		</file>
+
+		<!-- copy the config file -->
 		<file>
 			<source>src/main/resources/flink-conf.yaml</source>
 			<outputDirectory>conf</outputDirectory>
+			<fileMode>0644</fileMode>
+		</file>
+
+		<file>
+			<source>../LICENSE</source>
+			<outputDirectory/>
 			<fileMode>0644</fileMode>
 		</file>
 	</files>
@@ -68,12 +113,26 @@ under the License.
 			<outputDirectory>bin</outputDirectory>
 			<fileMode>0755</fileMode>
 		</fileSet>
-		
-		<!-- flink scala shell-->
+
+		<!-- copy plugins directory -->
 		<fileSet>
-			<directory>../flink-scala-shell/start-script/</directory>
+			<directory>src/main/flink-bin/plugins</directory>
+			<outputDirectory>plugins</outputDirectory>
+			<fileMode>0755</fileMode>
+		</fileSet>
+
+		<!-- copy python scripts -->
+		<fileSet>
+			<directory>../flink-python/bin/</directory>
 			<outputDirectory>bin</outputDirectory>
-			<fileMode>755</fileMode>
+			<fileMode>0755</fileMode>
+		</fileSet>
+
+		<!-- copy SQL client -->
+		<fileSet>
+			<directory>../flink-table/flink-sql-client/bin/</directory>
+			<outputDirectory>bin</outputDirectory>
+			<fileMode>0755</fileMode>
 		</fileSet>
 
 		<!-- copy yarn start scripts -->
@@ -82,13 +141,14 @@ under the License.
 			<outputDirectory>bin</outputDirectory>
 			<fileMode>0755</fileMode>
 		</fileSet>
-		<!-- copy Mesos start scripts -->
+
+		<!-- copy kubernetes start scripts -->
 		<fileSet>
-			<directory>src/main/flink-bin/mesos-bin</directory>
+			<directory>src/main/flink-bin/kubernetes-bin</directory>
 			<outputDirectory>bin</outputDirectory>
 			<fileMode>0755</fileMode>
 		</fileSet>
-		
+
 		<!-- copy default configuration -->
 		<fileSet>
 			<directory>src/main/flink-bin/conf</directory>
@@ -113,17 +173,6 @@ under the License.
 			<fileMode>0644</fileMode>
 			<includes>
 				<include>*.txt</include>
-			</includes>
-		</fileSet>
-
-		<!-- copy LICENSE/NOTICE files -->
-		<fileSet>
-			<directory>../</directory>
-			<outputDirectory/>
-			<fileMode>0644</fileMode>
-			<includes>
-				<include>LICENSE*</include>
-				<include>NOTICE*</include>
 			</includes>
 		</fileSet>
 
@@ -170,15 +219,65 @@ under the License.
 			<excludes>
 				<exclude>flink-examples-streaming*.jar</exclude>
 				<exclude>original-*.jar</exclude>
+				<exclude>MatrixVectorMul.jar</exclude>
 			</excludes>
 		</fileSet>
 
-		<!-- copy python package -->
+		<!-- copy jar files of the streaming examples -->
 		<fileSet>
-			<directory>../flink-libraries/flink-python/src/main/python/org/apache/flink/python/api</directory>
-			<outputDirectory>resources/python</outputDirectory>
+			<directory>../flink-examples/flink-examples-build-helper/flink-examples-streaming-twitter/target</directory>
+			<outputDirectory>examples/streaming</outputDirectory>
+			<fileMode>0644</fileMode>
+			<includes>
+				<include>*.jar</include>
+			</includes>
+			<excludes>
+				<exclude>original-*.jar</exclude>
+			</excludes>
+		</fileSet>
+		<fileSet>
+			<directory>../flink-examples/flink-examples-build-helper/flink-examples-streaming-state-machine/target</directory>
+			<outputDirectory>examples/streaming</outputDirectory>
+			<fileMode>0644</fileMode>
+			<includes>
+				<include>*.jar</include>
+			</includes>
+			<excludes>
+				<exclude>original-*.jar</exclude>
+			</excludes>
+		</fileSet>
+
+		<!-- copy jar files of the gelly examples -->
+		<fileSet>
+			<directory>../flink-libraries/flink-gelly-examples/target</directory>
+			<outputDirectory>examples/gelly</outputDirectory>
+			<fileMode>0644</fileMode>
+			<includes>
+				<include>flink-gelly-examples_${scala.binary.version}-${project.version}.jar</include>
+			</includes>
+		</fileSet>
+
+		<!-- copy python table example to examples of dist -->
+		<fileSet>
+			<directory>../flink-python/pyflink/table/examples</directory>
+			<outputDirectory>examples/python/table</outputDirectory>
 			<fileMode>0755</fileMode>
 		</fileSet>
+
+		<!-- copy jar file of the table examples -->
+		<fileSet>
+			<directory>../flink-examples/flink-examples-table/target</directory>
+			<outputDirectory>examples/table</outputDirectory>
+			<fileMode>0644</fileMode>
+			<includes>
+				<include>*.jar</include>
+			</includes>
+			<excludes>
+				<exclude>flink-*.jar</exclude>
+				<exclude>original-*.jar</exclude>
+			</excludes>
+		</fileSet>
+
 	</fileSets>
 
 </assembly>

@@ -19,88 +19,104 @@
 package org.apache.flink.graph.test;
 
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.graph.Edge;
 import org.apache.flink.graph.Graph;
 import org.apache.flink.graph.Vertex;
+import org.apache.flink.graph.asm.translate.Translate;
+import org.apache.flink.graph.asm.translate.translators.LongToLongValue;
 import org.apache.flink.graph.examples.data.ConnectedComponentsDefaultData;
 import org.apache.flink.graph.examples.data.SingleSourceShortestPathsData;
 import org.apache.flink.graph.library.GSAConnectedComponents;
 import org.apache.flink.graph.library.GSASingleSourceShortestPaths;
+import org.apache.flink.graph.utils.GraphUtils.IdentityMapper;
 import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.types.LongValue;
 import org.apache.flink.types.NullValue;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.util.List;
 
+/** Tests for gather-sum-apply. */
 @RunWith(Parameterized.class)
 public class GatherSumApplyITCase extends MultipleProgramsTestBase {
 
-	public GatherSumApplyITCase(TestExecutionMode mode){
-		super(mode);
-	}
+    public GatherSumApplyITCase(TestExecutionMode mode) {
+        super(mode);
+    }
 
-	private String expectedResult;
+    // --------------------------------------------------------------------------------------------
+    //  Connected Components Test
+    // --------------------------------------------------------------------------------------------
 
-	// --------------------------------------------------------------------------------------------
-	//  Connected Components Test
-	// --------------------------------------------------------------------------------------------
+    private String expectedResultCC = "1,1\n" + "2,1\n" + "3,1\n" + "4,1\n";
 
-	@Test
-	public void testConnectedComponents() throws Exception {
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    @Test
+    public void testConnectedComponentsWithObjectReuseDisabled() throws Exception {
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.getConfig().disableObjectReuse();
 
-		Graph<Long, Long, NullValue> inputGraph = Graph.fromDataSet(
-				ConnectedComponentsDefaultData.getDefaultEdgeDataSet(env),
-				new InitMapperCC(), env);
+        Graph<Long, Long, NullValue> inputGraph =
+                Graph.fromDataSet(
+                        ConnectedComponentsDefaultData.getDefaultEdgeDataSet(env),
+                        new IdentityMapper<>(),
+                        env);
 
-        List<Vertex<Long, Long>> result = inputGraph.run(
-        		new GSAConnectedComponents<Long, Long, NullValue>(16)).collect();
+        List<Vertex<Long, Long>> result =
+                inputGraph.run(new GSAConnectedComponents<>(16)).collect();
 
-		expectedResult = "1,1\n" +
-				"2,1\n" +
-				"3,1\n" +
-				"4,1\n";
+        compareResultAsTuples(result, expectedResultCC);
+    }
 
-		compareResultAsTuples(result, expectedResult);
-	}
+    @Test
+    public void testConnectedComponentsWithObjectReuseEnabled() throws Exception {
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.getConfig().enableObjectReuse();
 
-	// --------------------------------------------------------------------------------------------
-	//  Single Source Shortest Path Test
-	// --------------------------------------------------------------------------------------------
+        DataSet<Edge<LongValue, NullValue>> edges =
+                Translate.translateEdgeIds(
+                        ConnectedComponentsDefaultData.getDefaultEdgeDataSet(env),
+                        new LongToLongValue());
 
-	@Test
-	public void testSingleSourceShortestPaths() throws Exception {
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        Graph<LongValue, LongValue, NullValue> inputGraph =
+                Graph.fromDataSet(edges, new IdentityMapper<>(), env);
 
-		Graph<Long, NullValue, Double> inputGraph = Graph.fromDataSet(
-				SingleSourceShortestPathsData.getDefaultEdgeDataSet(env),
-				new InitMapperSSSP(), env);
+        List<Vertex<LongValue, LongValue>> result =
+                inputGraph.run(new GSAConnectedComponents<>(16)).collect();
 
-        List<Vertex<Long, Double>> result = inputGraph.run(
-				new GSASingleSourceShortestPaths<Long, NullValue>(1L, 16)).collect();
+        compareResultAsTuples(result, expectedResultCC);
+    }
 
-		expectedResult = "1,0.0\n" +
-				"2,12.0\n" +
-				"3,13.0\n" +
-				"4,47.0\n" +
-				"5,48.0\n";
+    // --------------------------------------------------------------------------------------------
+    //  Single Source Shortest Path Test
+    // --------------------------------------------------------------------------------------------
 
-		compareResultAsTuples(result, expectedResult);
-	}
+    @Test
+    public void testSingleSourceShortestPaths() throws Exception {
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-	@SuppressWarnings("serial")
-	private static final class InitMapperCC implements MapFunction<Long, Long> {
-		public Long map(Long value) {
-			return value;
-		}
-	}
+        Graph<Long, NullValue, Double> inputGraph =
+                Graph.fromDataSet(
+                        SingleSourceShortestPathsData.getDefaultEdgeDataSet(env),
+                        new InitMapperSSSP(),
+                        env);
 
-	@SuppressWarnings("serial")
-	private static final class InitMapperSSSP implements MapFunction<Long, NullValue> {
-		public NullValue map(Long value) {
-			return NullValue.getInstance();
-		}
-	}
+        List<Vertex<Long, Double>> result =
+                inputGraph.run(new GSASingleSourceShortestPaths<>(1L, 16)).collect();
+
+        String expectedResult = "1,0.0\n" + "2,12.0\n" + "3,13.0\n" + "4,47.0\n" + "5,48.0\n";
+
+        compareResultAsTuples(result, expectedResult);
+    }
+
+    @SuppressWarnings("serial")
+    private static final class InitMapperSSSP implements MapFunction<Long, NullValue> {
+        public NullValue map(Long value) {
+            return NullValue.getInstance();
+        }
+    }
 }

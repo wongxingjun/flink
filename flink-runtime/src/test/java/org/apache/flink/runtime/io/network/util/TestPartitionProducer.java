@@ -18,11 +18,10 @@
 
 package org.apache.flink.runtime.io.network.util;
 
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
-import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.partition.ResultPartition;
-import org.apache.flink.runtime.io.network.partition.consumer.BufferOrEvent;
+import org.apache.flink.runtime.io.network.partition.BufferWritingResultPartition;
+import org.apache.flink.runtime.io.network.util.TestProducerSource.BufferAndChannel;
 
+import java.nio.ByteBuffer;
 import java.util.Random;
 import java.util.concurrent.Callable;
 
@@ -31,83 +30,71 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * A test partition producer.
  *
- * <p> The behaviour of the producer is customizable by specifying a source.
+ * <p>The behaviour of the producer is customizable by specifying a source.
  *
  * @see TestProducerSource
  */
 public class TestPartitionProducer implements Callable<Boolean> {
 
-	public static final int MAX_SLEEP_TIME_MS = 20;
+    public static final int MAX_SLEEP_TIME_MS = 20;
 
-	/** The partition to add data to. */
-	private final ResultPartition partition;
+    /** The partition to add data to. */
+    private final BufferWritingResultPartition partition;
 
-	/**
-	 * Flag indicating whether the consumer is slow. If true, the consumer will sleep a random
-	 * number of milliseconds between adding data.
-	 */
-	private final boolean isSlowProducer;
+    /**
+     * Flag indicating whether the consumer is slow. If true, the consumer will sleep a random
+     * number of milliseconds between adding data.
+     */
+    private final boolean isSlowProducer;
 
-	/** The source data. */
-	private final TestProducerSource source;
+    /** The source data. */
+    private final TestProducerSource source;
 
-	/** Random source for sleeps. */
-	private final Random random;
+    /** Random source for sleeps. */
+    private final Random random;
 
-	public TestPartitionProducer(
-			ResultPartition partition,
-			boolean isSlowProducer,
-			TestProducerSource source) {
+    public TestPartitionProducer(
+            BufferWritingResultPartition partition,
+            boolean isSlowProducer,
+            TestProducerSource source) {
 
-		this.partition = checkNotNull(partition);
-		this.isSlowProducer = isSlowProducer;
-		this.random = isSlowProducer ? new Random() : null;
-		this.source = checkNotNull(source);
-	}
+        this.partition = checkNotNull(partition);
+        this.isSlowProducer = isSlowProducer;
+        this.random = isSlowProducer ? new Random() : null;
+        this.source = checkNotNull(source);
+    }
 
-	@Override
-	public Boolean call() throws Exception {
+    @Override
+    public Boolean call() throws Exception {
 
-		boolean success = false;
+        boolean success = false;
 
-		try {
-			BufferOrEvent bufferOrEvent;
+        try {
+            BufferAndChannel bufferAndChannel;
 
-			while ((bufferOrEvent = source.getNextBufferOrEvent()) != null) {
-				int targetChannelIndex = bufferOrEvent.getChannelIndex();
+            while ((bufferAndChannel = source.getNextBuffer()) != null) {
+                ByteBuffer record = ByteBuffer.wrap(bufferAndChannel.getBuffer());
+                partition.emitRecord(record, bufferAndChannel.getTargetChannel());
 
-				if (bufferOrEvent.isBuffer()) {
-					partition.add(bufferOrEvent.getBuffer(), targetChannelIndex);
-				}
-				else if (bufferOrEvent.isEvent()) {
-					final Buffer buffer = EventSerializer.toBuffer(bufferOrEvent.getEvent());
+                // Check for interrupted flag after adding data to prevent resource leaks
+                if (Thread.interrupted()) {
+                    throw new InterruptedException();
+                }
 
-					partition.add(buffer, targetChannelIndex);
-				}
-				else {
-					throw new IllegalStateException("BufferOrEvent instance w/o buffer nor event.");
-				}
+                if (isSlowProducer) {
+                    Thread.sleep(random.nextInt(MAX_SLEEP_TIME_MS + 1));
+                }
+            }
 
-				// Check for interrupted flag after adding data to prevent resource leaks
-				if (Thread.interrupted()) {
-					throw new InterruptedException();
-				}
+            partition.finish();
 
-				if (isSlowProducer) {
-					Thread.sleep(random.nextInt(MAX_SLEEP_TIME_MS + 1));
-				}
-			}
+            success = true;
 
-			partition.finish();
-
-			success = true;
-
-			return true;
-		}
-		finally {
-			if (!success) {
-				partition.release();
-			}
-		}
-	}
+            return true;
+        } finally {
+            if (!success) {
+                partition.release();
+            }
+        }
+    }
 }

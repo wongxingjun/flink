@@ -24,15 +24,20 @@ under the License.
 
 	<parent>
 		<groupId>org.apache.flink</groupId>
-		<artifactId>flink-examples_2.10</artifactId>
-		<version>1.3-SNAPSHOT</version>
+		<artifactId>flink-examples</artifactId>
+		<version>1.14-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
-	<artifactId>flink-examples-streaming_2.10</artifactId>
-	<name>flink-examples-streaming</name>
+	<artifactId>flink-examples-streaming_${scala.binary.version}</artifactId>
+	<name>Flink : Examples : Streaming</name>
 
 	<packaging>jar</packaging>
+
+	<!-- Allow users to pass custom jcuda versions -->
+	<properties>
+		<jcuda.version>10.0.0</jcuda.version>
+	</properties>
 
 	<dependencies>
 
@@ -40,52 +45,89 @@ under the License.
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-java_2.10</artifactId>
+			<artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-scala_2.10</artifactId>
+			<artifactId>flink-streaming-scala_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-examples-batch_2.10</artifactId>
+			<artifactId>flink-clients_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-connector-twitter_2.10</artifactId>
+			<artifactId>flink-connector-twitter_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-connector-kafka-0.8_2.10</artifactId>
+			<artifactId>flink-connector-kafka_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-jackson</artifactId>
 		</dependency>
 
 		<!-- test dependencies -->
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-test-utils_2.10</artifactId>
+			<artifactId>flink-test-utils_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 		</dependency>
+
+        <dependency>
+            <groupId>org.apache.flink</groupId>
+            <artifactId>flink-statebackend-rocksdb_${scala.binary.version}</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-java_2.10</artifactId>
+			<artifactId>flink-statebackend-changelog</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
-			<type>test-jar</type>
 		</dependency>
 
-	</dependencies>
+		<!-- Dependencies for MatrixVectorMul. We exclude native libraries
+		because it is not available in all the operating systems and architectures. Moreover,
+		we also want to enable users to compile and run MatrixVectorMul in different runtime environments.-->
+		<dependency>
+			<groupId>org.jcuda</groupId>
+			<artifactId>jcuda</artifactId>
+			<version>${jcuda.version}</version>
+			<exclusions>
+				<exclusion>
+					<groupId>org.jcuda</groupId>
+					<artifactId>jcuda-natives</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+
+		<dependency>
+			<groupId>org.jcuda</groupId>
+			<artifactId>jcublas</artifactId>
+			<version>${jcuda.version}</version>
+			<exclusions>
+				<exclusion>
+					<groupId>org.jcuda</groupId>
+					<artifactId>jcublas-natives</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
+
+    </dependencies>
 
 	<build>
 		<plugins>
@@ -103,7 +145,6 @@ under the License.
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-dependency-plugin</artifactId>
-				<version>2.9</version><!--$NO-MVN-MAN-VER$-->
 				<executions>
 					<execution>
 						<id>unpack</id>
@@ -116,17 +157,17 @@ under the License.
 								<!-- For WordCount example data -->
 								<artifactItem>
 									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-examples-batch_2.10</artifactId>
+									<artifactId>flink-examples-batch_${scala.binary.version}</artifactId>
 									<version>${project.version}</version>
 									<type>jar</type>
 									<overWrite>false</overWrite>
 									<outputDirectory>${project.build.directory}/classes</outputDirectory>
-									<includes>org/apache/flink/examples/java/wordcount/util/WordCountData.class</includes>
+									<includes>org/apache/flink/streaming/examples/wordcount/util/WordCountData.class</includes>
 								</artifactItem>
 								<!-- For JSON utilities -->
 								<artifactItem>
 									<groupId>org.apache.flink</groupId>
-									<artifactId>flink-connector-twitter_2.10</artifactId>
+									<artifactId>flink-connector-twitter_${scala.binary.version}</artifactId>
 									<version>${project.version}</version>
 									<type>jar</type>
 									<overWrite>false</overWrite>
@@ -172,28 +213,8 @@ under the License.
 
 							<includes>
 								<include>org/apache/flink/streaming/examples/iteration/*.class</include>
-							</includes>
-						</configuration>
-					</execution>
-
-					<!-- IncrementalLearning -->
-					<execution>
-						<id>IncrementalLearning</id>
-						<phase>package</phase>
-						<goals>
-							<goal>jar</goal>
-						</goals>
-						<configuration>
-							<classifier>IncrementalLearning</classifier>
-
-							<archive>
-								<manifestEntries>
-									<program-class>org.apache.flink.streaming.examples.ml.IncrementalLearningSkeleton</program-class>
-								</manifestEntries>
-							</archive>
-
-							<includes>
-								<include>org/apache/flink/streaming/examples/ml/*.class</include>			
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -217,6 +238,8 @@ under the License.
 							<includes>
 								<include>org/apache/flink/streaming/examples/join/*.class</include>
 								<include>org/apache/flink/streaming/examples/utils/ThrottledIterator.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -239,6 +262,8 @@ under the License.
 
 							<includes>
 								<include>org/apache/flink/streaming/examples/async/*.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -262,7 +287,9 @@ under the License.
 							<includes>
 								<include>org/apache/flink/streaming/examples/wordcount/PojoExample.class</include>
 								<include>org/apache/flink/streaming/examples/wordcount/PojoExample$*.class</include>
-								<include>org/apache/flink/examples/java/wordcount/util/WordCountData.class</include>
+								<include>org/apache/flink/streaming/examples/wordcount/util/WordCountData.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -286,7 +313,9 @@ under the License.
 							<includes>
 								<include>org/apache/flink/streaming/examples/wordcount/WordCount.class</include>
 								<include>org/apache/flink/streaming/examples/wordcount/WordCount$*.class</include>
-								<include>org/apache/flink/examples/java/wordcount/util/WordCountData.class</include>				
+								<include>org/apache/flink/streaming/examples/wordcount/util/WordCountData.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -310,6 +339,8 @@ under the License.
 							<includes>
 								<include>org/apache/flink/streaming/examples/socket/SocketWindowWordCount.class</include>
 								<include>org/apache/flink/streaming/examples/socket/SocketWindowWordCount$*.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -333,6 +364,8 @@ under the License.
 							<includes>
 								<include>org/apache/flink/streaming/examples/windowing/TopSpeedWindowing.class</include>
 								<include>org/apache/flink/streaming/examples/windowing/TopSpeedWindowing$*.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -356,6 +389,8 @@ under the License.
 							<includes>
 								<include>org/apache/flink/streaming/examples/windowing/SessionWindowing.class</include>
 								<include>org/apache/flink/streaming/examples/windowing/SessionWindowing$*.class</include>
+								<include>META-INF/LICENSE</include>
+								<include>META-INF/NOTICE</include>
 							</includes>
 						</configuration>
 					</execution>
@@ -363,12 +398,47 @@ under the License.
 				</executions>
 			</plugin>
 
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-shade-plugin</artifactId>
+				<executions>
+					<execution>
+						<id>MatrixVectorMul</id>
+						<phase>package</phase>
+						<goals>
+							<goal>shade</goal>
+						</goals>
+						<configuration>
+							<shadeTestJar>false</shadeTestJar>
+							<finalName>MatrixVectorMul</finalName>
+							<artifactSet>
+								<includes>
+									<include>org.jcuda:*</include>
+								</includes>
+							</artifactSet>
+							<filters>
+								<filter>
+									<artifact>org.apache.flink:*</artifact>
+									<includes>
+										<include>org/apache/flink/streaming/examples/gpu/MatrixVectorMul.class</include>
+										<include>org/apache/flink/streaming/examples/gpu/MatrixVectorMul$*.class</include>
+									</includes>
+								</filter>
+							</filters>
+							<transformers>
+								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+									<mainClass>org.apache.flink.streaming.examples.gpu.MatrixVectorMul</mainClass>
+								</transformer>
+							</transformers>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
 
 			<!-- Scala Compiler -->
 			<plugin>
 				<groupId>net.alchim31.maven</groupId>
 				<artifactId>scala-maven-plugin</artifactId>
-				<version>3.1.4</version>
 				<executions>
 					<!-- Run scala compiler in the process-resources phase, so that dependencies on
 						scala classes can be resolved later in the (Java) compile phase -->
@@ -431,7 +501,6 @@ under the License.
 			<plugin>
 				<groupId>org.codehaus.mojo</groupId>
 				<artifactId>build-helper-maven-plugin</artifactId>
-				<version>1.7</version>
 				<executions>
 					<!-- Add src/main/scala to eclipse build path -->
 					<execution>
@@ -466,135 +535,23 @@ under the License.
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-antrun-plugin</artifactId>
-				<version>1.7</version>
 				<executions>
 					<execution>
 						<id>rename</id>
-						<phase>package</phase>
-						<goals>
-							<goal>run</goal>
-						</goals>
 						<configuration>
 							<target>
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-IncrementalLearning.jar" tofile="${project.basedir}/target/IncrementalLearning.jar" />
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-Iteration.jar" tofile="${project.basedir}/target/Iteration.jar" />
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-SessionWindowing.jar" tofile="${project.basedir}/target/SessionWindowing.jar" />
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-TopSpeedWindowing.jar" tofile="${project.basedir}/target/TopSpeedWindowing.jar" />
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-WindowJoin.jar" tofile="${project.basedir}/target/WindowJoin.jar" />
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-WordCount.jar" tofile="${project.basedir}/target/WordCount.jar" />
-								<copy file="${project.basedir}/target/flink-examples-streaming_2.10-${project.version}-SocketWindowWordCount.jar" tofile="${project.basedir}/target/SocketWindowWordCount.jar" />
+								<copy file="${project.basedir}/target/flink-examples-streaming_${scala.binary.version}-${project.version}-Iteration.jar" tofile="${project.basedir}/target/Iteration.jar" />
+								<copy file="${project.basedir}/target/flink-examples-streaming_${scala.binary.version}-${project.version}-SessionWindowing.jar" tofile="${project.basedir}/target/SessionWindowing.jar" />
+								<copy file="${project.basedir}/target/flink-examples-streaming_${scala.binary.version}-${project.version}-TopSpeedWindowing.jar" tofile="${project.basedir}/target/TopSpeedWindowing.jar" />
+								<copy file="${project.basedir}/target/flink-examples-streaming_${scala.binary.version}-${project.version}-WindowJoin.jar" tofile="${project.basedir}/target/WindowJoin.jar" />
+								<copy file="${project.basedir}/target/flink-examples-streaming_${scala.binary.version}-${project.version}-WordCount.jar" tofile="${project.basedir}/target/WordCount.jar" />
+								<copy file="${project.basedir}/target/flink-examples-streaming_${scala.binary.version}-${project.version}-SocketWindowWordCount.jar" tofile="${project.basedir}/target/SocketWindowWordCount.jar" />
 							</target>
 						</configuration>
 					</execution>
 				</executions>
 			</plugin>
-
-			<!-- Use the shade plugin to build a fat jar for the kafka example -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-shade-plugin</artifactId>
-				<executions>
-					<execution>
-						<id>fat-jar-kafka-example</id>
-						<phase>package</phase>
-						<goals>
-							<goal>shade</goal>
-						</goals>
-						<configuration>
-							<shadeTestJar>false</shadeTestJar>
-							<shadedArtifactAttached>false</shadedArtifactAttached>
-							<createDependencyReducedPom>false</createDependencyReducedPom>
-							<transformers>
-								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-									<mainClass>org.apache.flink.streaming.examples.kafka.ReadFromKafka</mainClass>
-								</transformer>
-							</transformers>
-							<finalName>Kafka</finalName>
-							<!--- <outputFile>Kafka.jar</outputFile> -->
-							<filters>
-								<filter>
-									<artifact>*</artifact>
-									<includes>
-										<include>org/apache/flink/streaming/examples/kafka/**</include>
-										<include>org/apache/flink/streaming/**</include>
-										<include>org/apache/kafka/**</include>
-										<include>org/apache/curator/**</include>
-										<include>org/apache/zookeeper/**</include>
-										<include>org/apache/jute/**</include>
-										<include>org/I0Itec/**</include>
-										<include>jline/**</include>
-										<include>com/yammer/**</include>
-										<include>kafka/**</include>
-									</includes>
-								</filter>
-							</filters>
-						</configuration>
-					</execution>
-					<execution>
-						<id>fat-jar-twitter-example</id>
-						<phase>package</phase>
-						<goals>
-							<goal>shade</goal>
-						</goals>
-						<configuration>
-							<shadeTestJar>false</shadeTestJar>
-							<shadedArtifactAttached>false</shadedArtifactAttached>
-							<createDependencyReducedPom>false</createDependencyReducedPom>
-							<transformers>
-								<transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-									<mainClass>org.apache.flink.streaming.examples.twitter.TwitterExample</mainClass>
-								</transformer>
-							</transformers>
-							<finalName>Twitter</finalName>
-							<filters>
-								<filter>
-									<artifact>*</artifact>
-									<includes>
-										<include>org/apache/flink/streaming/examples/twitter/**</include>
-										<include>org/apache/flink/streaming/connectors/twitter/**</include>
-										<include>org/apache/http/**</include>
-										<include>com/twitter/**</include>
-										<include>build.properties</include>
-									</includes>
-								</filter>
-							</filters>
-						</configuration>
-					</execution>
-				</executions>
-			</plugin>
-
 		</plugins>
-		
-		<pluginManagement>
-			<plugins>
-				<!--This plugin's configuration is used to store Eclipse m2e settings only. It has no influence on the Maven build itself.-->
-				<plugin>
-					<groupId>org.eclipse.m2e</groupId>
-					<artifactId>lifecycle-mapping</artifactId>
-					<version>1.0.0</version>
-					<configuration>
-						<lifecycleMappingMetadata>
-							<pluginExecutions>
-								<pluginExecution>
-									<pluginExecutionFilter>
-										<groupId>org.apache.maven.plugins</groupId>
-										<artifactId>maven-dependency-plugin</artifactId>
-										<versionRange>[2.9,)</versionRange>
-										<goals>
-											<goal>unpack</goal>
-										</goals>
-									</pluginExecutionFilter>
-									<action>
-										<ignore/>
-									</action>
-								</pluginExecution>
-							</pluginExecutions>
-						</lifecycleMappingMetadata>
-					</configuration>
-				</plugin>
-			</plugins>
-		</pluginManagement>
-
 	</build>
 
 </project>

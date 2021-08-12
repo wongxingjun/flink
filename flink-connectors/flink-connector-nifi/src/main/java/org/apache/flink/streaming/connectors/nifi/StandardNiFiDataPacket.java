@@ -14,33 +14,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.streaming.connectors.nifi;
 
 import java.io.Serializable;
 import java.util.Map;
 
-/**
- * An implementation of NiFiDataPacket.
- */
+/** An implementation of NiFiDataPacket. */
 public class StandardNiFiDataPacket implements NiFiDataPacket, Serializable {
-	private static final long serialVersionUID = 6364005260220243322L;
+    private static final long serialVersionUID = 6364005260220243322L;
 
-	private final byte[] content;
-	private final Map<String, String> attributes;
+    private final byte[] content;
+    private final Map<String, String> attributes;
 
-	public StandardNiFiDataPacket(final byte[] content, final Map<String, String> attributes) {
-		this.content = content;
-		this.attributes = attributes;
-	}
+    public StandardNiFiDataPacket(final byte[] content, final Map<String, String> attributes) {
+        this.content = content;
+        this.attributes = attributes;
+    }
 
-	@Override
-	public byte[] getContent() {
-		return content;
-	}
+    @Override
+    public byte[] getContent() {
+        return content;
+    }
 
-	@Override
-	public Map<String, String> getAttributes() {
-		return attributes;
-	}
-
+    @Override
+    public Map<String, String> getAttributes() {
+        return attributes;
+    }
 }

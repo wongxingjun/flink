@@ -17,6 +17,12 @@
 
 package org.apache.flink.streaming.api.graph;
 
+import org.apache.flink.annotation.Internal;
+
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ArrayNode;
+import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.ObjectNode;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -24,168 +30,160 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.flink.annotation.Internal;
-import org.apache.flink.streaming.api.operators.StreamOperator;
-import org.apache.sling.commons.json.JSONArray;
-import org.apache.sling.commons.json.JSONException;
-import org.apache.sling.commons.json.JSONObject;
-
+/** Helper class for generating a JSON representation from a {@link StreamGraph}. */
 @Internal
 public class JSONGenerator {
 
-	public static final String STEPS = "step_function";
-	public static final String ID = "id";
-	public static final String SIDE = "side";
-	public static final String SHIP_STRATEGY = "ship_strategy";
-	public static final String PREDECESSORS = "predecessors";
-	public static final String TYPE = "type";
-	public static final String PACT = "pact";
-	public static final String CONTENTS = "contents";
-	public static final String PARALLELISM = "parallelism";
+    public static final String STEPS = "step_function";
+    public static final String ID = "id";
+    public static final String SIDE = "side";
+    public static final String SHIP_STRATEGY = "ship_strategy";
+    public static final String PREDECESSORS = "predecessors";
+    public static final String TYPE = "type";
+    public static final String PACT = "pact";
+    public static final String CONTENTS = "contents";
+    public static final String PARALLELISM = "parallelism";
 
-	private StreamGraph streamGraph;
+    private StreamGraph streamGraph;
+    private final ObjectMapper mapper = new ObjectMapper();
 
-	public JSONGenerator(StreamGraph streamGraph) {
-		this.streamGraph = streamGraph;
-	}
+    public JSONGenerator(StreamGraph streamGraph) {
+        this.streamGraph = streamGraph;
+    }
 
-	public String getJSON() throws JSONException {
-		JSONObject json = new JSONObject();
-		JSONArray nodes = new JSONArray();
-		json.put("nodes", nodes);
-		List<Integer> operatorIDs = new ArrayList<Integer>(streamGraph.getVertexIDs());
-		Collections.sort(operatorIDs, new Comparator<Integer>() {
-			@Override
-			public int compare(Integer o1, Integer o2) {
-				// put sinks at the back
-				if (streamGraph.getSinkIDs().contains(o1)) {
-					return 1;
-				} else if (streamGraph.getSinkIDs().contains(o2)) {
-					return -1;
-				} else {
-					return o1 - o2;
-				}
-			}
-		});
-		visit(nodes, operatorIDs, new HashMap<Integer, Integer>());
-		return json.toString();
-	}
+    public String getJSON() {
+        ObjectNode json = mapper.createObjectNode();
+        ArrayNode nodes = mapper.createArrayNode();
+        json.put("nodes", nodes);
 
-	private void visit(JSONArray jsonArray, List<Integer> toVisit,
-			Map<Integer, Integer> edgeRemapings) throws JSONException {
+        List<Integer> operatorIDs = new ArrayList<>(streamGraph.getVertexIDs());
+        Comparator<Integer> operatorIDComparator =
+                Comparator.comparingInt(
+                                (Integer id) -> streamGraph.getSinkIDs().contains(id) ? 1 : 0)
+                        .thenComparingInt(id -> id);
+        operatorIDs.sort(operatorIDComparator);
 
-		Integer vertexID = toVisit.get(0);
-		StreamNode vertex = streamGraph.getStreamNode(vertexID);
+        visit(nodes, operatorIDs, new HashMap<>());
 
-		if (streamGraph.getSourceIDs().contains(vertexID)
-				|| Collections.disjoint(vertex.getInEdges(), toVisit)) {
+        return json.toPrettyString();
+    }
 
-			JSONObject node = new JSONObject();
-			decorateNode(vertexID, node);
+    private void visit(
+            ArrayNode jsonArray, List<Integer> toVisit, Map<Integer, Integer> edgeRemapings) {
 
-			if (!streamGraph.getSourceIDs().contains(vertexID)) {
-				JSONArray inputs = new JSONArray();
-				node.put(PREDECESSORS, inputs);
+        Integer vertexID = toVisit.get(0);
+        StreamNode vertex = streamGraph.getStreamNode(vertexID);
 
-				for (StreamEdge inEdge : vertex.getInEdges()) {
-					int inputID = inEdge.getSourceId();
+        if (streamGraph.getSourceIDs().contains(vertexID)
+                || Collections.disjoint(vertex.getInEdges(), toVisit)) {
 
-					Integer mappedID = (edgeRemapings.keySet().contains(inputID)) ? edgeRemapings
-							.get(inputID) : inputID;
-					decorateEdge(inputs, inEdge, mappedID);
-				}
-			}
-			jsonArray.put(node);
-			toVisit.remove(vertexID);
-		} else {
-			Integer iterationHead = -1;
-			for (StreamEdge inEdge : vertex.getInEdges()) {
-				int operator = inEdge.getSourceId();
+            ObjectNode node = mapper.createObjectNode();
+            decorateNode(vertexID, node);
 
-				if (streamGraph.vertexIDtoLoopTimeout.containsKey(operator)) {
-					iterationHead = operator;
-				}
-			}
+            if (!streamGraph.getSourceIDs().contains(vertexID)) {
+                ArrayNode inputs = mapper.createArrayNode();
+                node.put(PREDECESSORS, inputs);
 
-			JSONObject obj = new JSONObject();
-			JSONArray iterationSteps = new JSONArray();
-			obj.put(STEPS, iterationSteps);
-			obj.put(ID, iterationHead);
-			obj.put(PACT, "IterativeDataStream");
-			obj.put(PARALLELISM, streamGraph.getStreamNode(iterationHead).getParallelism());
-			obj.put(CONTENTS, "Stream Iteration");
-			JSONArray iterationInputs = new JSONArray();
-			obj.put(PREDECESSORS, iterationInputs);
-			toVisit.remove(iterationHead);
-			visitIteration(iterationSteps, toVisit, iterationHead, edgeRemapings, iterationInputs);
-			jsonArray.put(obj);
-		}
+                for (StreamEdge inEdge : vertex.getInEdges()) {
+                    int inputID = inEdge.getSourceId();
 
-		if (!toVisit.isEmpty()) {
-			visit(jsonArray, toVisit, edgeRemapings);
-		}
-	}
+                    Integer mappedID =
+                            (edgeRemapings.keySet().contains(inputID))
+                                    ? edgeRemapings.get(inputID)
+                                    : inputID;
+                    decorateEdge(inputs, inEdge, mappedID);
+                }
+            }
+            jsonArray.add(node);
+            toVisit.remove(vertexID);
+        } else {
+            Integer iterationHead = -1;
+            for (StreamEdge inEdge : vertex.getInEdges()) {
+                int operator = inEdge.getSourceId();
 
-	private void visitIteration(JSONArray jsonArray, List<Integer> toVisit, int headId,
-			Map<Integer, Integer> edgeRemapings, JSONArray iterationInEdges) throws JSONException {
+                if (streamGraph.vertexIDtoLoopTimeout.containsKey(operator)) {
+                    iterationHead = operator;
+                }
+            }
 
-		Integer vertexID = toVisit.get(0);
-		StreamNode vertex = streamGraph.getStreamNode(vertexID);
-		toVisit.remove(vertexID);
+            ObjectNode obj = mapper.createObjectNode();
+            ArrayNode iterationSteps = mapper.createArrayNode();
+            obj.put(STEPS, iterationSteps);
+            obj.put(ID, iterationHead);
+            obj.put(PACT, "IterativeDataStream");
+            obj.put(PARALLELISM, streamGraph.getStreamNode(iterationHead).getParallelism());
+            obj.put(CONTENTS, "Stream Iteration");
+            ArrayNode iterationInputs = mapper.createArrayNode();
+            obj.put(PREDECESSORS, iterationInputs);
+            toVisit.remove(iterationHead);
+            visitIteration(iterationSteps, toVisit, iterationHead, edgeRemapings, iterationInputs);
+            jsonArray.add(obj);
+        }
 
-		// Ignoring head and tail to avoid redundancy
-		if (!streamGraph.vertexIDtoLoopTimeout.containsKey(vertexID)) {
-			JSONObject obj = new JSONObject();
-			jsonArray.put(obj);
-			decorateNode(vertexID, obj);
-			JSONArray inEdges = new JSONArray();
-			obj.put(PREDECESSORS, inEdges);
+        if (!toVisit.isEmpty()) {
+            visit(jsonArray, toVisit, edgeRemapings);
+        }
+    }
 
-			for (StreamEdge inEdge : vertex.getInEdges()) {
-				int inputID = inEdge.getSourceId();
+    private void visitIteration(
+            ArrayNode jsonArray,
+            List<Integer> toVisit,
+            int headId,
+            Map<Integer, Integer> edgeRemapings,
+            ArrayNode iterationInEdges) {
 
-				if (edgeRemapings.keySet().contains(inputID)) {
-					decorateEdge(inEdges, inEdge, inputID);
-				} else if (!streamGraph.vertexIDtoLoopTimeout.containsKey(inputID)) {
-					decorateEdge(iterationInEdges, inEdge, inputID);
-				}
-			}
+        Integer vertexID = toVisit.get(0);
+        StreamNode vertex = streamGraph.getStreamNode(vertexID);
+        toVisit.remove(vertexID);
 
-			edgeRemapings.put(vertexID, headId);
-			visitIteration(jsonArray, toVisit, headId, edgeRemapings, iterationInEdges);
-		}
+        // Ignoring head and tail to avoid redundancy
+        if (!streamGraph.vertexIDtoLoopTimeout.containsKey(vertexID)) {
+            ObjectNode obj = mapper.createObjectNode();
+            jsonArray.add(obj);
+            decorateNode(vertexID, obj);
+            ArrayNode inEdges = mapper.createArrayNode();
+            obj.put(PREDECESSORS, inEdges);
 
-	}
+            for (StreamEdge inEdge : vertex.getInEdges()) {
+                int inputID = inEdge.getSourceId();
 
-	private void decorateEdge(JSONArray inputArray, StreamEdge inEdge, int mappedInputID)
-			throws JSONException {
-		JSONObject input = new JSONObject();
-		inputArray.put(input);
-		input.put(ID, mappedInputID);
-		input.put(SHIP_STRATEGY, inEdge.getPartitioner());
-		input.put(SIDE, (inputArray.length() == 0) ? "first" : "second");
-	}
+                if (edgeRemapings.keySet().contains(inputID)) {
+                    decorateEdge(inEdges, inEdge, inputID);
+                } else if (!streamGraph.vertexIDtoLoopTimeout.containsKey(inputID)) {
+                    decorateEdge(iterationInEdges, inEdge, inputID);
+                }
+            }
 
-	private void decorateNode(Integer vertexID, JSONObject node) throws JSONException {
+            edgeRemapings.put(vertexID, headId);
+            visitIteration(jsonArray, toVisit, headId, edgeRemapings, iterationInEdges);
+        }
+    }
 
-		StreamNode vertex = streamGraph.getStreamNode(vertexID);
+    private void decorateEdge(ArrayNode inputArray, StreamEdge inEdge, int mappedInputID) {
+        ObjectNode input = mapper.createObjectNode();
+        inputArray.add(input);
+        input.put(ID, mappedInputID);
+        input.put(SHIP_STRATEGY, inEdge.getPartitioner().toString());
+        input.put(SIDE, (inputArray.size() == 0) ? "first" : "second");
+    }
 
-		node.put(ID, vertexID);
-		node.put(TYPE, vertex.getOperatorName());
+    private void decorateNode(Integer vertexID, ObjectNode node) {
 
-		if (streamGraph.getSourceIDs().contains(vertexID)) {
-			node.put(PACT, "Data Source");
-		} else if (streamGraph.getSinkIDs().contains(vertexID)) {
-			node.put(PACT, "Data Sink");
-		} else {
-			node.put(PACT, "Operator");
-		}
+        StreamNode vertex = streamGraph.getStreamNode(vertexID);
 
-		StreamOperator<?> operator = streamGraph.getStreamNode(vertexID).getOperator();
+        node.put(ID, vertexID);
+        node.put(TYPE, vertex.getOperatorName());
 
-		node.put(CONTENTS, vertex.getOperatorName());
+        if (streamGraph.getSourceIDs().contains(vertexID)) {
+            node.put(PACT, "Data Source");
+        } else if (streamGraph.getSinkIDs().contains(vertexID)) {
+            node.put(PACT, "Data Sink");
+        } else {
+            node.put(PACT, "Operator");
+        }
 
-		node.put(PARALLELISM, streamGraph.getStreamNode(vertexID).getParallelism());
-	}
+        node.put(CONTENTS, vertex.getOperatorName());
 
+        node.put(PARALLELISM, streamGraph.getStreamNode(vertexID).getParallelism());
+    }
 }

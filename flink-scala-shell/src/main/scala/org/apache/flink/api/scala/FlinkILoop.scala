@@ -18,82 +18,74 @@
 
 package org.apache.flink.api.scala
 
-import java.io.{BufferedReader, File, FileOutputStream}
-
-import org.apache.flink.api.java.{JarHelper, ScalaShellRemoteEnvironment, ScalaShellRemoteStreamEnvironment}
-import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
+import org.apache.flink.api.java.{JarHelper, ScalaShellEnvironment, ScalaShellStreamEnvironment}
 import org.apache.flink.configuration.Configuration
+import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.util.AbstractID
+
+import java.io.{BufferedReader, File, FileOutputStream}
 
 import scala.tools.nsc.interpreter._
 
-
 class FlinkILoop(
-    val host: String,
-    val port: Int,
-    val clientConfig: Configuration,
+    val flinkConfig: Configuration,
     val externalJars: Option[Array[String]],
     in0: Option[BufferedReader],
     out0: JPrintWriter)
-  extends ILoopCompat(in0, out0) {
+  extends ILoop(in0, out0) {
 
   def this(
-    host: String,
-    port: Int,
-    clientConfig: Configuration,
+    flinkConfig: Configuration,
     externalJars: Option[Array[String]],
     in0: BufferedReader,
     out: JPrintWriter) {
-    this(host, port, clientConfig, externalJars, Some(in0), out)
+    this(flinkConfig, externalJars, Some(in0), out)
   }
 
   def this(
-    host: String,
-    port: Int,
-    clientConfig: Configuration,
+    flinkConfig: Configuration,
     externalJars: Option[Array[String]]) {
-    this(host, port, clientConfig, externalJars, None, new JPrintWriter(Console.out, true))
+    this(flinkConfig, externalJars, None, new JPrintWriter(Console.out, true))
   }
-  
+
   def this(
-    host: String,
-    port: Int,
-    clientConfig: Configuration,
+    flinkConfig: Configuration,
     in0: BufferedReader,
     out: JPrintWriter){
-    this(host, port, clientConfig, None, in0, out)
+    this(flinkConfig, None, in0, out)
   }
 
   // remote environment
-  private val (remoteBenv: ScalaShellRemoteEnvironment,
-  remoteSenv: ScalaShellRemoteStreamEnvironment) = {
+  private val (remoteBenv: ScalaShellEnvironment,
+  remoteSenv: ScalaShellStreamEnvironment) = {
     // allow creation of environments
-    ScalaShellRemoteEnvironment.resetContextEnvironments()
-    
+    ScalaShellEnvironment.resetContextEnvironments()
+    ScalaShellStreamEnvironment.resetContextEnvironments()
+
     // create our environment that submits against the cluster (local or remote)
-    val remoteBenv = new ScalaShellRemoteEnvironment(
-      host,
-      port,
+    val remoteBenv = new ScalaShellEnvironment(
+      flinkConfig,
       this,
-      clientConfig,
       this.getExternalJars(): _*)
-    val remoteSenv = new ScalaShellRemoteStreamEnvironment(
-      host,
-      port,
+    val remoteSenv = new ScalaShellStreamEnvironment(
+      flinkConfig,
       this,
-      clientConfig,
       getExternalJars(): _*)
     // prevent further instantiation of environments
-    ScalaShellRemoteEnvironment.disableAllContextAndOtherEnvironments()
-    
+    ScalaShellEnvironment.disableAllContextAndOtherEnvironments()
+    ScalaShellStreamEnvironment.disableAllContextAndOtherEnvironments()
+
     (remoteBenv,remoteSenv)
   }
 
   // local environment
-  val (scalaBenv: ExecutionEnvironment, scalaSenv: StreamExecutionEnvironment) = {
+  val (
+    scalaBenv: ExecutionEnvironment,
+    scalaSenv: StreamExecutionEnvironment
+    ) = {
     val scalaBenv = new ExecutionEnvironment(remoteBenv)
     val scalaSenv = new StreamExecutionEnvironment(remoteSenv)
-    (scalaBenv,scalaSenv)
+    (scalaBenv, scalaSenv)
   }
 
   /**
@@ -139,21 +131,24 @@ class FlinkILoop(
     "org.apache.flink.api.scala._",
     "org.apache.flink.api.scala.utils._",
     "org.apache.flink.streaming.api.scala._",
-    "org.apache.flink.streaming.api.windowing.time._"
+    "org.apache.flink.streaming.api.windowing.time._",
+    "org.apache.flink.table.api._",
+    "org.apache.flink.table.api.bridge.scala._",
+    "org.apache.flink.table.connector.ChangelogMode",
+    "org.apache.flink.table.functions._",
+    "org.apache.flink.types.Row"
   )
 
   override def createInterpreter(): Unit = {
     super.createInterpreter()
 
-    addThunk {
-      intp.beQuietDuring {
-        // import dependencies
-        intp.interpret("import " + packageImports.mkString(", "))
+    intp.beQuietDuring {
+      // import dependencies
+      intp.interpret("import " + packageImports.mkString(", "))
 
-        // set execution environment
-        intp.bind("benv", this.scalaBenv)
-        intp.bind("senv", this.scalaSenv)
-      }
+      // set execution environments
+      intp.bind("benv", this.scalaBenv)
+      intp.bind("senv", this.scalaSenv)
     }
   }
 
@@ -245,23 +240,33 @@ class FlinkILoop(
 
               F L I N K - S C A L A - S H E L L
 
-NOTE: Use the prebound Execution Environments to implement batch or streaming programs.
+NOTE: Use the prepared environments to implement batch or streaming programs.
 
-  Batch - Use the 'benv' variable
+  Bounded and Unbounded Streaming - Use the 'senv' variable for DataStream API or Table/SQL API
+
+    * val dataStream = senv.fromElements(1, 2, 3, 4)
+    *
+    * dataStream
+    *      .countWindowAll(2)
+    *      .sum(0)
+    *      .executeAndCollect()
+    *      .foreach(println)
+    *
+    * val tenv = StreamTableEnvironment.create(senv)
+    *
+    * val table = tenv.fromValues(row("Alice", 1), row("Bob", 2)).as("name", "score")
+    *
+    * table
+    *     .groupBy($"name")
+    *     .select($"name", $"score".sum)
+    *     .execute()
+    *     .print()
+
+  Batch (Legacy) - Use the 'benv' variable for DataSet API
 
     * val dataSet = benv.readTextFile("/path/to/data")
     * dataSet.writeAsText("/path/to/output")
     * benv.execute("My batch program")
-
-    HINT: You can use print() on a DataSet to print the contents to the shell.
-
-  Streaming - Use the 'senv' variable
-
-    * val dataStream = senv.fromElements(1, 2, 3, 4)
-    * dataStream.countWindowAll(2).sum(0).print()
-    * senv.execute("My streaming program")
-
-    HINT: You can only print a DataStream to the shell in local mode.
       """
     // scalastyle:on
     )

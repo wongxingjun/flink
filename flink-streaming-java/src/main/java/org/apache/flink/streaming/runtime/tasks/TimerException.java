@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,24 +15,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.annotation.Internal;
 
 /**
- * {@code RuntimeException} for wrapping exceptions that are thrown in the timer callback of
- * the timer service in {@link StreamTask}.
+ * {@code RuntimeException} for wrapping exceptions that are thrown in the timer callback of the
+ * timer service in {@link StreamTask}.
  */
 @Internal
 public class TimerException extends AsynchronousException {
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	public TimerException(Throwable cause) {
-		super(cause);
-	}
+    public TimerException(Throwable cause) {
+        super(cause);
+    }
 
-	@Override
-	public String toString() {
-		return "TimerException{" + getCause() + "}";
-	}
+    @Override
+    public String toString() {
+        return "TimerException{" + getCause() + "}";
+    }
 }

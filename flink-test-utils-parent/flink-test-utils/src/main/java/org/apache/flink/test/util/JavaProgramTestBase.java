@@ -19,262 +19,206 @@
 package org.apache.flink.test.util;
 
 import org.apache.flink.api.common.JobExecutionResult;
-import org.apache.flink.api.java.tuple.Tuple;
-import org.apache.flink.configuration.Configuration;
+import org.apache.flink.api.java.ExecutionEnvironment;
 
 import org.junit.Assert;
 import org.junit.Test;
 
-import java.util.Comparator;
-
-
+/**
+ * Base class for unit tests that run a single test with object reuse enabled/disabled and against
+ * collection environments.
+ *
+ * <p>To write a unit test against this test base, simply extend it and implement the {@link
+ * #testProgram()} method.
+ *
+ * <p>To skip the execution against collection environments you have to override {@link
+ * #skipCollectionExecution()}.
+ */
 public abstract class JavaProgramTestBase extends AbstractTestBase {
 
-	private static final int DEFAULT_PARALLELISM = 4;
-	
-	private JobExecutionResult latestExecutionResult;
-	
-	private int parallelism = DEFAULT_PARALLELISM;
+    private JobExecutionResult latestExecutionResult;
 
-	/**
-	 * The number of times a test should be repeated.
-	 *
-	 * <p> This is useful for runtime changes, which affect resource management. Running certain
-	 * tests repeatedly might help to discover resource leaks, race conditions etc.
-	 */
-	private int numberOfTestRepetitions = 1;
+    /**
+     * The number of times a test should be repeated.
+     *
+     * <p>This is useful for runtime changes, which affect resource management. Running certain
+     * tests repeatedly might help to discover resource leaks, race conditions etc.
+     */
+    private int numberOfTestRepetitions = 1;
 
-	private boolean isCollectionExecution;
+    private boolean isCollectionExecution;
 
-	public JavaProgramTestBase() {
-		this(new Configuration());
-	}
-	
-	public JavaProgramTestBase(Configuration config) {
-		super(config);
-		setTaskManagerNumSlots(parallelism);
-	}
-	
-	public void setParallelism(int parallelism) {
-		this.parallelism = parallelism;
-		setTaskManagerNumSlots(parallelism);
-	}
+    public void setNumberOfTestRepetitions(int numberOfTestRepetitions) {
+        this.numberOfTestRepetitions = numberOfTestRepetitions;
+    }
 
-	public void setNumberOfTestRepetitions(int numberOfTestRepetitions) {
-		this.numberOfTestRepetitions = numberOfTestRepetitions;
-	}
-	
-	public int getParallelism() {
-		return isCollectionExecution ? 1 : parallelism;
-	}
-	
-	public JobExecutionResult getLatestExecutionResult() {
-		return this.latestExecutionResult;
-	}
-	
-	public boolean isCollectionExecution() {
-		return isCollectionExecution;
-	}
+    public int getParallelism() {
+        return isCollectionExecution ? 1 : miniClusterResource.getNumberSlots();
+    }
 
-	// --------------------------------------------------------------------------------------------
-	//  Methods to create the test program and for pre- and post- test work
-	// --------------------------------------------------------------------------------------------
+    public JobExecutionResult getLatestExecutionResult() {
+        return this.latestExecutionResult;
+    }
 
-	protected abstract void testProgram() throws Exception;
+    public boolean isCollectionExecution() {
+        return isCollectionExecution;
+    }
 
-	protected void preSubmit() throws Exception {}
-	
-	protected void postSubmit() throws Exception {}
-	
-	protected boolean skipCollectionExecution() {
-		return false;
-	};
+    // --------------------------------------------------------------------------------------------
+    //  Methods to create the test program and for pre- and post- test work
+    // --------------------------------------------------------------------------------------------
 
-	// --------------------------------------------------------------------------------------------
-	//  Test entry point
-	// --------------------------------------------------------------------------------------------
+    protected abstract void testProgram() throws Exception;
 
-	@Test
-	public void testJobWithObjectReuse() throws Exception {
-		isCollectionExecution = false;
-		
-		startCluster();
-		try {
-			// pre-submit
-			try {
-				preSubmit();
-			}
-			catch (Exception e) {
-				System.err.println(e.getMessage());
-				e.printStackTrace();
-				Assert.fail("Pre-submit work caused an error: " + e.getMessage());
-			}
-			
-			// prepare the test environment
-			TestEnvironment env = new TestEnvironment(this.executor, this.parallelism);
-			env.getConfig().enableObjectReuse();
-			env.setAsContext();
+    protected void preSubmit() throws Exception {}
 
-			// Possibly run the test multiple times
-			for (int i = 0; i < numberOfTestRepetitions; i++) {
-				// call the test program
-				try {
-					testProgram();
-					this.latestExecutionResult = env.getLastJobExecutionResult();
-				}
-				catch (Exception e) {
-					System.err.println(e.getMessage());
-					e.printStackTrace();
-					Assert.fail("Error while calling the test program: " + e.getMessage());
-				}
+    protected void postSubmit() throws Exception {}
 
-				Assert.assertNotNull("The test program never triggered an execution.",
-						this.latestExecutionResult);
-			}
-			
-			// post-submit
-			try {
-				postSubmit();
-			}
-			catch (Exception e) {
-				System.err.println(e.getMessage());
-				e.printStackTrace();
-				Assert.fail("Post-submit work caused an error: " + e.getMessage());
-			}
-		} finally {
-			stopCluster();
-		}
-	}
+    protected boolean skipCollectionExecution() {
+        return false;
+    }
 
-	@Test
-	public void testJobWithoutObjectReuse() throws Exception {
-		isCollectionExecution = false;
+    // --------------------------------------------------------------------------------------------
+    //  Test entry point
+    // --------------------------------------------------------------------------------------------
 
-		startCluster();
-		try {
-			// pre-submit
-			try {
-				preSubmit();
-			}
-			catch (Exception e) {
-				System.err.println(e.getMessage());
-				e.printStackTrace();
-				Assert.fail("Pre-submit work caused an error: " + e.getMessage());
-			}
+    @Test
+    public void testJobWithObjectReuse() throws Exception {
+        isCollectionExecution = false;
 
-			// prepare the test environment
-			TestEnvironment env = new TestEnvironment(this.executor, this.parallelism);
-			env.getConfig().disableObjectReuse();
-			env.setAsContext();
+        // pre-submit
+        try {
+            preSubmit();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Pre-submit work caused an error: " + e.getMessage());
+        }
 
-			// Possibly run the test multiple times
-			for (int i = 0; i < numberOfTestRepetitions; i++) {
-				// call the test program
-				try {
-					testProgram();
-					this.latestExecutionResult = env.getLastJobExecutionResult();
-				}
-				catch (Exception e) {
-					System.err.println(e.getMessage());
-					e.printStackTrace();
-					Assert.fail("Error while calling the test program: " + e.getMessage());
-				}
+        // This only works because the underlying ExecutionEnvironment is a TestEnvironment
+        // We should fix that we are able to get access to the latest execution result from a
+        // different
+        // execution environment and how the object reuse mode is enabled
+        TestEnvironment env = miniClusterResource.getTestEnvironment();
+        env.getConfig().enableObjectReuse();
 
-				Assert.assertNotNull("The test program never triggered an execution.",
-						this.latestExecutionResult);
-			}
+        // Possibly run the test multiple times
+        for (int i = 0; i < numberOfTestRepetitions; i++) {
+            // call the test program
+            try {
+                testProgram();
+                this.latestExecutionResult = env.getLastJobExecutionResult();
+            } catch (Exception e) {
+                System.err.println(e.getMessage());
+                e.printStackTrace();
+                Assert.fail("Error while calling the test program: " + e.getMessage());
+            }
 
-			// post-submit
-			try {
-				postSubmit();
-			}
-			catch (Exception e) {
-				System.err.println(e.getMessage());
-				e.printStackTrace();
-				Assert.fail("Post-submit work caused an error: " + e.getMessage());
-			}
-		} finally {
-			stopCluster();
-		}
-	}
-	
-	@Test
-	public void testJobCollectionExecution() throws Exception {
-		
-		// check if collection execution should be skipped.
-		if(this.skipCollectionExecution()) {
-			return;
-		}
-		
-		isCollectionExecution = true;
-		
-		// pre-submit
-		try {
-			preSubmit();
-		}
-		catch (Exception e) {
-			System.err.println(e.getMessage());
-			e.printStackTrace();
-			Assert.fail("Pre-submit work caused an error: " + e.getMessage());
-		}
-		
-		// prepare the test environment
-		CollectionTestEnvironment env = new CollectionTestEnvironment();
-		env.setAsContext();
-		
-		// call the test program
-		try {
-			testProgram();
-			this.latestExecutionResult = env.getLastJobExecutionResult();
-		}
-		catch (Exception e) {
-			System.err.println(e.getMessage());
-			e.printStackTrace();
-			Assert.fail("Error while calling the test program: " + e.getMessage());
-		}
-		
-		Assert.assertNotNull("The test program never triggered an execution.", this.latestExecutionResult);
-		
-		// post-submit
-		try {
-			postSubmit();
-		}
-		catch (Exception e) {
-			System.err.println(e.getMessage());
-			e.printStackTrace();
-			Assert.fail("Post-submit work caused an error: " + e.getMessage());
-		}
-	}
-	
-	public static class TupleComparator<T extends Tuple> implements Comparator<T> {
+            Assert.assertNotNull(
+                    "The test program never triggered an execution.", this.latestExecutionResult);
+        }
 
-		@SuppressWarnings("unchecked")
-		@Override
-		public int compare(T o1, T o2) {
-			int a1 = o1.getArity();
-			int a2 = o2.getArity();
-			
-			if (a1 < a2) {
-				return -1;
-			} else if (a2 < a1) {
-				return 1;
-			} else {
-				for (int i = 0; i < a1; i++) {
-					Object obj1 = o1.getField(i);
-					Object obj2 = o2.getField(i);
-					
-					if (!(obj1 instanceof Comparable && obj2 instanceof Comparable)) {
-						Assert.fail("Cannot compare tuple fields");
-					}
-					
-					int cmp = ((Comparable<Object>) obj1).compareTo(obj2);
-					if (cmp != 0) {
-						return cmp;
-					}
-				}
-				
-				return 0;
-			}
-		}
-	}
+        // post-submit
+        try {
+            postSubmit();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Post-submit work caused an error: " + e.getMessage());
+        }
+    }
+
+    @Test
+    public void testJobWithoutObjectReuse() throws Exception {
+        isCollectionExecution = false;
+
+        // pre-submit
+        try {
+            preSubmit();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Pre-submit work caused an error: " + e.getMessage());
+        }
+
+        // This only works because the underlying ExecutionEnvironment is a TestEnvironment
+        // We should fix that we are able to get access to the latest execution result from a
+        // different
+        // execution environment and how the object reuse mode is enabled
+        ExecutionEnvironment env = miniClusterResource.getTestEnvironment();
+        env.getConfig().disableObjectReuse();
+
+        // Possibly run the test multiple times
+        for (int i = 0; i < numberOfTestRepetitions; i++) {
+            // call the test program
+            try {
+                testProgram();
+                this.latestExecutionResult = env.getLastJobExecutionResult();
+            } catch (Exception e) {
+                System.err.println(e.getMessage());
+                e.printStackTrace();
+                Assert.fail("Error while calling the test program: " + e.getMessage());
+            }
+
+            Assert.assertNotNull(
+                    "The test program never triggered an execution.", this.latestExecutionResult);
+        }
+
+        // post-submit
+        try {
+            postSubmit();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Post-submit work caused an error: " + e.getMessage());
+        }
+    }
+
+    @Test
+    public void testJobCollectionExecution() throws Exception {
+
+        // check if collection execution should be skipped.
+        if (this.skipCollectionExecution()) {
+            return;
+        }
+
+        isCollectionExecution = true;
+
+        // pre-submit
+        try {
+            preSubmit();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Pre-submit work caused an error: " + e.getMessage());
+        }
+
+        // prepare the test environment
+        CollectionTestEnvironment env = new CollectionTestEnvironment();
+        env.setAsContext();
+
+        // call the test program
+        try {
+            testProgram();
+            this.latestExecutionResult = env.getLastJobExecutionResult();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Error while calling the test program: " + e.getMessage());
+        } finally {
+            miniClusterResource.getTestEnvironment().setAsContext();
+        }
+
+        Assert.assertNotNull(
+                "The test program never triggered an execution.", this.latestExecutionResult);
+
+        // post-submit
+        try {
+            postSubmit();
+        } catch (Exception e) {
+            System.err.println(e.getMessage());
+            e.printStackTrace();
+            Assert.fail("Post-submit work caused an error: " + e.getMessage());
+        }
+    }
 }

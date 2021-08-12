@@ -17,49 +17,12 @@
 # limitations under the License.
 ################################################################################
 
-set -e
-cd "$(dirname ${BASH_SOURCE[0]})"
-
-DIR="`pwd`"
-
-# We need at least bundler to proceed
-if [ "`command -v bundle`" == "" ]; then
-	echo "WARN: Could not find bundle."
-    echo "Attempting to install locally. If this doesn't work, please install with 'gem install bundler'."
-
-    # Adjust the PATH to discover the locally installed Ruby gem
-    if which ruby >/dev/null && which gem >/dev/null; then
-        export PATH="$(ruby -rubygems -e 'puts Gem.user_dir')/bin:$PATH"
-    fi
-
-    # install bundler locally
-    gem install --user-install bundler
+if ! command -v hugo &> /dev/null
+then
+	echo "Hugo must be installed to run the docs locally"
+	echo "Please see docs/README.md for more details"
+	exit 1
 fi
+git submodule update --init --recursive
 
-# Install Ruby dependencies locally
-bundle install --path .rubydeps
-
-DOCS_SRC=${DIR}
-DOCS_DST=${DOCS_SRC}/content
-
-# default jekyll command is to just build site
-JEKYLL_CMD="build"
-
-# if -p flag is provided, serve site on localhost
-# -i is like -p, but incremental (only rebuilds the modified file)
-while getopts "pi" opt; do
-	case $opt in
-		p)
-		JEKYLL_CMD="serve --baseurl= --watch"
-		;;
-		i)
-		[[ `ruby -v` =~ 'ruby 1' ]] && echo "Error: building the docs with the incremental option requires at least ruby 2.0" && exit 1
-		cd ruby2
-		bundle install --path .rubydeps
-		JEKYLL_CMD="liveserve --baseurl= --watch --incremental"
-		;;
-	esac
-done
-
-# use 'bundle exec' to insert the local Ruby dependencies
-bundle exec jekyll ${JEKYLL_CMD} --source "${DOCS_SRC}" --destination "${DOCS_DST}"
+hugo -b "" serve 

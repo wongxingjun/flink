@@ -18,7 +18,7 @@
 ################################################################################
 
 # Start/stop a Flink daemon.
-USAGE="Usage: flink-daemon.sh (start|stop|stop-all) (jobmanager|taskmanager|zookeeper) [args]"
+USAGE="Usage: flink-daemon.sh (start|stop|stop-all) (taskexecutor|zookeeper|historyserver|standalonesession|standalonejob) [args]"
 
 STARTSTOP=$1
 DAEMON=$2
@@ -30,16 +30,24 @@ bin=`cd "$bin"; pwd`
 . "$bin"/config.sh
 
 case $DAEMON in
-    (jobmanager)
-        CLASS_TO_RUN=org.apache.flink.runtime.jobmanager.JobManager
-    ;;
-
-    (taskmanager)
-        CLASS_TO_RUN=org.apache.flink.runtime.taskmanager.TaskManager
+    (taskexecutor)
+        CLASS_TO_RUN=org.apache.flink.runtime.taskexecutor.TaskManagerRunner
     ;;
 
     (zookeeper)
         CLASS_TO_RUN=org.apache.flink.runtime.zookeeper.FlinkZooKeeperQuorumPeer
+    ;;
+
+    (historyserver)
+        CLASS_TO_RUN=org.apache.flink.runtime.webmonitor.history.HistoryServer
+    ;;
+
+    (standalonesession)
+        CLASS_TO_RUN=org.apache.flink.runtime.entrypoint.StandaloneSessionClusterEntrypoint
+    ;;
+
+    (standalonejob)
+        CLASS_TO_RUN=org.apache.flink.container.entrypoint.StandaloneApplicationClusterEntryPoint
     ;;
 
     (*)
@@ -72,31 +80,38 @@ fi
 
 # Ascending ID depending on number of lines in pid file.
 # This allows us to start multiple daemon of each type.
-id=$([ -f "$pid" ] && echo $(wc -l < $pid) || echo "0")
+id=$([ -f "$pid" ] && echo $(wc -l < "$pid") || echo "0")
 
-log="${FLINK_LOG_DIR}/flink-${FLINK_IDENT_STRING}-${DAEMON}-${id}-${HOSTNAME}.log"
-out="${FLINK_LOG_DIR}/flink-${FLINK_IDENT_STRING}-${DAEMON}-${id}-${HOSTNAME}.out"
+FLINK_LOG_PREFIX="${FLINK_LOG_DIR}/flink-${FLINK_IDENT_STRING}-${DAEMON}-${id}-${HOSTNAME}"
+log="${FLINK_LOG_PREFIX}.log"
+out="${FLINK_LOG_PREFIX}.out"
 
-log_setting=("-Dlog.file=${log}" "-Dlog4j.configuration=file:${FLINK_CONF_DIR}/log4j.properties" "-Dlogback.configurationFile=file:${FLINK_CONF_DIR}/logback.xml")
+log_setting=("-Dlog.file=${log}" "-Dlog4j.configuration=file:${FLINK_CONF_DIR}/log4j.properties" "-Dlog4j.configurationFile=file:${FLINK_CONF_DIR}/log4j.properties" "-Dlogback.configurationFile=file:${FLINK_CONF_DIR}/logback.xml")
 
-JAVA_VERSION=$(${JAVA_RUN} -version 2>&1 | sed 's/.*version "\(.*\)\.\(.*\)\..*"/\1\2/; 1q')
+function guaranteed_kill {
+  to_stop_pid=$1
+  daemon=$2
 
-# Only set JVM 8 arguments if we have correctly extracted the version
-if [[ ${JAVA_VERSION} =~ ${IS_NUMBER} ]]; then
-    if [ "$JAVA_VERSION" -lt 18 ]; then
-        JVM_ARGS="$JVM_ARGS -XX:MaxPermSize=256m"
+  # send sigterm for graceful shutdown
+  kill $to_stop_pid
+  # if timeout exists, use it
+  if command -v timeout &> /dev/null ; then
+    # wait 10 seconds for process to stop. By default, Flink kills the JVM 5 seconds after sigterm.
+    timeout 10 tail --pid=$to_stop_pid -f /dev/null &> /dev/null
+    if [ "$?" -eq 124 ]; then
+      echo "Daemon $daemon didn't stop within 10 seconds. Killing it."
+      # send sigkill
+      kill -9 $to_stop_pid
     fi
-fi
+  fi
+}
 
 case $STARTSTOP in
 
     (start)
-        # Rotate log files
-        rotateLogFile $log
-        rotateLogFile $out
 
         # Print a warning if daemons are already running on host
-        if [ -f $pid ]; then
+        if [ -f "$pid" ]; then
           active=()
           while IFS='' read -r p || [[ -n "$p" ]]; do
             kill -0 $p >/dev/null 2>&1
@@ -112,14 +127,17 @@ case $STARTSTOP in
           fi
         fi
 
+        # Evaluate user options for local variable expansion
+        FLINK_ENV_JAVA_OPTS=$(eval echo ${FLINK_ENV_JAVA_OPTS})
+
         echo "Starting $DAEMON daemon on host $HOSTNAME."
-        $JAVA_RUN $JVM_ARGS ${FLINK_ENV_JAVA_OPTS} "${log_setting[@]}" -classpath "`manglePathList "$FLINK_TM_CLASSPATH:$INTERNAL_HADOOP_CLASSPATHS"`" ${CLASS_TO_RUN} "${ARGS[@]}" > "$out" 200<&- 2>&1 < /dev/null &
+        "$JAVA_RUN" $JVM_ARGS ${FLINK_ENV_JAVA_OPTS} "${log_setting[@]}" -classpath "`manglePathList "$FLINK_TM_CLASSPATH:$INTERNAL_HADOOP_CLASSPATHS"`" ${CLASS_TO_RUN} "${ARGS[@]}" > "$out" 200<&- 2>&1 < /dev/null &
 
         mypid=$!
 
         # Add to pid file if successful start
         if [[ ${mypid} =~ ${IS_NUMBER} ]] && kill -0 $mypid > /dev/null 2>&1 ; then
-            echo $mypid >> $pid
+            echo $mypid >> "$pid"
         else
             echo "Error starting $DAEMON daemon."
             exit 1
@@ -127,22 +145,22 @@ case $STARTSTOP in
     ;;
 
     (stop)
-        if [ -f $pid ]; then
+        if [ -f "$pid" ]; then
             # Remove last in pid file
-            to_stop=$(tail -n 1 $pid)
+            to_stop=$(tail -n 1 "$pid")
 
             if [ -z $to_stop ]; then
-                rm $pid # If all stopped, clean up pid file
+                rm "$pid" # If all stopped, clean up pid file
                 echo "No $DAEMON daemon to stop on host $HOSTNAME."
             else
-                sed \$d $pid > $pid.tmp # all but last line
+                sed \$d "$pid" > "$pid.tmp" # all but last line
 
                 # If all stopped, clean up pid file
-                [ $(wc -l < $pid.tmp) -eq 0 ] && rm $pid $pid.tmp || mv $pid.tmp $pid
+                [ $(wc -l < "$pid.tmp") -eq 0 ] && rm "$pid" "$pid.tmp" || mv "$pid.tmp" "$pid"
 
                 if kill -0 $to_stop > /dev/null 2>&1; then
                     echo "Stopping $DAEMON daemon (pid: $to_stop) on host $HOSTNAME."
-                    kill $to_stop
+                    guaranteed_kill $to_stop $DAEMON
                 else
                     echo "No $DAEMON daemon (pid: $to_stop) is running anymore on $HOSTNAME."
                 fi
@@ -153,18 +171,18 @@ case $STARTSTOP in
     ;;
 
     (stop-all)
-        if [ -f $pid ]; then
-            mv $pid ${pid}.tmp
+        if [ -f "$pid" ]; then
+            mv "$pid" "${pid}.tmp"
 
             while read to_stop; do
                 if kill -0 $to_stop > /dev/null 2>&1; then
                     echo "Stopping $DAEMON daemon (pid: $to_stop) on host $HOSTNAME."
-                    kill $to_stop
+                    guaranteed_kill $to_stop $DAEMON
                 else
                     echo "Skipping $DAEMON daemon (pid: $to_stop), because it is not running anymore on $HOSTNAME."
                 fi
-            done < ${pid}.tmp
-            rm ${pid}.tmp
+            done < "${pid}.tmp"
+            rm "${pid}.tmp"
         fi
     ;;
 

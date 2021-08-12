@@ -33,275 +33,275 @@ import java.util.Collection;
 /**
  * This class belongs to the {@link org.apache.flink.test.classloading.ClassLoaderITCase} test.
  *
- * It tests dynamic class loading for:
+ * <p>It tests dynamic class loading for:
+ *
  * <ul>
- *     <li>Custom Functions</li>
- *     <li>Custom Data Types</li>
- *     <li>Custom Accumulators</li>
- *     <li>Custom Types in collect()</li>
+ *   <li>Custom Functions
+ *   <li>Custom Data Types
+ *   <li>Custom Accumulators
+ *   <li>Custom Types in collect()
  * </ul>
  *
- * <p>
- * It's removed by Maven from classpath, so other tests must not depend on it.
+ * <p>It's removed by Maven from classpath, so other tests must not depend on it.
  */
 @SuppressWarnings("serial")
 public class KMeansForTest {
 
-	// *************************************************************************
-	//     PROGRAM
-	// *************************************************************************
+    // *************************************************************************
+    //     PROGRAM
+    // *************************************************************************
 
-	public static void main(String[] args) throws Exception {
-		if (args.length < 7) {
-			throw new IllegalArgumentException("Missing parameters");
-		}
+    public static void main(String[] args) throws Exception {
+        if (args.length < 3) {
+            throw new IllegalArgumentException("Missing parameters");
+        }
 
-		final String jarFile = args[0];
-		final String host = args[1];
-		final int port = Integer.parseInt(args[2]);
+        final String pointsData = args[0];
+        final String centersData = args[1];
+        final int numIterations = Integer.parseInt(args[2]);
 
-		final int parallelism = Integer.parseInt(args[3]);
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		final String pointsData = args[4];
-		final String centersData = args[5];
-		final int numIterations = Integer.parseInt(args[6]);
+        // get input data
+        DataSet<Point> points =
+                env.fromElements(pointsData.split("\n")).map(new TuplePointConverter());
 
-		ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(host, port, jarFile);
-		env.setParallelism(parallelism);
-		env.getConfig().disableSysoutLogging();
+        DataSet<Centroid> centroids =
+                env.fromElements(centersData.split("\n")).map(new TupleCentroidConverter());
 
-		// get input data
-		DataSet<Point> points = env.fromElements(pointsData.split("\n"))
-				.map(new TuplePointConverter());
+        // set number of bulk iterations for KMeans algorithm
+        IterativeDataSet<Centroid> loop = centroids.iterate(numIterations);
 
-		DataSet<Centroid> centroids = env.fromElements(centersData.split("\n"))
-				.map(new TupleCentroidConverter());
+        DataSet<Centroid> newCentroids =
+                points
+                        // compute closest centroid for each point
+                        .map(new SelectNearestCenter())
+                        .withBroadcastSet(loop, "centroids")
 
-		// set number of bulk iterations for KMeans algorithm
-		IterativeDataSet<Centroid> loop = centroids.iterate(numIterations);
+                        // count and sum point coordinates for each centroid (test pojo return type)
+                        .map(new CountAppender())
 
-		DataSet<Centroid> newCentroids = points
-				// compute closest centroid for each point
-				.map(new SelectNearestCenter()).withBroadcastSet(loop, "centroids")
+                        // !test if key expressions are working!
+                        .groupBy("field0")
+                        .reduce(new CentroidAccumulator())
 
-				// count and sum point coordinates for each centroid (test pojo return type)
-				.map(new CountAppender())
+                        // compute new centroids from point counts and coordinate sums
+                        .map(new CentroidAverager());
 
-				// !test if key expressions are working!
-				.groupBy("field0").reduce(new CentroidAccumulator())
+        // feed new centroids back into next iteration
+        DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
 
-				// compute new centroids from point counts and coordinate sums
-				.map(new CentroidAverager());
+        // test that custom data type collects are working
+        finalCentroids.collect();
+    }
 
-		// feed new centroids back into next iteration
-		DataSet<Centroid> finalCentroids = loop.closeWith(newCentroids);
+    // *************************************************************************
+    //     DATA TYPES
+    // *************************************************************************
 
-		// test that custom data type collects are working
-		finalCentroids.collect();
-	}
+    /** A simple two-dimensional point. */
+    public static class Point {
 
-	// *************************************************************************
-	//     DATA TYPES
-	// *************************************************************************
+        public double x, y;
 
-	/**
-	 * A simple two-dimensional point.
-	 */
-	public static class Point {
+        public Point() {}
 
-		public double x, y;
+        public Point(double x, double y) {
+            this.x = x;
+            this.y = y;
+        }
 
-		public Point() {}
+        public Point add(Point other) {
+            x += other.x;
+            y += other.y;
+            return this;
+        }
 
-		public Point(double x, double y) {
-			this.x = x;
-			this.y = y;
-		}
+        public Point div(long val) {
+            x /= val;
+            y /= val;
+            return this;
+        }
 
-		public Point add(Point other) {
-			x += other.x;
-			y += other.y;
-			return this;
-		}
+        public double euclideanDistance(Point other) {
+            return Math.sqrt((x - other.x) * (x - other.x) + (y - other.y) * (y - other.y));
+        }
 
-		public Point div(long val) {
-			x /= val;
-			y /= val;
-			return this;
-		}
+        public void clear() {
+            x = y = 0.0;
+        }
 
-		public double euclideanDistance(Point other) {
-			return Math.sqrt((x-other.x)*(x-other.x) + (y-other.y)*(y-other.y));
-		}
+        @Override
+        public String toString() {
+            return x + " " + y;
+        }
+    }
 
-		public void clear() {
-			x = y = 0.0;
-		}
+    /** A simple two-dimensional centroid, basically a point with an ID. */
+    public static class Centroid extends Point {
 
-		@Override
-		public String toString() {
-			return x + " " + y;
-		}
-	}
+        public int id;
 
-	/**
-	 * A simple two-dimensional centroid, basically a point with an ID.
-	 */
-	public static class Centroid extends Point {
+        public Centroid() {}
 
-		public int id;
+        public Centroid(int id, double x, double y) {
+            super(x, y);
+            this.id = id;
+        }
 
-		public Centroid() {}
+        public Centroid(int id, Point p) {
+            super(p.x, p.y);
+            this.id = id;
+        }
 
-		public Centroid(int id, double x, double y) {
-			super(x,y);
-			this.id = id;
-		}
+        @Override
+        public String toString() {
+            return id + " " + super.toString();
+        }
+    }
 
-		public Centroid(int id, Point p) {
-			super(p.x, p.y);
-			this.id = id;
-		}
+    // *************************************************************************
+    //     USER FUNCTIONS
+    // *************************************************************************
 
-		@Override
-		public String toString() {
-			return id + " " + super.toString();
-		}
-	}
+    /** Converts a {@code Tuple2<Double, Double>} into a {@link Point}. */
+    public static final class TuplePointConverter extends RichMapFunction<String, Point> {
 
-	// *************************************************************************
-	//     USER FUNCTIONS
-	// *************************************************************************
+        @Override
+        public Point map(String str) {
+            String[] fields = str.split("\\|");
+            return new Point(Double.parseDouble(fields[1]), Double.parseDouble(fields[2]));
+        }
+    }
 
-	/** Converts a Tuple2<Double,Double> into a Point. */
-	public static final class TuplePointConverter extends RichMapFunction<String, Point> {
+    /** Converts a {@code Tuple3<Integer, Double, Double>} into a {@link Centroid}. */
+    public static final class TupleCentroidConverter extends RichMapFunction<String, Centroid> {
 
-		@Override
-		public Point map(String str) {
-			String[] fields = str.split("\\|");
-			return new Point(Double.parseDouble(fields[1]), Double.parseDouble(fields[2]));
-		}
-	}
+        @Override
+        public Centroid map(String str) {
+            String[] fields = str.split("\\|");
+            return new Centroid(
+                    Integer.parseInt(fields[0]),
+                    Double.parseDouble(fields[1]),
+                    Double.parseDouble(fields[2]));
+        }
+    }
 
-	/** Converts a Tuple3<Integer, Double,Double> into a Centroid. */
-	public static final class TupleCentroidConverter extends RichMapFunction<String, Centroid> {
+    /** Determines the closest cluster center for a data point. */
+    public static final class SelectNearestCenter
+            extends RichMapFunction<Point, Tuple2<Integer, Point>> {
 
-		@Override
-		public Centroid map(String str) {
-			String[] fields = str.split("\\|");
-			return new Centroid(Integer.parseInt(fields[0]), Double.parseDouble(fields[1]), Double.parseDouble(fields[2]));
-		}
-	}
+        private Collection<Centroid> centroids;
+        private CustomAccumulator acc;
 
-	/** Determines the closest cluster center for a data point. */
-	public static final class SelectNearestCenter extends RichMapFunction<Point, Tuple2<Integer, Point>> {
+        /** Reads the centroid values from a broadcast variable into a collection. */
+        @Override
+        public void open(Configuration parameters) throws Exception {
+            this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
+            this.acc = new CustomAccumulator();
+            getRuntimeContext().addAccumulator("myAcc", this.acc);
+        }
 
-		private Collection<Centroid> centroids;
-		private CustomAccumulator acc;
+        @Override
+        public Tuple2<Integer, Point> map(Point p) throws Exception {
 
-		/** Reads the centroid values from a broadcast variable into a collection. */
-		@Override
-		public void open(Configuration parameters) throws Exception {
-			this.centroids = getRuntimeContext().getBroadcastVariable("centroids");
-			this.acc = new CustomAccumulator();
-			 getRuntimeContext().addAccumulator("myAcc", this.acc);
-		}
+            double minDistance = Double.MAX_VALUE;
+            int closestCentroidId = -1;
 
-		@Override
-		public Tuple2<Integer, Point> map(Point p) throws Exception {
+            // check all cluster centers
+            for (Centroid centroid : centroids) {
+                // compute distance
+                double distance = p.euclideanDistance(centroid);
 
-			double minDistance = Double.MAX_VALUE;
-			int closestCentroidId = -1;
+                // update nearest cluster if necessary
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestCentroidId = centroid.id;
+                }
+            }
 
-			// check all cluster centers
-			for (Centroid centroid : centroids) {
-				// compute distance
-				double distance = p.euclideanDistance(centroid);
+            // emit a new record with the center id and the data point.
+            acc.add(1L);
+            return new Tuple2<Integer, Point>(closestCentroidId, p);
+        }
+    }
 
-				// update nearest cluster if necessary
-				if (distance < minDistance) {
-					minDistance = distance;
-					closestCentroidId = centroid.id;
-				}
-			}
+    /** Use this so that we can check whether POJOs and the POJO comparator also work. */
+    public static final class DummyTuple3IntPointLong {
+        public Integer field0;
+        public Point field1;
+        public Long field2;
 
-			// emit a new record with the center id and the data point.
-			acc.add(1L);
-			return new Tuple2<Integer, Point>(closestCentroidId, p);
-		}
-	}
+        public DummyTuple3IntPointLong() {}
 
-	// Use this so that we can check whether POJOs and the POJO comparator also work
-	public static final class DummyTuple3IntPointLong {
-		public Integer field0;
-		public Point field1;
-		public Long field2;
+        DummyTuple3IntPointLong(Integer f0, Point f1, Long f2) {
+            this.field0 = f0;
+            this.field1 = f1;
+            this.field2 = f2;
+        }
+    }
 
-		public DummyTuple3IntPointLong() {}
+    /** Appends a count variable to the tuple. */
+    public static final class CountAppender
+            extends RichMapFunction<Tuple2<Integer, Point>, DummyTuple3IntPointLong> {
 
-		DummyTuple3IntPointLong(Integer f0, Point f1, Long f2) {
-			this.field0 = f0;
-			this.field1 = f1;
-			this.field2 = f2;
-		}
-	}
+        @Override
+        public DummyTuple3IntPointLong map(Tuple2<Integer, Point> t) {
+            return new DummyTuple3IntPointLong(t.f0, t.f1, 1L);
+        }
+    }
 
-	/** Appends a count variable to the tuple. */
-	public static final class CountAppender extends RichMapFunction<Tuple2<Integer, Point>, DummyTuple3IntPointLong> {
+    /** Sums and counts point coordinates. */
+    public static final class CentroidAccumulator
+            extends RichReduceFunction<DummyTuple3IntPointLong> {
 
-		@Override
-		public DummyTuple3IntPointLong map(Tuple2<Integer, Point> t) {
-			return new DummyTuple3IntPointLong(t.f0, t.f1, 1L);
-		}
-	}
+        @Override
+        public DummyTuple3IntPointLong reduce(
+                DummyTuple3IntPointLong val1, DummyTuple3IntPointLong val2) {
+            return new DummyTuple3IntPointLong(
+                    val1.field0, val1.field1.add(val2.field1), val1.field2 + val2.field2);
+        }
+    }
 
-	/** Sums and counts point coordinates. */
-	public static final class CentroidAccumulator extends RichReduceFunction<DummyTuple3IntPointLong> {
+    /** Computes new centroid from coordinate sum and count of points. */
+    public static final class CentroidAverager
+            extends RichMapFunction<DummyTuple3IntPointLong, Centroid> {
 
-		@Override
-		public DummyTuple3IntPointLong reduce(DummyTuple3IntPointLong val1, DummyTuple3IntPointLong val2) {
-			return new DummyTuple3IntPointLong(val1.field0, val1.field1.add(val2.field1), val1.field2 + val2.field2);
-		}
-	}
+        @Override
+        public Centroid map(DummyTuple3IntPointLong value) {
+            return new Centroid(value.field0, value.field1.div(value.field2));
+        }
+    }
 
-	/** Computes new centroid from coordinate sum and count of points. */
-	public static final class CentroidAverager extends RichMapFunction<DummyTuple3IntPointLong, Centroid> {
+    private static class CustomAccumulator implements SimpleAccumulator<Long> {
 
-		@Override
-		public Centroid map(DummyTuple3IntPointLong value) {
-			return new Centroid(value.field0, value.field1.div(value.field2));
-		}
-	}
+        private long value;
 
-	public static class CustomAccumulator implements SimpleAccumulator<Long> {
+        @Override
+        public void add(Long value) {
+            this.value += value;
+        }
 
-		private long value;
+        @Override
+        public Long getLocalValue() {
+            return this.value;
+        }
 
-		@Override
-		public void add(Long value) {
-			this.value += value;
-		}
+        @Override
+        public void resetLocal() {
+            this.value = 0L;
+        }
 
-		@Override
-		public Long getLocalValue() {
-			return this.value;
-		}
+        @Override
+        public void merge(Accumulator<Long, Long> other) {
+            this.value += other.getLocalValue();
+        }
 
-		@Override
-		public void resetLocal() {
-			this.value = 0L;
-		}
-
-		@Override
-		public void merge(Accumulator<Long, Long> other) {
-			this.value += other.getLocalValue();
-		}
-
-		@Override
-		public Accumulator<Long, Long> clone() {
-			CustomAccumulator acc = new CustomAccumulator();
-			acc.value = this.value;
-			return acc;
-		}
-	}
+        @Override
+        public Accumulator<Long, Long> clone() {
+            CustomAccumulator acc = new CustomAccumulator();
+            acc.value = this.value;
+            return acc;
+        }
+    }
 }

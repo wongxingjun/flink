@@ -29,72 +29,80 @@ import org.apache.flink.types.LongValue;
 import org.apache.flink.types.NullValue;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.LongValueSequenceIterator;
+import org.apache.flink.util.Preconditions;
 
-/*
+/**
  * @see <a href="http://mathworld.wolfram.com/StarGraph.html">Star Graph at Wolfram MathWorld</a>
  */
-public class StarGraph
-extends AbstractGraphGenerator<LongValue, NullValue, NullValue> {
+public class StarGraph extends GraphGeneratorBase<LongValue, NullValue, NullValue> {
 
-	// Required to create the DataSource
-	private final ExecutionEnvironment env;
+    public static final int MINIMUM_VERTEX_COUNT = 2;
 
-	// Required configuration
-	private long vertexCount;
+    // Required to create the DataSource
+    private final ExecutionEnvironment env;
 
-	/**
-	 * An undirected {@link Graph} containing a single central {@link Vertex} connected to all other leaf vertices.
-	 *
-	 * @param env the Flink execution environment
-	 * @param vertexCount number of vertices
-	 */
-	public StarGraph(ExecutionEnvironment env, long vertexCount) {
-		if (vertexCount <= 0) {
-			throw new IllegalArgumentException("Vertex count must be greater than zero");
-		}
+    // Required configuration
+    private final long vertexCount;
 
-		this.env = env;
-		this.vertexCount = vertexCount;
-	}
+    /**
+     * An undirected {@link Graph} with {@code n} vertices where the single central node has degree
+     * {@code n-1}, connecting to the other {@code n-1} vertices which have degree {@code 1}.
+     *
+     * @param env the Flink execution environment
+     * @param vertexCount number of vertices
+     */
+    public StarGraph(ExecutionEnvironment env, long vertexCount) {
+        Preconditions.checkArgument(
+                vertexCount >= MINIMUM_VERTEX_COUNT,
+                "Vertex count must be at least " + MINIMUM_VERTEX_COUNT);
 
-	@Override
-	public Graph<LongValue,NullValue,NullValue> generate() {
-		// Vertices
-		DataSet<Vertex<LongValue,NullValue>> vertices = GraphGeneratorUtils.vertexSequence(env, parallelism, vertexCount);
+        this.env = env;
+        this.vertexCount = vertexCount;
+    }
 
-		// Edges
-		LongValueSequenceIterator iterator = new LongValueSequenceIterator(1, this.vertexCount - 1);
+    @Override
+    public Graph<LongValue, NullValue, NullValue> generate() {
+        Preconditions.checkState(vertexCount >= 2);
 
-		DataSet<Edge<LongValue,NullValue>> edges = env
-			.fromParallelCollection(iterator, LongValue.class)
-				.setParallelism(parallelism)
-				.name("Edge iterators")
-			.flatMap(new LinkVertexToCenter())
-				.setParallelism(parallelism)
-				.name("Star graph edges");
+        // Vertices
+        DataSet<Vertex<LongValue, NullValue>> vertices =
+                GraphGeneratorUtils.vertexSequence(env, parallelism, vertexCount);
 
-		// Graph
-		return Graph.fromDataSet(vertices, edges, env);
-	}
+        // Edges
+        LongValueSequenceIterator iterator = new LongValueSequenceIterator(1, this.vertexCount - 1);
 
-	@ForwardedFields("*->f0")
-	public class LinkVertexToCenter
-	implements FlatMapFunction<LongValue, Edge<LongValue,NullValue>> {
+        DataSet<Edge<LongValue, NullValue>> edges =
+                env.fromParallelCollection(iterator, LongValue.class)
+                        .setParallelism(parallelism)
+                        .name("Edge iterators")
+                        .flatMap(new LinkVertexToCenter())
+                        .setParallelism(parallelism)
+                        .name("Star graph edges");
 
-		private LongValue center = new LongValue(0);
+        // Graph
+        return Graph.fromDataSet(vertices, edges, env);
+    }
 
-		private Edge<LongValue,NullValue> center_to_leaf = new Edge<>(center, null, NullValue.getInstance());
+    @ForwardedFields("*->f0")
+    private static class LinkVertexToCenter
+            implements FlatMapFunction<LongValue, Edge<LongValue, NullValue>> {
 
-		private Edge<LongValue,NullValue> leaf_to_center = new Edge<>(null, center, NullValue.getInstance());
+        private LongValue center = new LongValue(0);
 
-		@Override
-		public void flatMap(LongValue leaf, Collector<Edge<LongValue,NullValue>> out)
-				throws Exception {
-			center_to_leaf.f1 = leaf;
-			out.collect(center_to_leaf);
+        private Edge<LongValue, NullValue> centerToLeaf =
+                new Edge<>(center, null, NullValue.getInstance());
 
-			leaf_to_center.f0 = leaf;
-			out.collect(leaf_to_center);
-		}
-	}
+        private Edge<LongValue, NullValue> leafToCenter =
+                new Edge<>(null, center, NullValue.getInstance());
+
+        @Override
+        public void flatMap(LongValue leaf, Collector<Edge<LongValue, NullValue>> out)
+                throws Exception {
+            centerToLeaf.f1 = leaf;
+            out.collect(centerToLeaf);
+
+            leafToCenter.f0 = leaf;
+            out.collect(leafToCenter);
+        }
+    }
 }

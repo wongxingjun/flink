@@ -15,22 +15,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.runtime.metrics.dump;
 
-import org.apache.commons.io.output.ByteArrayOutputStream;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.core.memory.DataInputDeserializer;
+import org.apache.flink.core.memory.DataInputView;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.Histogram;
 import org.apache.flink.metrics.HistogramStatistics;
 import org.apache.flink.metrics.Meter;
+import org.apache.flink.metrics.Metric;
+import org.apache.flink.util.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
+import java.io.DataInput;
+import java.io.DataOutput;
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -41,262 +47,421 @@ import static org.apache.flink.runtime.metrics.dump.QueryScopeInfo.INFO_CATEGORY
 import static org.apache.flink.runtime.metrics.dump.QueryScopeInfo.INFO_CATEGORY_TASK;
 import static org.apache.flink.runtime.metrics.dump.QueryScopeInfo.INFO_CATEGORY_TM;
 
-/**
- * Utility class for the serialization of metrics.
- */
+/** Utility class for the serialization of metrics. */
 public class MetricDumpSerialization {
-	private static final Logger LOG = LoggerFactory.getLogger(MetricDumpSerialization.class);
 
-	private MetricDumpSerialization() {
-	}
+    private static final Logger LOG = LoggerFactory.getLogger(MetricDumpSerialization.class);
 
-	//-------------------------------------------------------------------------
-	// Serialization
-	//-------------------------------------------------------------------------
-	public static class MetricDumpSerializer {
-		private ByteArrayOutputStream baos = new ByteArrayOutputStream(4096);
-		private DataOutputStream dos = new DataOutputStream(baos);
+    private MetricDumpSerialization() {}
 
-		/**
-		 * Serializes the given metrics and returns the resulting byte array.
-		 *
-		 * @param counters   counters to serialize
-		 * @param gauges     gauges to serialize
-		 * @param histograms histograms to serialize
-		 * @return byte array containing the serialized metrics
-		 * @throws IOException
-		 */
-		public byte[] serialize(
-			Map<Counter, Tuple2<QueryScopeInfo, String>> counters,
-			Map<Gauge<?>, Tuple2<QueryScopeInfo, String>> gauges,
-			Map<Histogram, Tuple2<QueryScopeInfo, String>> histograms,
-			Map<Meter, Tuple2<QueryScopeInfo, String>> meters) throws IOException {
-				
-			baos.reset();
-			dos.writeInt(counters.size());
-			dos.writeInt(gauges.size());
-			dos.writeInt(histograms.size());
-			dos.writeInt(meters.size());
+    /**
+     * This class encapsulates all serialized metrics and a count for each metric type.
+     *
+     * <p>The counts are stored separately from the metrics since the final count for any given type
+     * can only be determined after all metrics of that type were serialized. Storing them together
+     * in a single byte[] would require an additional copy of all serialized metrics, as you would
+     * first have to serialize the metrics into a temporary buffer to calculate the counts, write
+     * the counts to the final output and copy all metrics from the temporary buffer.
+     *
+     * <p>Note that while one could implement the serialization in such a way so that at least 1
+     * byte (a validity flag) is written for each metric, this would require more bandwidth due to
+     * the sheer number of metrics.
+     */
+    public static class MetricSerializationResult implements Serializable {
 
-			for (Map.Entry<Counter, Tuple2<QueryScopeInfo, String>> entry : counters.entrySet()) {
-				serializeMetricInfo(dos, entry.getValue().f0);
-				serializeString(dos, entry.getValue().f1);
-				serializeCounter(dos, entry.getKey());
-			}
+        private static final long serialVersionUID = 6928770855951536906L;
 
-			for (Map.Entry<Gauge<?>, Tuple2<QueryScopeInfo, String>> entry : gauges.entrySet()) {
-				serializeMetricInfo(dos, entry.getValue().f0);
-				serializeString(dos, entry.getValue().f1);
-				serializeGauge(dos, entry.getKey());
-			}
+        public final byte[] serializedCounters;
+        public final byte[] serializedGauges;
+        public final byte[] serializedMeters;
+        public final byte[] serializedHistograms;
 
-			for (Map.Entry<Histogram, Tuple2<QueryScopeInfo, String>> entry : histograms.entrySet()) {
-				serializeMetricInfo(dos, entry.getValue().f0);
-				serializeString(dos, entry.getValue().f1);
-				serializeHistogram(dos, entry.getKey());
-			}
+        public final int numCounters;
+        public final int numGauges;
+        public final int numMeters;
+        public final int numHistograms;
 
-			for (Map.Entry<Meter, Tuple2<QueryScopeInfo, String>> entry : meters.entrySet()) {
-				serializeMetricInfo(dos, entry.getValue().f0);
-				serializeString(dos, entry.getValue().f1);
-				serializeMeter(dos, entry.getKey());
-			}
-			return baos.toByteArray();
-		}
+        public MetricSerializationResult(
+                byte[] serializedCounters,
+                byte[] serializedGauges,
+                byte[] serializedMeters,
+                byte[] serializedHistograms,
+                int numCounters,
+                int numGauges,
+                int numMeters,
+                int numHistograms) {
 
-		public void close() {
-			try {
-				dos.close();
-			} catch (Exception e) {
-				LOG.debug("Failed to close OutputStream.", e);
-			}
-			try {
-				baos.close();
-			} catch (Exception e) {
-				LOG.debug("Failed to close OutputStream.", e);
-			}
-		}
-	}
+            Preconditions.checkNotNull(serializedCounters);
+            Preconditions.checkNotNull(serializedGauges);
+            Preconditions.checkNotNull(serializedMeters);
+            Preconditions.checkNotNull(serializedHistograms);
+            Preconditions.checkArgument(numCounters >= 0);
+            Preconditions.checkArgument(numGauges >= 0);
+            Preconditions.checkArgument(numMeters >= 0);
+            Preconditions.checkArgument(numHistograms >= 0);
+            this.serializedCounters = serializedCounters;
+            this.serializedGauges = serializedGauges;
+            this.serializedMeters = serializedMeters;
+            this.serializedHistograms = serializedHistograms;
+            this.numCounters = numCounters;
+            this.numGauges = numGauges;
+            this.numMeters = numMeters;
+            this.numHistograms = numHistograms;
+        }
+    }
 
-	private static void serializeMetricInfo(DataOutputStream dos, QueryScopeInfo info) throws IOException {
-		serializeString(dos, info.scope);
-		dos.writeByte(info.getCategory());
-		switch (info.getCategory()) {
-			case INFO_CATEGORY_JM:
-				break;
-			case INFO_CATEGORY_TM:
-				String tmID = ((QueryScopeInfo.TaskManagerQueryScopeInfo) info).taskManagerID;
-				serializeString(dos, tmID);
-				break;
-			case INFO_CATEGORY_JOB:
-				QueryScopeInfo.JobQueryScopeInfo jobInfo = (QueryScopeInfo.JobQueryScopeInfo) info;
-				serializeString(dos, jobInfo.jobID);
-				break;
-			case INFO_CATEGORY_TASK:
-				QueryScopeInfo.TaskQueryScopeInfo taskInfo = (QueryScopeInfo.TaskQueryScopeInfo) info;
-				serializeString(dos, taskInfo.jobID);
-				serializeString(dos, taskInfo.vertexID);
-				dos.writeInt(taskInfo.subtaskIndex);
-				break;
-			case INFO_CATEGORY_OPERATOR:
-				QueryScopeInfo.OperatorQueryScopeInfo operatorInfo = (QueryScopeInfo.OperatorQueryScopeInfo) info;
-				serializeString(dos, operatorInfo.jobID);
-				serializeString(dos, operatorInfo.vertexID);
-				dos.writeInt(operatorInfo.subtaskIndex);
-				serializeString(dos, operatorInfo.operatorName);
-				break;
-		}
-	}
+    // -------------------------------------------------------------------------
+    // Serialization
+    // -------------------------------------------------------------------------
 
-	private static void serializeString(DataOutputStream dos, String string) throws IOException {
-		byte[] bytes = string.getBytes();
-		dos.writeInt(bytes.length);
-		dos.write(bytes);
-	}
+    /** Serializes a set of metrics into a {@link MetricSerializationResult}. */
+    public static class MetricDumpSerializer {
 
-	private static void serializeCounter(DataOutputStream dos, Counter counter) throws IOException {
-		dos.writeLong(counter.getCount());
-	}
+        private DataOutputSerializer countersBuffer = new DataOutputSerializer(1024 * 8);
+        private DataOutputSerializer gaugesBuffer = new DataOutputSerializer(1024 * 8);
+        private DataOutputSerializer metersBuffer = new DataOutputSerializer(1024 * 8);
+        private DataOutputSerializer histogramsBuffer = new DataOutputSerializer(1024 * 8);
 
-	private static void serializeGauge(DataOutputStream dos, Gauge<?> gauge) throws IOException {
-		serializeString(dos, gauge.getValue().toString());
-	}
+        /**
+         * Serializes the given metrics and returns the resulting byte array.
+         *
+         * <p>Should a {@link Metric} accessed in this method throw an exception it will be omitted
+         * from the returned {@link MetricSerializationResult}.
+         *
+         * <p>If the serialization of any primitive or String fails then the returned {@link
+         * MetricSerializationResult} is partially corrupted. Such a result can be deserialized
+         * safely by {@link MetricDumpDeserializer#deserialize(MetricSerializationResult)}; however
+         * only metrics that were fully serialized before the failure will be returned.
+         *
+         * @param counters counters to serialize
+         * @param gauges gauges to serialize
+         * @param histograms histograms to serialize
+         * @return MetricSerializationResult containing the serialized metrics and the count of each
+         *     metric type
+         */
+        public MetricSerializationResult serialize(
+                Map<Counter, Tuple2<QueryScopeInfo, String>> counters,
+                Map<Gauge<?>, Tuple2<QueryScopeInfo, String>> gauges,
+                Map<Histogram, Tuple2<QueryScopeInfo, String>> histograms,
+                Map<Meter, Tuple2<QueryScopeInfo, String>> meters) {
 
-	private static void serializeHistogram(DataOutputStream dos, Histogram histogram) throws IOException {
-		HistogramStatistics stat = histogram.getStatistics();
+            countersBuffer.clear();
+            int numCounters = 0;
+            for (Map.Entry<Counter, Tuple2<QueryScopeInfo, String>> entry : counters.entrySet()) {
+                try {
+                    serializeCounter(
+                            countersBuffer,
+                            entry.getValue().f0,
+                            entry.getValue().f1,
+                            entry.getKey());
+                    numCounters++;
+                } catch (Exception e) {
+                    LOG.debug("Failed to serialize counter.", e);
+                }
+            }
 
-		dos.writeLong(stat.getMin());
-		dos.writeLong(stat.getMax());
-		dos.writeDouble(stat.getMean());
-		dos.writeDouble(stat.getQuantile(0.5));
-		dos.writeDouble(stat.getStdDev());
-		dos.writeDouble(stat.getQuantile(0.75));
-		dos.writeDouble(stat.getQuantile(0.90));
-		dos.writeDouble(stat.getQuantile(0.95));
-		dos.writeDouble(stat.getQuantile(0.98));
-		dos.writeDouble(stat.getQuantile(0.99));
-		dos.writeDouble(stat.getQuantile(0.999));
-	}
+            gaugesBuffer.clear();
+            int numGauges = 0;
+            for (Map.Entry<Gauge<?>, Tuple2<QueryScopeInfo, String>> entry : gauges.entrySet()) {
+                try {
+                    serializeGauge(
+                            gaugesBuffer, entry.getValue().f0, entry.getValue().f1, entry.getKey());
+                    numGauges++;
+                } catch (Exception e) {
+                    LOG.debug("Failed to serialize gauge.", e);
+                }
+            }
 
-	private static void serializeMeter(DataOutputStream dos, Meter meter) throws IOException {
-		dos.writeDouble(meter.getRate());
-	}
+            histogramsBuffer.clear();
+            int numHistograms = 0;
+            for (Map.Entry<Histogram, Tuple2<QueryScopeInfo, String>> entry :
+                    histograms.entrySet()) {
+                try {
+                    serializeHistogram(
+                            histogramsBuffer,
+                            entry.getValue().f0,
+                            entry.getValue().f1,
+                            entry.getKey());
+                    numHistograms++;
+                } catch (Exception e) {
+                    LOG.debug("Failed to serialize histogram.", e);
+                }
+            }
 
-	//-------------------------------------------------------------------------
-	// Deserialization
-	//-------------------------------------------------------------------------
-	public static class MetricDumpDeserializer {
-		/**
-		 * De-serializes metrics from the given byte array and returns them as a list of {@link MetricDump}.
-		 *
-		 * @param data serialized metrics
-		 * @return A list containing the deserialized metrics.
-		 * @throws IOException
-		 */
-		public List<MetricDump> deserialize(byte[] data) throws IOException {
-			ByteArrayInputStream bais = new ByteArrayInputStream(data);
-			DataInputStream dis = new DataInputStream(bais);
+            metersBuffer.clear();
+            int numMeters = 0;
+            for (Map.Entry<Meter, Tuple2<QueryScopeInfo, String>> entry : meters.entrySet()) {
+                try {
+                    serializeMeter(
+                            metersBuffer, entry.getValue().f0, entry.getValue().f1, entry.getKey());
+                    numMeters++;
+                } catch (Exception e) {
+                    LOG.debug("Failed to serialize meter.", e);
+                }
+            }
 
-			int numCounters = dis.readInt();
-			int numGauges = dis.readInt();
-			int numHistograms = dis.readInt();
-			int numMeters = dis.readInt();
+            return new MetricSerializationResult(
+                    countersBuffer.getCopyOfBuffer(),
+                    gaugesBuffer.getCopyOfBuffer(),
+                    metersBuffer.getCopyOfBuffer(),
+                    histogramsBuffer.getCopyOfBuffer(),
+                    numCounters,
+                    numGauges,
+                    numMeters,
+                    numHistograms);
+        }
 
-			List<MetricDump> metrics = new ArrayList<>(numCounters + numGauges + numHistograms);
+        public void close() {
+            countersBuffer = null;
+            gaugesBuffer = null;
+            metersBuffer = null;
+            histogramsBuffer = null;
+        }
+    }
 
-			for (int x = 0; x < numCounters; x++) {
-				metrics.add(deserializeCounter(dis));
-			}
+    private static void serializeMetricInfo(DataOutput out, QueryScopeInfo info)
+            throws IOException {
+        out.writeUTF(info.scope);
+        out.writeByte(info.getCategory());
+        switch (info.getCategory()) {
+            case INFO_CATEGORY_JM:
+                break;
+            case INFO_CATEGORY_TM:
+                String tmID = ((QueryScopeInfo.TaskManagerQueryScopeInfo) info).taskManagerID;
+                out.writeUTF(tmID);
+                break;
+            case INFO_CATEGORY_JOB:
+                QueryScopeInfo.JobQueryScopeInfo jobInfo = (QueryScopeInfo.JobQueryScopeInfo) info;
+                out.writeUTF(jobInfo.jobID);
+                break;
+            case INFO_CATEGORY_TASK:
+                QueryScopeInfo.TaskQueryScopeInfo taskInfo =
+                        (QueryScopeInfo.TaskQueryScopeInfo) info;
+                out.writeUTF(taskInfo.jobID);
+                out.writeUTF(taskInfo.vertexID);
+                out.writeInt(taskInfo.subtaskIndex);
+                break;
+            case INFO_CATEGORY_OPERATOR:
+                QueryScopeInfo.OperatorQueryScopeInfo operatorInfo =
+                        (QueryScopeInfo.OperatorQueryScopeInfo) info;
+                out.writeUTF(operatorInfo.jobID);
+                out.writeUTF(operatorInfo.vertexID);
+                out.writeInt(operatorInfo.subtaskIndex);
+                out.writeUTF(operatorInfo.operatorName);
+                break;
+            default:
+                throw new IOException("Unknown scope category: " + info.getCategory());
+        }
+    }
 
-			for (int x = 0; x < numGauges; x++) {
-				metrics.add(deserializeGauge(dis));
-			}
+    private static void serializeCounter(
+            DataOutput out, QueryScopeInfo info, String name, Counter counter) throws IOException {
+        long count = counter.getCount();
+        serializeMetricInfo(out, info);
+        out.writeUTF(name);
+        out.writeLong(count);
+    }
 
-			for (int x = 0; x < numHistograms; x++) {
-				metrics.add(deserializeHistogram(dis));
-			}
+    private static void serializeGauge(
+            DataOutput out, QueryScopeInfo info, String name, Gauge<?> gauge) throws IOException {
+        Object value = gauge.getValue();
+        if (value == null) {
+            throw new NullPointerException("Value returned by gauge " + name + " was null.");
+        }
+        String stringValue = value.toString();
+        if (stringValue == null) {
+            throw new NullPointerException(
+                    "toString() of the value returned by gauge " + name + " returned null.");
+        }
 
-			for (int x = 0; x < numMeters; x++) {
-				metrics.add(deserializeMeter(dis));
-			}
+        serializeMetricInfo(out, info);
+        out.writeUTF(name);
+        out.writeUTF(stringValue);
+    }
 
-			return metrics;
-		}
-	}
+    private static void serializeHistogram(
+            DataOutput out, QueryScopeInfo info, String name, Histogram histogram)
+            throws IOException {
+        HistogramStatistics stat = histogram.getStatistics();
+        long min = stat.getMin();
+        long max = stat.getMax();
+        double mean = stat.getMean();
+        double median = stat.getQuantile(0.5);
+        double stddev = stat.getStdDev();
+        double p75 = stat.getQuantile(0.75);
+        double p90 = stat.getQuantile(0.90);
+        double p95 = stat.getQuantile(0.95);
+        double p98 = stat.getQuantile(0.98);
+        double p99 = stat.getQuantile(0.99);
+        double p999 = stat.getQuantile(0.999);
 
-	private static String deserializeString(DataInputStream dis) throws IOException {
-		int stringLength = dis.readInt();
-		byte[] bytes = new byte[stringLength];
-		dis.readFully(bytes);
-		return new String(bytes);
-	}
+        serializeMetricInfo(out, info);
+        out.writeUTF(name);
+        out.writeLong(min);
+        out.writeLong(max);
+        out.writeDouble(mean);
+        out.writeDouble(median);
+        out.writeDouble(stddev);
+        out.writeDouble(p75);
+        out.writeDouble(p90);
+        out.writeDouble(p95);
+        out.writeDouble(p98);
+        out.writeDouble(p99);
+        out.writeDouble(p999);
+    }
 
-	private static MetricDump.CounterDump deserializeCounter(DataInputStream dis) throws IOException {
-		QueryScopeInfo scope = deserializeMetricInfo(dis);
-		String name = deserializeString(dis);
-		return new MetricDump.CounterDump(scope, name, dis.readLong());
-	}
+    private static void serializeMeter(
+            DataOutput out, QueryScopeInfo info, String name, Meter meter) throws IOException {
+        serializeMetricInfo(out, info);
+        out.writeUTF(name);
+        out.writeDouble(meter.getRate());
+    }
 
-	private static MetricDump.GaugeDump deserializeGauge(DataInputStream dis) throws IOException {
-		QueryScopeInfo scope = deserializeMetricInfo(dis);
-		String name = deserializeString(dis);
-		String value = deserializeString(dis);
-		return new MetricDump.GaugeDump(scope, name, value);
-	}
+    // -------------------------------------------------------------------------
+    // Deserialization
+    // -------------------------------------------------------------------------
 
-	private static MetricDump.HistogramDump deserializeHistogram(DataInputStream dis) throws IOException {
-		QueryScopeInfo info = deserializeMetricInfo(dis);
-		String name = deserializeString(dis);
-		long min = dis.readLong();
-		long max = dis.readLong();
-		double mean = dis.readDouble();
-		double median = dis.readDouble();
-		double stddev = dis.readDouble();
-		double p75 = dis.readDouble();
-		double p90 = dis.readDouble();
-		double p95 = dis.readDouble();
-		double p98 = dis.readDouble();
-		double p99 = dis.readDouble();
-		double p999 = dis.readDouble();
-		return new MetricDump.HistogramDump(info, name, min, max, mean, median, stddev, p75, p90, p95, p98, p99, p999);
-	}
+    /**
+     * Deserializer for reading a list of {@link MetricDump MetricDumps} from a {@link
+     * MetricSerializationResult}.
+     */
+    public static class MetricDumpDeserializer {
+        /**
+         * De-serializes metrics from the given byte array and returns them as a list of {@link
+         * MetricDump}.
+         *
+         * @param data serialized metrics
+         * @return A list containing the deserialized metrics.
+         */
+        public List<MetricDump> deserialize(
+                MetricDumpSerialization.MetricSerializationResult data) {
+            DataInputView countersInputView =
+                    new DataInputDeserializer(
+                            data.serializedCounters, 0, data.serializedCounters.length);
+            DataInputView gaugesInputView =
+                    new DataInputDeserializer(
+                            data.serializedGauges, 0, data.serializedGauges.length);
+            DataInputView metersInputView =
+                    new DataInputDeserializer(
+                            data.serializedMeters, 0, data.serializedMeters.length);
+            DataInputView histogramsInputView =
+                    new DataInputDeserializer(
+                            data.serializedHistograms, 0, data.serializedHistograms.length);
 
-	private static MetricDump.MeterDump deserializeMeter(DataInputStream dis) throws IOException {
-		QueryScopeInfo info = deserializeMetricInfo(dis);
-		String name = deserializeString(dis);
-		double rate = dis.readDouble();
-		return new MetricDump.MeterDump(info, name, rate);
-	}
+            List<MetricDump> metrics =
+                    new ArrayList<>(
+                            data.numCounters
+                                    + data.numGauges
+                                    + data.numMeters
+                                    + data.numHistograms);
 
-	private static QueryScopeInfo deserializeMetricInfo(DataInputStream dis) throws IOException {
-		String jobID;
-		String vertexID;
-		int subtaskIndex;
+            for (int x = 0; x < data.numCounters; x++) {
+                try {
+                    metrics.add(deserializeCounter(countersInputView));
+                } catch (Exception e) {
+                    LOG.debug("Failed to deserialize counter.", e);
+                }
+            }
 
-		String scope = deserializeString(dis);
-		byte cat = dis.readByte();
-		switch (cat) {
-			case INFO_CATEGORY_JM:
-				return new QueryScopeInfo.JobManagerQueryScopeInfo(scope);
-			case INFO_CATEGORY_TM:
-				String tmID = deserializeString(dis);
-				return new QueryScopeInfo.TaskManagerQueryScopeInfo(tmID, scope);
-			case INFO_CATEGORY_JOB:
-				jobID = deserializeString(dis);
-				return new QueryScopeInfo.JobQueryScopeInfo(jobID, scope);
-			case INFO_CATEGORY_TASK:
-				jobID = deserializeString(dis);
-				vertexID = deserializeString(dis);
-				subtaskIndex = dis.readInt();
-				return new QueryScopeInfo.TaskQueryScopeInfo(jobID, vertexID, subtaskIndex, scope);
-			case INFO_CATEGORY_OPERATOR:
-				jobID = deserializeString(dis);
-				vertexID = deserializeString(dis);
-				subtaskIndex = dis.readInt();
-				String operatorName = deserializeString(dis);
-				return new QueryScopeInfo.OperatorQueryScopeInfo(jobID, vertexID, subtaskIndex, operatorName, scope);
-			default:
-				throw new IOException("sup");
-		}
-	}
+            for (int x = 0; x < data.numGauges; x++) {
+                try {
+                    metrics.add(deserializeGauge(gaugesInputView));
+                } catch (Exception e) {
+                    LOG.debug("Failed to deserialize gauge.", e);
+                }
+            }
+
+            for (int x = 0; x < data.numMeters; x++) {
+                try {
+                    metrics.add(deserializeMeter(metersInputView));
+                } catch (Exception e) {
+                    LOG.debug("Failed to deserialize meter.", e);
+                }
+            }
+
+            for (int x = 0; x < data.numHistograms; x++) {
+                try {
+                    metrics.add(deserializeHistogram(histogramsInputView));
+                } catch (Exception e) {
+                    LOG.debug("Failed to deserialize histogram.", e);
+                }
+            }
+
+            return metrics;
+        }
+    }
+
+    private static MetricDump.CounterDump deserializeCounter(DataInputView dis) throws IOException {
+        QueryScopeInfo scope = deserializeMetricInfo(dis);
+        String name = dis.readUTF();
+        long count = dis.readLong();
+        return new MetricDump.CounterDump(scope, name, count);
+    }
+
+    private static MetricDump.GaugeDump deserializeGauge(DataInputView dis) throws IOException {
+        QueryScopeInfo scope = deserializeMetricInfo(dis);
+        String name = dis.readUTF();
+        String value = dis.readUTF();
+        return new MetricDump.GaugeDump(scope, name, value);
+    }
+
+    private static MetricDump.HistogramDump deserializeHistogram(DataInputView dis)
+            throws IOException {
+        QueryScopeInfo info = deserializeMetricInfo(dis);
+        String name = dis.readUTF();
+        long min = dis.readLong();
+        long max = dis.readLong();
+        double mean = dis.readDouble();
+        double median = dis.readDouble();
+        double stddev = dis.readDouble();
+        double p75 = dis.readDouble();
+        double p90 = dis.readDouble();
+        double p95 = dis.readDouble();
+        double p98 = dis.readDouble();
+        double p99 = dis.readDouble();
+        double p999 = dis.readDouble();
+
+        return new MetricDump.HistogramDump(
+                info, name, min, max, mean, median, stddev, p75, p90, p95, p98, p99, p999);
+    }
+
+    private static MetricDump.MeterDump deserializeMeter(DataInputView dis) throws IOException {
+        QueryScopeInfo info = deserializeMetricInfo(dis);
+        String name = dis.readUTF();
+        double rate = dis.readDouble();
+        return new MetricDump.MeterDump(info, name, rate);
+    }
+
+    private static QueryScopeInfo deserializeMetricInfo(DataInput dis) throws IOException {
+        String jobID;
+        String vertexID;
+        int subtaskIndex;
+
+        String scope = dis.readUTF();
+        byte cat = dis.readByte();
+        switch (cat) {
+            case INFO_CATEGORY_JM:
+                return new QueryScopeInfo.JobManagerQueryScopeInfo(scope);
+            case INFO_CATEGORY_TM:
+                String tmID = dis.readUTF();
+                return new QueryScopeInfo.TaskManagerQueryScopeInfo(tmID, scope);
+            case INFO_CATEGORY_JOB:
+                jobID = dis.readUTF();
+                return new QueryScopeInfo.JobQueryScopeInfo(jobID, scope);
+            case INFO_CATEGORY_TASK:
+                jobID = dis.readUTF();
+                vertexID = dis.readUTF();
+                subtaskIndex = dis.readInt();
+                return new QueryScopeInfo.TaskQueryScopeInfo(jobID, vertexID, subtaskIndex, scope);
+            case INFO_CATEGORY_OPERATOR:
+                jobID = dis.readUTF();
+                vertexID = dis.readUTF();
+                subtaskIndex = dis.readInt();
+                String operatorName = dis.readUTF();
+                return new QueryScopeInfo.OperatorQueryScopeInfo(
+                        jobID, vertexID, subtaskIndex, operatorName, scope);
+            default:
+                throw new IOException("Unknown scope category: " + cat);
+        }
+    }
 }

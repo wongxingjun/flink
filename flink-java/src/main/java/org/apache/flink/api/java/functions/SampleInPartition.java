@@ -15,12 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.api.java.functions;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.functions.RichMapPartitionFunction;
-import org.apache.flink.api.java.sampling.IntermediateSampleData;
 import org.apache.flink.api.java.sampling.DistributedRandomSampler;
+import org.apache.flink.api.java.sampling.IntermediateSampleData;
 import org.apache.flink.api.java.sampling.ReservoirSamplerWithReplacement;
 import org.apache.flink.api.java.sampling.ReservoirSamplerWithoutReplacement;
 import org.apache.flink.util.Collector;
@@ -36,38 +37,37 @@ import java.util.Iterator;
 @Internal
 public class SampleInPartition<T> extends RichMapPartitionFunction<T, IntermediateSampleData<T>> {
 
-	private boolean withReplacement;
-	private int numSample;
-	private long seed;
+    private boolean withReplacement;
+    private int numSample;
+    private long seed;
 
-	/**
-	 * Create a function instance of SampleInPartition.
-	 *
-	 * @param withReplacement Whether element can be selected more than once.
-	 * @param numSample       Fixed sample size.
-	 * @param seed            Random generator seed.
-	 */
-	public SampleInPartition(boolean withReplacement, int numSample, long seed) {
-		this.withReplacement = withReplacement;
-		this.numSample = numSample;
-		this.seed = seed;
-	}
+    /**
+     * Create a function instance of SampleInPartition.
+     *
+     * @param withReplacement Whether element can be selected more than once.
+     * @param numSample Fixed sample size.
+     * @param seed Random generator seed.
+     */
+    public SampleInPartition(boolean withReplacement, int numSample, long seed) {
+        this.withReplacement = withReplacement;
+        this.numSample = numSample;
+        this.seed = seed;
+    }
 
-	@Override
-	public void mapPartition(Iterable<T> values, Collector<IntermediateSampleData<T>> out) throws Exception {
-		DistributedRandomSampler<T> sampler;
-		long seedAndIndex = seed + getRuntimeContext().getIndexOfThisSubtask();
-		if (withReplacement) {
-			sampler = new ReservoirSamplerWithReplacement<T>(numSample, seedAndIndex);
-		} else {
-			sampler = new ReservoirSamplerWithoutReplacement<T>(numSample, seedAndIndex);
-		}
+    @Override
+    public void mapPartition(Iterable<T> values, Collector<IntermediateSampleData<T>> out)
+            throws Exception {
+        DistributedRandomSampler<T> sampler;
+        long seedAndIndex = seed + getRuntimeContext().getIndexOfThisSubtask();
+        if (withReplacement) {
+            sampler = new ReservoirSamplerWithReplacement<T>(numSample, seedAndIndex);
+        } else {
+            sampler = new ReservoirSamplerWithoutReplacement<T>(numSample, seedAndIndex);
+        }
 
-		Iterator<IntermediateSampleData<T>> sampled = sampler.sampleInPartition(values.iterator());
-		while (sampled.hasNext()) {
-			out.collect(sampled.next());
-		}
-	}
+        Iterator<IntermediateSampleData<T>> sampled = sampler.sampleInPartition(values.iterator());
+        while (sampled.hasNext()) {
+            out.collect(sampled.next());
+        }
+    }
 }
-
-

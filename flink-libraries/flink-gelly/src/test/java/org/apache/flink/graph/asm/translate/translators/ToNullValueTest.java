@@ -24,20 +24,26 @@ import org.apache.flink.types.IntValue;
 import org.apache.flink.types.LongValue;
 import org.apache.flink.types.NullValue;
 import org.apache.flink.types.StringValue;
+
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 
+/** Tests for {@link ToNullValue}. */
 public class ToNullValueTest {
 
-	@Test
-	public void testTranslation() throws Exception {
-		NullValue reuse = NullValue.getInstance();
+    @Test
+    public void testTranslation() throws Exception {
+        NullValue reuse = NullValue.getInstance();
 
-		assertEquals(NullValue.getInstance(), new ToNullValue<>().translate(new DoubleValue(), reuse));
-		assertEquals(NullValue.getInstance(), new ToNullValue<>().translate(new FloatValue(), reuse));
-		assertEquals(NullValue.getInstance(), new ToNullValue<>().translate(new IntValue(), reuse));
-		assertEquals(NullValue.getInstance(), new ToNullValue<>().translate(new LongValue(), reuse));
-		assertEquals(NullValue.getInstance(), new ToNullValue<>().translate(new StringValue(), reuse));
-	}
+        assertEquals(
+                NullValue.getInstance(), new ToNullValue<>().translate(new DoubleValue(), reuse));
+        assertEquals(
+                NullValue.getInstance(), new ToNullValue<>().translate(new FloatValue(), reuse));
+        assertEquals(NullValue.getInstance(), new ToNullValue<>().translate(new IntValue(), reuse));
+        assertEquals(
+                NullValue.getInstance(), new ToNullValue<>().translate(new LongValue(), reuse));
+        assertEquals(
+                NullValue.getInstance(), new ToNullValue<>().translate(new StringValue(), reuse));
+    }
 }

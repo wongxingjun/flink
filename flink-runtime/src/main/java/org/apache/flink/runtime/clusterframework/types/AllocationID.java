@@ -21,30 +21,33 @@ package org.apache.flink.runtime.clusterframework.types;
 import org.apache.flink.util.AbstractID;
 
 /**
- * Unique identifier for a slot allocated by a JobManager from a TaskManager.
- * Also identifies a pending allocation request, and is constant across retries.
- * 
- * <p>This ID is used for all synchronization of the status of Slots from TaskManagers
- * that are not free (i.e., have been allocated by a job).
+ * Unique identifier for a physical slot allocated by a JobManager via the ResourceManager from a
+ * TaskManager. The ID is assigned once the JobManager (or its SlotPool) first requests the slot and
+ * is constant across retries.
+ *
+ * <p>This ID is used by the TaskManager and ResourceManager to track and synchronize which slots
+ * are allocated to which JobManager and which are free.
+ *
+ * <p>In contrast to this AllocationID, the {@link org.apache.flink.runtime.jobmaster.SlotRequestId}
+ * is used when a task requests a logical slot from the SlotPool. Multiple logical slot requests can
+ * map to one physical slot request (due to slot sharing).
  */
 public class AllocationID extends AbstractID {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	/**
-	 * Constructs a new random AllocationID.
-	 */
-	public AllocationID() {
-		super();
-	}
+    /** Constructs a new random AllocationID. */
+    public AllocationID() {
+        super();
+    }
 
-	/**
-	 * Constructs a new AllocationID with the given parts.
-	 *
-	 * @param lowerPart the lower bytes of the ID
-	 * @param upperPart the higher bytes of the ID
-	 */
-	public AllocationID(long lowerPart, long upperPart) {
-		super(lowerPart, upperPart);
-	}
+    /**
+     * Constructs a new AllocationID with the given parts.
+     *
+     * @param lowerPart the lower bytes of the ID
+     * @param upperPart the higher bytes of the ID
+     */
+    public AllocationID(long lowerPart, long upperPart) {
+        super(lowerPart, upperPart);
+    }
 }

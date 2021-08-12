@@ -16,52 +16,52 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.io.network.api.serialization;
+
+import org.apache.flink.core.io.IOReadableWritable;
+import org.apache.flink.runtime.io.network.buffer.Buffer;
+import org.apache.flink.util.CloseableIterator;
 
 import java.io.IOException;
 
-import org.apache.flink.core.io.IOReadableWritable;
-import org.apache.flink.core.memory.MemorySegment;
-import org.apache.flink.runtime.io.network.buffer.Buffer;
-
-/**
- * Interface for turning sequences of memory segments into records.
- */
+/** Interface for turning sequences of memory segments into records. */
 public interface RecordDeserializer<T extends IOReadableWritable> {
 
-	public static enum DeserializationResult {
-		PARTIAL_RECORD(false, true),
-		INTERMEDIATE_RECORD_FROM_BUFFER(true, false),
-		LAST_RECORD_FROM_BUFFER(true, true);
+    /** Status of the deserialization result. */
+    enum DeserializationResult {
+        PARTIAL_RECORD(false, true),
+        INTERMEDIATE_RECORD_FROM_BUFFER(true, false),
+        LAST_RECORD_FROM_BUFFER(true, true);
 
-		private final boolean isFullRecord;
+        private final boolean isFullRecord;
 
-		private final boolean isBufferConsumed;
+        private final boolean isBufferConsumed;
 
-		private DeserializationResult(boolean isFullRecord, boolean isBufferConsumed) {
-			this.isFullRecord = isFullRecord;
-			this.isBufferConsumed = isBufferConsumed;
-		}
+        private DeserializationResult(boolean isFullRecord, boolean isBufferConsumed) {
+            this.isFullRecord = isFullRecord;
+            this.isBufferConsumed = isBufferConsumed;
+        }
 
-		public boolean isFullRecord () {
-			return this.isFullRecord;
-		}
+        public boolean isFullRecord() {
+            return this.isFullRecord;
+        }
 
-		public boolean isBufferConsumed() {
-			return this.isBufferConsumed;
-		}
-	}
-	
-	DeserializationResult getNextRecord(T target) throws IOException;
+        public boolean isBufferConsumed() {
+            return this.isBufferConsumed;
+        }
+    }
 
-	void setNextMemorySegment(MemorySegment segment, int numBytes) throws IOException;
+    DeserializationResult getNextRecord(T target) throws IOException;
 
-	void setNextBuffer(Buffer buffer) throws IOException;
+    void setNextBuffer(Buffer buffer) throws IOException;
 
-	Buffer getCurrentBuffer();
+    void clear();
 
-	void clear();
-	
-	boolean hasUnfinishedData();
+    /**
+     * Gets the unconsumed buffer which needs to be persisted in unaligned checkpoint scenario.
+     *
+     * <p>Note that the unconsumed buffer might be null if the whole buffer was already consumed
+     * before and there are no partial length or data remained in the end of buffer.
+     */
+    CloseableIterator<Buffer> getUnconsumedBuffer() throws IOException;
 }

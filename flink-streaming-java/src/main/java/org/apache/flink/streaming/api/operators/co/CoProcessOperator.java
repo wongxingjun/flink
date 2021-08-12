@@ -18,150 +18,137 @@
 package org.apache.flink.streaming.api.operators.co;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.runtime.state.VoidNamespace;
-import org.apache.flink.runtime.state.VoidNamespaceSerializer;
-import org.apache.flink.streaming.api.SimpleTimerService;
-import org.apache.flink.streaming.api.TimeDomain;
 import org.apache.flink.streaming.api.TimerService;
 import org.apache.flink.streaming.api.functions.co.CoProcessFunction;
 import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
-import org.apache.flink.streaming.api.operators.InternalTimer;
 import org.apache.flink.streaming.api.operators.InternalTimerService;
 import org.apache.flink.streaming.api.operators.TimestampedCollector;
-import org.apache.flink.streaming.api.operators.Triggerable;
 import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
+import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
+import org.apache.flink.util.OutputTag;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
+/**
+ * A {@link org.apache.flink.streaming.api.operators.StreamOperator} for executing {@link
+ * CoProcessFunction CoProcessFunctions}.
+ */
 @Internal
-public class CoProcessOperator<K, IN1, IN2, OUT>
-		extends AbstractUdfStreamOperator<OUT, CoProcessFunction<IN1, IN2, OUT>>
-		implements TwoInputStreamOperator<IN1, IN2, OUT>, Triggerable<K, VoidNamespace> {
+public class CoProcessOperator<IN1, IN2, OUT>
+        extends AbstractUdfStreamOperator<OUT, CoProcessFunction<IN1, IN2, OUT>>
+        implements TwoInputStreamOperator<IN1, IN2, OUT> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private transient TimestampedCollector<OUT> collector;
+    private transient TimestampedCollector<OUT> collector;
 
-	private transient TimerService timerService;
+    private transient ContextImpl context;
 
-	private transient ContextImpl context;
+    /** We listen to this ourselves because we don't have an {@link InternalTimerService}. */
+    private long currentWatermark = Long.MIN_VALUE;
 
-	private transient OnTimerContextImpl onTimerContext;
+    public CoProcessOperator(CoProcessFunction<IN1, IN2, OUT> flatMapper) {
+        super(flatMapper);
+    }
 
-	public CoProcessOperator(CoProcessFunction<IN1, IN2, OUT> flatMapper) {
-		super(flatMapper);
-	}
+    @Override
+    public void open() throws Exception {
+        super.open();
+        collector = new TimestampedCollector<>(output);
 
-	@Override
-	public void open() throws Exception {
-		super.open();
-		collector = new TimestampedCollector<>(output);
+        context = new ContextImpl(userFunction, getProcessingTimeService());
+    }
 
-		InternalTimerService<VoidNamespace> internalTimerService =
-				getInternalTimerService("user-timers", VoidNamespaceSerializer.INSTANCE, this);
+    @Override
+    public void processElement1(StreamRecord<IN1> element) throws Exception {
+        collector.setTimestamp(element);
+        context.element = element;
+        userFunction.processElement1(element.getValue(), context, collector);
+        context.element = null;
+    }
 
-		this.timerService = new SimpleTimerService(internalTimerService);
+    @Override
+    public void processElement2(StreamRecord<IN2> element) throws Exception {
+        collector.setTimestamp(element);
+        context.element = element;
+        userFunction.processElement2(element.getValue(), context, collector);
+        context.element = null;
+    }
 
-		context = new ContextImpl(timerService);
-		onTimerContext = new OnTimerContextImpl(timerService);
-	}
+    @Override
+    public void processWatermark(Watermark mark) throws Exception {
+        super.processWatermark(mark);
+        currentWatermark = mark.getTimestamp();
+    }
 
-	@Override
-	public void processElement1(StreamRecord<IN1> element) throws Exception {
-		collector.setTimestamp(element);
-		context.element = element;
-		userFunction.processElement1(element.getValue(), context, collector);
-		context.element = null;
-	}
+    private class ContextImpl extends CoProcessFunction<IN1, IN2, OUT>.Context
+            implements TimerService {
 
-	@Override
-	public void processElement2(StreamRecord<IN2> element) throws Exception {
-		collector.setTimestamp(element);
-		context.element = element;
-		userFunction.processElement2(element.getValue(), context, collector);
-		context.element = null;
-	}
+        private final ProcessingTimeService timerService;
 
-	@Override
-	public void onEventTime(InternalTimer<K, VoidNamespace> timer) throws Exception {
-		collector.setAbsoluteTimestamp(timer.getTimestamp());
-		onTimerContext.timeDomain = TimeDomain.EVENT_TIME;
-		onTimerContext.timer = timer;
-		userFunction.onTimer(timer.getTimestamp(), onTimerContext, collector);
-		onTimerContext.timeDomain = null;
-		onTimerContext.timer = null;
-	}
+        private StreamRecord<?> element;
 
-	@Override
-	public void onProcessingTime(InternalTimer<K, VoidNamespace> timer) throws Exception {
-		collector.setAbsoluteTimestamp(timer.getTimestamp());
-		onTimerContext.timeDomain = TimeDomain.PROCESSING_TIME;
-		onTimerContext.timer = timer;
-		userFunction.onTimer(timer.getTimestamp(), onTimerContext, collector);
-		onTimerContext.timeDomain = null;
-		onTimerContext.timer = null;
-	}
+        ContextImpl(CoProcessFunction<IN1, IN2, OUT> function, ProcessingTimeService timerService) {
+            function.super();
+            this.timerService = checkNotNull(timerService);
+        }
 
-	protected TimestampedCollector<OUT> getCollector() {
-		return collector;
-	}
+        @Override
+        public Long timestamp() {
+            checkState(element != null);
 
-	private static class ContextImpl implements CoProcessFunction.Context {
+            if (element.hasTimestamp()) {
+                return element.getTimestamp();
+            } else {
+                return null;
+            }
+        }
 
-		private final TimerService timerService;
+        @Override
+        public long currentProcessingTime() {
+            return timerService.getCurrentProcessingTime();
+        }
 
-		private StreamRecord<?> element;
+        @Override
+        public long currentWatermark() {
+            return currentWatermark;
+        }
 
-		ContextImpl(TimerService timerService) {
-			this.timerService = checkNotNull(timerService);
-		}
+        @Override
+        public void registerProcessingTimeTimer(long time) {
+            throw new UnsupportedOperationException(UNSUPPORTED_REGISTER_TIMER_MSG);
+        }
 
-		@Override
-		public Long timestamp() {
-			checkState(element != null);
+        @Override
+        public void registerEventTimeTimer(long time) {
+            throw new UnsupportedOperationException(UNSUPPORTED_REGISTER_TIMER_MSG);
+        }
 
-			if (element.hasTimestamp()) {
-				return element.getTimestamp();
-			} else {
-				return null;
-			}
-		}
+        @Override
+        public void deleteProcessingTimeTimer(long time) {
+            throw new UnsupportedOperationException(UNSUPPORTED_DELETE_TIMER_MSG);
+        }
 
-		@Override
-		public TimerService timerService() {
-			return timerService;
-		}
-	}
+        @Override
+        public void deleteEventTimeTimer(long time) {
+            throw new UnsupportedOperationException(UNSUPPORTED_DELETE_TIMER_MSG);
+        }
 
-	private static class OnTimerContextImpl implements CoProcessFunction.OnTimerContext {
+        @Override
+        public TimerService timerService() {
+            return this;
+        }
 
-		private final TimerService timerService;
+        @Override
+        public <X> void output(OutputTag<X> outputTag, X value) {
+            if (outputTag == null) {
+                throw new IllegalArgumentException("OutputTag must not be null.");
+            }
 
-		private TimeDomain timeDomain;
-
-		private InternalTimer<?, VoidNamespace> timer;
-
-		OnTimerContextImpl(TimerService timerService) {
-			this.timerService = checkNotNull(timerService);
-		}
-
-		@Override
-		public TimeDomain timeDomain() {
-			checkState(timeDomain != null);
-			return timeDomain;
-		}
-
-		@Override
-		public Long timestamp() {
-			checkState(timer != null);
-			return timer.getTimestamp();
-		}
-
-		@Override
-		public TimerService timerService() {
-			return timerService;
-		}
-	}
+            output.collect(outputTag, new StreamRecord<>(value, element.getTimestamp()));
+        }
+    }
 }

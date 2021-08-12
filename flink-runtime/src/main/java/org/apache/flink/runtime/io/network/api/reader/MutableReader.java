@@ -18,17 +18,14 @@
 
 package org.apache.flink.runtime.io.network.api.reader;
 
-import java.io.IOException;
-
 import org.apache.flink.core.io.IOReadableWritable;
 
-/**
- * A record-oriented reader for mutable record types.
- */
+import java.io.IOException;
+
+/** A record-oriented reader for mutable record types. */
 public interface MutableReader<T extends IOReadableWritable> extends ReaderBase {
 
-	boolean next(T target) throws IOException, InterruptedException;
+    boolean next(T target) throws IOException, InterruptedException;
 
-	void clearBuffers();
-
+    void clearBuffers();
 }

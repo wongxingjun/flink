@@ -18,8 +18,6 @@
 
 package org.apache.flink.graph.library.metric.undirected;
 
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.common.accumulators.LongMaximum;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -28,307 +26,314 @@ import org.apache.flink.api.common.operators.base.ReduceOperatorBase.CombineHint
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.functions.FunctionAnnotation;
 import org.apache.flink.api.java.tuple.Tuple3;
-import org.apache.flink.graph.AbstractGraphAnalytic;
 import org.apache.flink.graph.AnalyticHelper;
 import org.apache.flink.graph.Edge;
 import org.apache.flink.graph.Graph;
+import org.apache.flink.graph.GraphAnalyticBase;
 import org.apache.flink.graph.asm.degree.annotate.undirected.EdgeDegreePair;
+import org.apache.flink.graph.asm.result.PrintableResult;
 import org.apache.flink.graph.library.metric.undirected.EdgeMetrics.Result;
 import org.apache.flink.types.LongValue;
+
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 import java.io.IOException;
 import java.text.NumberFormat;
 
-import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
-
 /**
- * Compute the following edge metrics in an undirected graph:
- *  - number of triangle triplets
- *  - number of rectangle triplets
- *  - maximum number of triangle triplets
- *  - maximum number of rectangle triplets
+ * Compute the following edge metrics in an undirected graph. - number of triangle triplets - number
+ * of rectangle triplets - maximum number of triangle triplets - maximum number of rectangle
+ * triplets
  *
  * @param <K> graph ID type
  * @param <VV> vertex value type
  * @param <EV> edge value type
  */
 public class EdgeMetrics<K extends Comparable<K>, VV, EV>
-extends AbstractGraphAnalytic<K, VV, EV, Result> {
+        extends GraphAnalyticBase<K, VV, EV, Result> {
 
-	private static final String TRIANGLE_TRIPLET_COUNT = "triangleTripletCount";
+    private static final String TRIANGLE_TRIPLET_COUNT = "triangleTripletCount";
 
-	private static final String RECTANGLE_TRIPLET_COUNT = "rectangleTripletCount";
+    private static final String RECTANGLE_TRIPLET_COUNT = "rectangleTripletCount";
 
-	private static final String MAXIMUM_TRIANGLE_TRIPLETS = "maximumTriangleTriplets";
+    private static final String MAXIMUM_TRIANGLE_TRIPLETS = "maximumTriangleTriplets";
 
-	private static final String MAXIMUM_RECTANGLE_TRIPLETS = "maximumRectangleTriplets";
+    private static final String MAXIMUM_RECTANGLE_TRIPLETS = "maximumRectangleTriplets";
 
-	private EdgeMetricsHelper<K> edgeMetricsHelper;
+    private EdgeMetricsHelper<K> edgeMetricsHelper;
 
-	// Optional configuration
-	private boolean reduceOnTargetId = false;
+    // Optional configuration
+    private boolean reduceOnTargetId = false;
 
-	private int parallelism = PARALLELISM_DEFAULT;
+    /**
+     * The degree can be counted from either the edge source or target IDs. By default the source
+     * IDs are counted. Reducing on target IDs may optimize the algorithm if the input edge list is
+     * sorted by target ID.
+     *
+     * @param reduceOnTargetId set to {@code true} if the input edge list is sorted by target ID
+     * @return this
+     */
+    public EdgeMetrics<K, VV, EV> setReduceOnTargetId(boolean reduceOnTargetId) {
+        this.reduceOnTargetId = reduceOnTargetId;
 
-	/**
-	 * The degree can be counted from either the edge source or target IDs.
-	 * By default the source IDs are counted. Reducing on target IDs may
-	 * optimize the algorithm if the input edge list is sorted by target ID.
-	 *
-	 * @param reduceOnTargetId set to {@code true} if the input edge list
-	 *                         is sorted by target ID
-	 * @return this
-	 */
-	public EdgeMetrics<K, VV, EV> setReduceOnTargetId(boolean reduceOnTargetId) {
-		this.reduceOnTargetId = reduceOnTargetId;
+        return this;
+    }
 
-		return this;
-	}
+    /*
+     * Implementation notes:
+     *
+     * <p>Use aggregator to replace SumEdgeStats when aggregators are rewritten to use
+     * a hash-combineable hashed-reduce.
+     */
 
-	/**
-	 * Override the operator parallelism.
-	 *
-	 * @param parallelism operator parallelism
-	 * @return this
-	 */
-	public EdgeMetrics<K, VV, EV> setParallelism(int parallelism) {
-		this.parallelism = parallelism;
+    @Override
+    public EdgeMetrics<K, VV, EV> run(Graph<K, VV, EV> input) throws Exception {
+        super.run(input);
 
-		return this;
-	}
+        // s, t, (d(s), d(t))
+        DataSet<Edge<K, Tuple3<EV, LongValue, LongValue>>> edgeDegreePair =
+                input.run(
+                        new EdgeDegreePair<K, VV, EV>()
+                                .setReduceOnTargetId(reduceOnTargetId)
+                                .setParallelism(parallelism));
 
-	/*
-	 * Implementation notes:
-	 *
-	 * Use aggregator to replace SumEdgeStats when aggregators are rewritten to use
-	 *   a hash-combineable hashed-reduce.
-	 */
+        // s, d(s), count of (u, v) where deg(u) < deg(v) or (deg(u) == deg(v) and u < v)
+        DataSet<Tuple3<K, LongValue, LongValue>> edgeStats =
+                edgeDegreePair
+                        .map(new EdgeStats<>())
+                        .setParallelism(parallelism)
+                        .name("Edge stats")
+                        .groupBy(0)
+                        .reduce(new SumEdgeStats<>())
+                        .setCombineHint(CombineHint.HASH)
+                        .setParallelism(parallelism)
+                        .name("Sum edge stats");
 
-	@Override
-	public EdgeMetrics<K, VV, EV> run(Graph<K, VV, EV> input)
-			throws Exception {
-		super.run(input);
+        edgeMetricsHelper = new EdgeMetricsHelper<>();
 
-		// s, t, (d(s), d(t))
-		DataSet<Edge<K, Tuple3<EV, LongValue, LongValue>>> edgeDegreePair = input
-			.run(new EdgeDegreePair<K, VV, EV>()
-				.setReduceOnTargetId(reduceOnTargetId)
-				.setParallelism(parallelism));
+        edgeStats.output(edgeMetricsHelper).setParallelism(parallelism).name("Edge metrics");
 
-		// s, d(s), count of (u, v) where deg(u) < deg(v) or (deg(u) == deg(v) and u < v)
-		DataSet<Tuple3<K, LongValue, LongValue>> edgeStats = edgeDegreePair
-			.map(new EdgeStats<K, EV>())
-				.setParallelism(parallelism)
-				.name("Edge stats")
-			.groupBy(0)
-			.reduce(new SumEdgeStats<K>())
-			.setCombineHint(CombineHint.HASH)
-				.setParallelism(parallelism)
-				.name("Sum edge stats");
+        return this;
+    }
 
-		edgeMetricsHelper = new EdgeMetricsHelper<>();
+    @Override
+    public Result getResult() {
+        long triangleTripletCount = edgeMetricsHelper.getAccumulator(env, TRIANGLE_TRIPLET_COUNT);
+        long rectangleTripletCount = edgeMetricsHelper.getAccumulator(env, RECTANGLE_TRIPLET_COUNT);
+        long maximumTriangleTriplets =
+                edgeMetricsHelper.getAccumulator(env, MAXIMUM_TRIANGLE_TRIPLETS);
+        long maximumRectangleTriplets =
+                edgeMetricsHelper.getAccumulator(env, MAXIMUM_RECTANGLE_TRIPLETS);
 
-		edgeStats
-			.output(edgeMetricsHelper)
-				.setParallelism(parallelism)
-				.name("Edge metrics");
+        return new Result(
+                triangleTripletCount,
+                rectangleTripletCount,
+                maximumTriangleTriplets,
+                maximumRectangleTriplets);
+    }
 
-		return this;
-	}
+    /**
+     * Evaluates each edge and emits a tuple containing the source vertex ID, the source vertex
+     * degree, and a value of zero or one indicating the low-order count. The low-order count is one
+     * if the source vertex degree is less than the target vertex degree or if the degrees are equal
+     * and the source vertex ID compares lower than the target vertex ID; otherwise the low-order
+     * count is zero.
+     *
+     * @param <T> ID type
+     * @param <ET> edge value type
+     */
+    @FunctionAnnotation.ForwardedFields("0; 2.1->1")
+    private static class EdgeStats<T extends Comparable<T>, ET>
+            implements MapFunction<
+                    Edge<T, Tuple3<ET, LongValue, LongValue>>, Tuple3<T, LongValue, LongValue>> {
+        private LongValue zero = new LongValue(0);
 
-	@Override
-	public Result getResult() {
-		long triangleTripletCount = edgeMetricsHelper.getAccumulator(env, TRIANGLE_TRIPLET_COUNT);
-		long rectangleTripletCount = edgeMetricsHelper.getAccumulator(env, RECTANGLE_TRIPLET_COUNT);
-		long maximumTriangleTriplets = edgeMetricsHelper.getAccumulator(env, MAXIMUM_TRIANGLE_TRIPLETS);
-		long maximumRectangleTriplets = edgeMetricsHelper.getAccumulator(env, MAXIMUM_RECTANGLE_TRIPLETS);
+        private LongValue one = new LongValue(1);
 
-		return new Result(triangleTripletCount, rectangleTripletCount,
-			maximumTriangleTriplets, maximumRectangleTriplets);
-	}
+        private Tuple3<T, LongValue, LongValue> output = new Tuple3<>();
 
-	/**
-	 * Evaluates each edge and emits a tuple containing the source vertex ID,
-	 * the source vertex degree, and a value of zero or one indicating the
-	 * low-order count. The low-order count is one if the source vertex degree
-	 * is less than the target vertex degree or if the degrees are equal and
-	 * the source vertex ID compares lower than the target vertex ID; otherwise
-	 * the low-order count is zero.
-	 *
-	 * @param <T> ID type
-	 * @param <ET> edge value type
-	 */
-	@FunctionAnnotation.ForwardedFields("0; 2.1->1")
-	private static class EdgeStats<T extends Comparable<T>, ET>
-	implements MapFunction<Edge<T, Tuple3<ET, LongValue, LongValue>>, Tuple3<T, LongValue, LongValue>> {
-		private LongValue zero = new LongValue(0);
+        @Override
+        public Tuple3<T, LongValue, LongValue> map(Edge<T, Tuple3<ET, LongValue, LongValue>> edge)
+                throws Exception {
+            Tuple3<ET, LongValue, LongValue> degrees = edge.f2;
 
-		private LongValue one = new LongValue(1);
+            output.f0 = edge.f0;
+            output.f1 = degrees.f1;
 
-		private Tuple3<T, LongValue, LongValue> output = new Tuple3<>();
+            long sourceDegree = degrees.f1.getValue();
+            long targetDegree = degrees.f2.getValue();
 
-		@Override
-		public Tuple3<T, LongValue, LongValue> map(Edge<T, Tuple3<ET, LongValue, LongValue>> edge)
-				throws Exception {
-			Tuple3<ET, LongValue, LongValue> degrees = edge.f2;
+            if (sourceDegree < targetDegree
+                    || (sourceDegree == targetDegree && edge.f0.compareTo(edge.f1) < 0)) {
+                output.f2 = one;
+            } else {
+                output.f2 = zero;
+            }
 
-			output.f0 = edge.f0;
-			output.f1 = degrees.f1;
+            return output;
+        }
+    }
 
-			long sourceDegree = degrees.f1.getValue();
-			long targetDegree = degrees.f2.getValue();
+    /**
+     * Sums the low-order counts.
+     *
+     * @param <T> ID type
+     */
+    private static class SumEdgeStats<T>
+            implements ReduceFunction<Tuple3<T, LongValue, LongValue>> {
+        @Override
+        public Tuple3<T, LongValue, LongValue> reduce(
+                Tuple3<T, LongValue, LongValue> value1, Tuple3<T, LongValue, LongValue> value2)
+                throws Exception {
+            value1.f2.setValue(value1.f2.getValue() + value2.f2.getValue());
+            return value1;
+        }
+    }
 
-			if (sourceDegree < targetDegree ||
-					(sourceDegree == targetDegree && edge.f0.compareTo(edge.f1) < 0)) {
-				output.f2 = one;
-			} else {
-				output.f2 = zero;
-			}
+    /**
+     * Helper class to collect edge metrics.
+     *
+     * @param <T> ID type
+     */
+    private static class EdgeMetricsHelper<T extends Comparable<T>>
+            extends AnalyticHelper<Tuple3<T, LongValue, LongValue>> {
+        private long triangleTripletCount;
+        private long rectangleTripletCount;
+        private long maximumTriangleTriplets;
+        private long maximumRectangleTriplets;
 
-			return output;
-		}
-	}
+        @Override
+        public void writeRecord(Tuple3<T, LongValue, LongValue> record) throws IOException {
+            long degree = record.f1.getValue();
 
-	/**
-	 * Sums the low-order counts.
-	 *
-	 * @param <T> ID type
-	 */
-	private static class SumEdgeStats<T>
-	implements ReduceFunction<Tuple3<T, LongValue, LongValue>> {
-		@Override
-		public Tuple3<T, LongValue, LongValue> reduce(Tuple3<T, LongValue, LongValue> value1, Tuple3<T, LongValue, LongValue> value2)
-				throws Exception {
-			value1.f2.setValue(value1.f2.getValue() + value2.f2.getValue());
-			return value1;
-		}
-	}
+            long lowDegree = record.f2.getValue();
+            long highDegree = degree - lowDegree;
 
-	/**
-	 * Helper class to collect edge metrics.
-	 *
-	 * @param <T> ID type
-	 */
-	private static class EdgeMetricsHelper<T extends Comparable<T>>
-	extends AnalyticHelper<Tuple3<T, LongValue, LongValue>> {
-		private long triangleTripletCount;
-		private long rectangleTripletCount;
-		private long maximumTriangleTriplets;
-		private long maximumRectangleTriplets;
+            long triangleTriplets = lowDegree * (lowDegree - 1) / 2;
+            long rectangleTriplets = triangleTriplets + lowDegree * highDegree;
 
-		@Override
-		public void writeRecord(Tuple3<T, LongValue, LongValue> record) throws IOException {
-			long degree = record.f1.getValue();
+            triangleTripletCount += triangleTriplets;
+            rectangleTripletCount += rectangleTriplets;
 
-			long lowDegree = record.f2.getValue();
-			long highDegree = degree - lowDegree;
+            maximumTriangleTriplets = Math.max(maximumTriangleTriplets, triangleTriplets);
+            maximumRectangleTriplets = Math.max(maximumRectangleTriplets, rectangleTriplets);
+        }
 
-			long triangleTriplets = lowDegree * (lowDegree - 1) / 2;
-			long rectangleTriplets = triangleTriplets + lowDegree * highDegree;
+        @Override
+        public void close() throws IOException {
+            addAccumulator(TRIANGLE_TRIPLET_COUNT, new LongCounter(triangleTripletCount));
+            addAccumulator(RECTANGLE_TRIPLET_COUNT, new LongCounter(rectangleTripletCount));
+            addAccumulator(MAXIMUM_TRIANGLE_TRIPLETS, new LongMaximum(maximumTriangleTriplets));
+            addAccumulator(MAXIMUM_RECTANGLE_TRIPLETS, new LongMaximum(maximumRectangleTriplets));
+        }
+    }
 
-			triangleTripletCount += triangleTriplets;
-			rectangleTripletCount += rectangleTriplets;
+    /** Wraps edge metrics. */
+    public static class Result implements PrintableResult {
+        private long triangleTripletCount;
+        private long rectangleTripletCount;
+        private long maximumTriangleTriplets;
+        private long maximumRectangleTriplets;
 
-			maximumTriangleTriplets = Math.max(maximumTriangleTriplets, triangleTriplets);
-			maximumRectangleTriplets = Math.max(maximumRectangleTriplets, rectangleTriplets);
-		}
+        public Result(
+                long triangleTripletCount,
+                long rectangleTripletCount,
+                long maximumTriangleTriplets,
+                long maximumRectangleTriplets) {
+            this.triangleTripletCount = triangleTripletCount;
+            this.rectangleTripletCount = rectangleTripletCount;
+            this.maximumTriangleTriplets = maximumTriangleTriplets;
+            this.maximumRectangleTriplets = maximumRectangleTriplets;
+        }
 
-		@Override
-		public void close() throws IOException {
-			addAccumulator(TRIANGLE_TRIPLET_COUNT, new LongCounter(triangleTripletCount));
-			addAccumulator(RECTANGLE_TRIPLET_COUNT, new LongCounter(rectangleTripletCount));
-			addAccumulator(MAXIMUM_TRIANGLE_TRIPLETS, new LongMaximum(maximumTriangleTriplets));
-			addAccumulator(MAXIMUM_RECTANGLE_TRIPLETS, new LongMaximum(maximumRectangleTriplets));
-		}
-	}
+        /**
+         * Get the number of triangle triplets.
+         *
+         * @return number of triangle triplets
+         */
+        public long getNumberOfTriangleTriplets() {
+            return triangleTripletCount;
+        }
 
-	/**
-	 * Wraps edge metrics.
-	 */
-	public static class Result {
-		private long triangleTripletCount;
-		private long rectangleTripletCount;
-		private long maximumTriangleTriplets;
-		private long maximumRectangleTriplets;
+        /**
+         * Get the number of rectangle triplets.
+         *
+         * @return number of rectangle triplets
+         */
+        public long getNumberOfRectangleTriplets() {
+            return rectangleTripletCount;
+        }
 
-		public Result(long triangleTripletCount, long rectangleTripletCount,
-				long maximumTriangleTriplets, long maximumRectangleTriplets) {
-			this.triangleTripletCount = triangleTripletCount;
-			this.rectangleTripletCount = rectangleTripletCount;
-			this.maximumTriangleTriplets = maximumTriangleTriplets;
-			this.maximumRectangleTriplets = maximumRectangleTriplets;
-		}
+        /**
+         * Get the maximum triangle triplets.
+         *
+         * @return maximum triangle triplets
+         */
+        public long getMaximumTriangleTriplets() {
+            return maximumTriangleTriplets;
+        }
 
-		/**
-		 * Get the number of triangle triplets.
-		 *
-		 * @return number of triangle triplets
-		 */
-		public long getNumberOfTriangleTriplets() {
-			return triangleTripletCount;
-		}
+        /**
+         * Get the maximum rectangle triplets.
+         *
+         * @return maximum rectangle triplets
+         */
+        public long getMaximumRectangleTriplets() {
+            return maximumRectangleTriplets;
+        }
 
-		/**
-		 * Get the number of rectangle triplets.
-		 *
-		 * @return number of rectangle triplets
-		 */
-		public long getNumberOfRectangleTriplets() {
-			return rectangleTripletCount;
-		}
+        @Override
+        public String toString() {
+            return toPrintableString();
+        }
 
-		/**
-		 * Get the maximum triangle triplets.
-		 *
-		 * @return maximum triangle triplets
-		 */
-		public long getMaximumTriangleTriplets() {
-			return maximumTriangleTriplets;
-		}
+        @Override
+        public String toPrintableString() {
+            NumberFormat nf = NumberFormat.getInstance();
 
-		/**
-		 * Get the maximum rectangle triplets.
-		 *
-		 * @return maximum rectangle triplets
-		 */
-		public long getMaximumRectangleTriplets() {
-			return maximumRectangleTriplets;
-		}
+            return "triangle triplet count: "
+                    + nf.format(triangleTripletCount)
+                    + "; rectangle triplet count: "
+                    + nf.format(rectangleTripletCount)
+                    + "; maximum triangle triplets: "
+                    + nf.format(maximumTriangleTriplets)
+                    + "; maximum rectangle triplets: "
+                    + nf.format(maximumRectangleTriplets);
+        }
 
-		@Override
-		public String toString() {
-			NumberFormat nf = NumberFormat.getInstance();
+        @Override
+        public int hashCode() {
+            return new HashCodeBuilder()
+                    .append(triangleTripletCount)
+                    .append(rectangleTripletCount)
+                    .append(maximumTriangleTriplets)
+                    .append(maximumRectangleTriplets)
+                    .hashCode();
+        }
 
-			return "triangle triplet count: " + nf.format(triangleTripletCount)
-				+ "; rectangle triplet count: " + nf.format(rectangleTripletCount)
-				+ "; maximum triangle triplets: " + nf.format(maximumTriangleTriplets)
-				+ "; maximum rectangle triplets: " + nf.format(maximumRectangleTriplets);
-		}
+        @Override
+        public boolean equals(Object obj) {
+            if (obj == null) {
+                return false;
+            }
 
-		@Override
-		public int hashCode() {
-			return new HashCodeBuilder()
-				.append(triangleTripletCount)
-				.append(rectangleTripletCount)
-				.append(maximumTriangleTriplets)
-				.append(maximumRectangleTriplets)
-				.hashCode();
-		}
+            if (obj == this) {
+                return true;
+            }
 
-		@Override
-		public boolean equals(Object obj) {
-			if (obj == null) { return false; }
-			if (obj == this) { return true; }
-			if (obj.getClass() != getClass()) { return false; }
+            if (obj.getClass() != getClass()) {
+                return false;
+            }
 
-			Result rhs = (Result)obj;
+            Result rhs = (Result) obj;
 
-			return new EqualsBuilder()
-				.append(triangleTripletCount, rhs.triangleTripletCount)
-				.append(rectangleTripletCount, rhs.rectangleTripletCount)
-				.append(maximumTriangleTriplets, rhs.maximumTriangleTriplets)
-				.append(maximumRectangleTriplets, rhs.maximumRectangleTriplets)
-				.isEquals();
-		}
-	}
+            return new EqualsBuilder()
+                    .append(triangleTripletCount, rhs.triangleTripletCount)
+                    .append(rectangleTripletCount, rhs.rectangleTripletCount)
+                    .append(maximumTriangleTriplets, rhs.maximumTriangleTriplets)
+                    .append(maximumRectangleTriplets, rhs.maximumRectangleTriplets)
+                    .isEquals();
+        }
+    }
 }

@@ -18,136 +18,104 @@
 
 package org.apache.flink.test.util;
 
-import com.google.common.base.Charsets;
-import com.google.common.io.Files;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-import scala.concurrent.duration.FiniteDuration;
+import org.apache.flink.runtime.client.JobStatusMessage;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.util.FileUtils;
+
+import org.junit.After;
+import org.junit.ClassRule;
+import org.junit.rules.TemporaryFolder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-
-import org.apache.flink.runtime.akka.AkkaUtils;
 
 /**
- * A base class for tests that run test programs in a Flink mini cluster.
+ * Base class for unit tests that run multiple tests and want to reuse the same Flink cluster. This
+ * saves a significant amount of time, since the startup and shutdown of the Flink clusters
+ * (including actor systems, etc) usually dominates the execution of the actual tests.
+ *
+ * <p>To write a unit test against this test base, simply extend it and add one or more regular test
+ * methods and retrieve the StreamExecutionEnvironment from the context:
+ *
+ * <pre>
+ *   {@literal @}Test
+ *   public void someTest() {
+ *       ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+ *       // test code
+ *       env.execute();
+ *   }
+ *
+ *   {@literal @}Test
+ *   public void anotherTest() {
+ *       StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+ *       // test code
+ *       env.execute();
+ *   }
+ *
+ * </pre>
  */
 public abstract class AbstractTestBase extends TestBaseUtils {
-	
-	/** Configuration to start the testing cluster with */
-	protected final Configuration config;
-	
-	private final List<File> tempFiles;
-	
-	private final FiniteDuration timeout;
 
-	protected int taskManagerNumSlots = 1;
+    private static final Logger LOG = LoggerFactory.getLogger(AbstractTestBase.class);
 
-	protected int numTaskManagers = 1;
-	
-	/** The mini cluster that runs the test programs */
-	protected LocalFlinkMiniCluster executor;
-	
+    private static final int DEFAULT_PARALLELISM = 4;
 
-	public AbstractTestBase(Configuration config) {
-		this.config = Objects.requireNonNull(config);
-		this.tempFiles = new ArrayList<File>();
+    @ClassRule
+    public static MiniClusterWithClientResource miniClusterResource =
+            new MiniClusterWithClientResource(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(1)
+                            .setNumberSlotsPerTaskManager(DEFAULT_PARALLELISM)
+                            .build());
 
-		timeout = AkkaUtils.getTimeout(config);
-	}
+    @ClassRule public static final TemporaryFolder TEMPORARY_FOLDER = new TemporaryFolder();
 
-	// --------------------------------------------------------------------------------------------
-	//  Local Test Cluster Life Cycle
-	// --------------------------------------------------------------------------------------------
+    @After
+    public final void cleanupRunningJobs() throws Exception {
+        if (!miniClusterResource.getMiniCluster().isRunning()) {
+            // do nothing if the MiniCluster is not running
+            LOG.warn("Mini cluster is not running after the test!");
+            return;
+        }
 
-	public void startCluster() throws Exception {
-		this.executor = startCluster(
-			numTaskManagers,
-			taskManagerNumSlots,
-			false,
-			false,
-			true);
-	}
+        for (JobStatusMessage path : miniClusterResource.getClusterClient().listJobs().get()) {
+            if (!path.getJobState().isTerminalState()) {
+                try {
+                    miniClusterResource.getClusterClient().cancel(path.getJobId()).get();
+                } catch (Exception ignored) {
+                    // ignore exceptions when cancelling dangling jobs
+                }
+            }
+        }
+    }
 
-	public void stopCluster() throws Exception {
-		stopCluster(executor, timeout);
-		deleteAllTempFiles();
-	}
+    // --------------------------------------------------------------------------------------------
+    //  Temporary File Utilities
+    // --------------------------------------------------------------------------------------------
 
-	//------------------
-	// Accessors
-	//------------------
+    public String getTempDirPath(String dirName) throws IOException {
+        File f = createAndRegisterTempFile(dirName);
+        return f.toURI().toString();
+    }
 
-	public int getTaskManagerNumSlots() {
-		return taskManagerNumSlots;
-	}
+    public String getTempFilePath(String fileName) throws IOException {
+        File f = createAndRegisterTempFile(fileName);
+        return f.toURI().toString();
+    }
 
-	public void setTaskManagerNumSlots(int taskManagerNumSlots) {
-		this.taskManagerNumSlots = taskManagerNumSlots;
-	}
+    public String createTempFile(String fileName, String contents) throws IOException {
+        File f = createAndRegisterTempFile(fileName);
+        if (!f.getParentFile().exists()) {
+            f.getParentFile().mkdirs();
+        }
+        f.createNewFile();
+        FileUtils.writeFileUtf8(f, contents);
+        return f.toURI().toString();
+    }
 
-	public int getNumTaskManagers() {
-		return numTaskManagers;
-	}
-
-	public void setNumTaskManagers(int numTaskManagers) {
-		this.numTaskManagers = numTaskManagers;
-	}
-
-
-	// --------------------------------------------------------------------------------------------
-	//  Temporary File Utilities
-	// --------------------------------------------------------------------------------------------
-
-	public String getTempDirPath(String dirName) throws IOException {
-		File f = createAndRegisterTempFile(dirName);
-		return f.toURI().toString();
-	}
-
-	public String getTempFilePath(String fileName) throws IOException {
-		File f = createAndRegisterTempFile(fileName);
-		return f.toURI().toString();
-	}
-
-	public String createTempFile(String fileName, String contents) throws IOException {
-		File f = createAndRegisterTempFile(fileName);
-		Files.write(contents, f, Charsets.UTF_8);
-		return f.toURI().toString();
-	}
-
-	public File createAndRegisterTempFile(String fileName) throws IOException {
-		File baseDir = new File(System.getProperty("java.io.tmpdir"));
-		File f = new File(baseDir, this.getClass().getName() + "-" + fileName);
-
-		if (f.exists()) {
-			deleteRecursively(f);
-		}
-
-		File parentToDelete = f;
-		while (true) {
-			File parent = parentToDelete.getParentFile();
-			if (parent == null) {
-				throw new IOException("Missed temp dir while traversing parents of a temp file.");
-			}
-			if (parent.equals(baseDir)) {
-				break;
-			}
-			parentToDelete = parent;
-		}
-
-		Files.createParentDirs(f);
-		this.tempFiles.add(parentToDelete);
-		return f;
-	}
-
-	private void deleteAllTempFiles() throws IOException {
-		for (File f : this.tempFiles) {
-			if (f.exists()) {
-				deleteRecursively(f);
-			}
-		}
-	}
+    public File createAndRegisterTempFile(String fileName) throws IOException {
+        return new File(TEMPORARY_FOLDER.newFolder(), fileName);
+    }
 }

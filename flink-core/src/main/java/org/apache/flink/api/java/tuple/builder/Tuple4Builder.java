@@ -16,33 +16,39 @@
  * limitations under the License.
  */
 
-
 // --------------------------------------------------------------
 //  THIS IS A GENERATED SOURCE FILE. DO NOT EDIT!
 //  GENERATED FROM org.apache.flink.api.java.tuple.TupleGenerator.
 // --------------------------------------------------------------
 
-
 package org.apache.flink.api.java.tuple.builder;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import org.apache.flink.annotation.Public;
 import org.apache.flink.api.java.tuple.Tuple4;
 
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * A builder class for {@link Tuple4}.
+ *
+ * @param <T0> The type of field 0
+ * @param <T1> The type of field 1
+ * @param <T2> The type of field 2
+ * @param <T3> The type of field 3
+ */
 @Public
 public class Tuple4Builder<T0, T1, T2, T3> {
 
-	private List<Tuple4<T0, T1, T2, T3>> tuples = new ArrayList<>();
+    private List<Tuple4<T0, T1, T2, T3>> tuples = new ArrayList<>();
 
-	public Tuple4Builder<T0, T1, T2, T3> add(T0 value0, T1 value1, T2 value2, T3 value3){
-		tuples.add(new Tuple4<>(value0, value1, value2, value3));
-		return this;
-	}
+    public Tuple4Builder<T0, T1, T2, T3> add(T0 f0, T1 f1, T2 f2, T3 f3) {
+        tuples.add(new Tuple4<>(f0, f1, f2, f3));
+        return this;
+    }
 
-	@SuppressWarnings("unchecked")
-	public Tuple4<T0, T1, T2, T3>[] build(){
-		return tuples.toArray(new Tuple4[tuples.size()]);
-	}
+    @SuppressWarnings("unchecked")
+    public Tuple4<T0, T1, T2, T3>[] build() {
+        return tuples.toArray(new Tuple4[tuples.size()]);
+    }
 }

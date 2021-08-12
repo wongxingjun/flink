@@ -27,22 +27,21 @@ import org.apache.flink.types.NullValue;
 /**
  * Create an Edge from a Tuple2.
  *
- * The new edge's value is set to {@link NullValue}.
+ * <p>The new edge's value is set to {@link NullValue}.
  *
  * @param <K> edge ID type
  */
 @ForwardedFields("f0; f1")
 public class Tuple2ToEdgeMap<K> implements MapFunction<Tuple2<K, K>, Edge<K, NullValue>> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	private Edge<K, NullValue> edge = new Edge<>(null, null, NullValue.getInstance());
+    private Edge<K, NullValue> edge = new Edge<>(null, null, NullValue.getInstance());
 
-	@Override
-	public Edge<K, NullValue> map(Tuple2<K, K> tuple) {
-		edge.f0 = tuple.f0;
-		edge.f1 = tuple.f1;
-		return edge;
-	}
-
+    @Override
+    public Edge<K, NullValue> map(Tuple2<K, K> tuple) {
+        edge.f0 = tuple.f0;
+        edge.f1 = tuple.f1;
+        return edge;
+    }
 }

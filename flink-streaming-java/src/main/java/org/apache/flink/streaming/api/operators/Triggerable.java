@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.streaming.api.operators;
 
 import org.apache.flink.annotation.Internal;
@@ -28,13 +29,9 @@ import org.apache.flink.annotation.Internal;
 @Internal
 public interface Triggerable<K, N> {
 
-	/**
-	 * Invoked when an event-time timer fires.
-	 */
-	void onEventTime(InternalTimer<K, N> timer) throws Exception;
+    /** Invoked when an event-time timer fires. */
+    void onEventTime(InternalTimer<K, N> timer) throws Exception;
 
-	/**
-	 * Invoked when a processing-time timer fires.
-	 */
-	void onProcessingTime(InternalTimer<K, N> timer) throws Exception ;
+    /** Invoked when a processing-time timer fires. */
+    void onProcessingTime(InternalTimer<K, N> timer) throws Exception;
 }

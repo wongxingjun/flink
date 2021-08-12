@@ -29,108 +29,105 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+/** Tests for {@link KeyMap}. */
 public class KeyMapPutTest {
 
-	@Test
-	public void testPutUniqueKeysAndGrowth() {
-		try {
-			KeyMap<Integer, Integer> map = new KeyMap<>();
+    @Test
+    public void testPutUniqueKeysAndGrowth() {
+        try {
+            KeyMap<Integer, Integer> map = new KeyMap<>();
 
-			final int numElements = 1000000;
+            final int numElements = 1000000;
 
-			for (int i = 0; i < numElements; i++) {
-				map.put(i, 2 * i + 1);
+            for (int i = 0; i < numElements; i++) {
+                map.put(i, 2 * i + 1);
 
-				assertEquals(i+1, map.size());
-				assertTrue(map.getCurrentTableCapacity() > map.size());
-				assertTrue(map.getCurrentTableCapacity() > map.getRehashThreshold());
-				assertTrue(map.size() <= map.getRehashThreshold());
-			}
+                assertEquals(i + 1, map.size());
+                assertTrue(map.getCurrentTableCapacity() > map.size());
+                assertTrue(map.getCurrentTableCapacity() > map.getRehashThreshold());
+                assertTrue(map.size() <= map.getRehashThreshold());
+            }
 
-			assertEquals(numElements, map.size());
-			assertEquals(numElements, map.traverseAndCountElements());
-			assertEquals(1 << 21, map.getCurrentTableCapacity());
+            assertEquals(numElements, map.size());
+            assertEquals(numElements, map.traverseAndCountElements());
+            assertEquals(1 << 21, map.getCurrentTableCapacity());
 
-			for (int i = 0; i < numElements; i++) {
-				assertEquals(2 * i + 1, map.get(i).intValue());
-			}
+            for (int i = 0; i < numElements; i++) {
+                assertEquals(2 * i + 1, map.get(i).intValue());
+            }
 
-			for (int i = numElements - 1; i >= 0; i--) {
-				assertEquals(2 * i + 1, map.get(i).intValue());
-			}
+            for (int i = numElements - 1; i >= 0; i--) {
+                assertEquals(2 * i + 1, map.get(i).intValue());
+            }
 
-			BitSet bitset = new BitSet();
-			int numContained = 0;
-			for (KeyMap.Entry<Integer, Integer> entry : map) {
-				numContained++;
-				
-				assertEquals(entry.getKey() * 2 + 1, entry.getValue().intValue());
-				assertFalse(bitset.get(entry.getKey()));
-				bitset.set(entry.getKey());
-			}
+            BitSet bitset = new BitSet();
+            int numContained = 0;
+            for (KeyMap.Entry<Integer, Integer> entry : map) {
+                numContained++;
 
-			assertEquals(numElements, numContained);
-			assertEquals(numElements, bitset.cardinality());
-			
-			
-			assertEquals(numElements, map.size());
-			assertEquals(numElements, map.traverseAndCountElements());
-			assertEquals(1 << 21, map.getCurrentTableCapacity());
-			assertTrue(map.getLongestChainLength() <= 7);
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+                assertEquals(entry.getKey() * 2 + 1, entry.getValue().intValue());
+                assertFalse(bitset.get(entry.getKey()));
+                bitset.set(entry.getKey());
+            }
 
-	@Test
-	public void testPutDuplicateKeysAndGrowth() {
-		try {
-			final KeyMap<Integer, Integer> map = new KeyMap<>();
-			final int numElements = 1000000;
+            assertEquals(numElements, numContained);
+            assertEquals(numElements, bitset.cardinality());
 
-			for (int i = 0; i < numElements; i++) {
-				Integer put = map.put(i, 2*i+1);
-				assertNull(put);
-			}
+            assertEquals(numElements, map.size());
+            assertEquals(numElements, map.traverseAndCountElements());
+            assertEquals(1 << 21, map.getCurrentTableCapacity());
+            assertTrue(map.getLongestChainLength() <= 7);
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 
-			for (int i = 0; i < numElements; i += 3) {
-				Integer put = map.put(i, 2*i);
-				assertNotNull(put);
-				assertEquals(2*i+1, put.intValue());
-			}
+    @Test
+    public void testPutDuplicateKeysAndGrowth() {
+        try {
+            final KeyMap<Integer, Integer> map = new KeyMap<>();
+            final int numElements = 1000000;
 
-			for (int i = 0; i < numElements; i++) {
-				int expected = (i % 3 == 0) ? (2*i) : (2*i+1);
-				assertEquals(expected, map.get(i).intValue());
-			}
-			
-			assertEquals(numElements, map.size());
-			assertEquals(numElements, map.traverseAndCountElements());
-			assertEquals(1 << 21, map.getCurrentTableCapacity());
-			assertTrue(map.getLongestChainLength() <= 7);
+            for (int i = 0; i < numElements; i++) {
+                Integer put = map.put(i, 2 * i + 1);
+                assertNull(put);
+            }
 
-			
-			BitSet bitset = new BitSet();
-			int numContained = 0;
-			for (KeyMap.Entry<Integer, Integer> entry : map) {
-				numContained++;
+            for (int i = 0; i < numElements; i += 3) {
+                Integer put = map.put(i, 2 * i);
+                assertNotNull(put);
+                assertEquals(2 * i + 1, put.intValue());
+            }
 
-				int key = entry.getKey();
-				int expected = key % 3 == 0 ? (2*key) : (2*key+1);
+            for (int i = 0; i < numElements; i++) {
+                int expected = (i % 3 == 0) ? (2 * i) : (2 * i + 1);
+                assertEquals(expected, map.get(i).intValue());
+            }
 
-				assertEquals(expected, entry.getValue().intValue());
-				assertFalse(bitset.get(key));
-				bitset.set(key);
-			}
+            assertEquals(numElements, map.size());
+            assertEquals(numElements, map.traverseAndCountElements());
+            assertEquals(1 << 21, map.getCurrentTableCapacity());
+            assertTrue(map.getLongestChainLength() <= 7);
 
-			assertEquals(numElements, numContained);
-			assertEquals(numElements, bitset.cardinality());
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail(e.getMessage());
-		}
-	}
+            BitSet bitset = new BitSet();
+            int numContained = 0;
+            for (KeyMap.Entry<Integer, Integer> entry : map) {
+                numContained++;
+
+                int key = entry.getKey();
+                int expected = key % 3 == 0 ? (2 * key) : (2 * key + 1);
+
+                assertEquals(expected, entry.getValue().intValue());
+                assertFalse(bitset.get(key));
+                bitset.set(key);
+            }
+
+            assertEquals(numElements, numContained);
+            assertEquals(numElements, bitset.cardinality());
+        } catch (Exception e) {
+            e.printStackTrace();
+            fail(e.getMessage());
+        }
+    }
 }

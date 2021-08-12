@@ -22,13 +22,10 @@ import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.Meter;
 import org.apache.flink.metrics.MeterView;
-import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.SimpleCounter;
-import org.apache.flink.runtime.io.network.partition.ResultPartition;
-import org.apache.flink.runtime.io.network.partition.consumer.SingleInputGate;
-import org.apache.flink.runtime.metrics.MetricNames;
-import org.apache.flink.runtime.taskmanager.Task;
 import org.apache.flink.runtime.executiongraph.IOMetrics;
+import org.apache.flink.runtime.metrics.MetricNames;
+import org.apache.flink.runtime.metrics.TimerGauge;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,223 +36,124 @@ import java.util.List;
  */
 public class TaskIOMetricGroup extends ProxyMetricGroup<TaskMetricGroup> {
 
-	private final Counter numBytesOut;
-	private final Counter numBytesInLocal;
-	private final Counter numBytesInRemote;
-	private final SumCounter numRecordsIn;
-	private final SumCounter numRecordsOut;
+    private final Counter numBytesIn;
+    private final Counter numBytesOut;
+    private final SumCounter numRecordsIn;
+    private final SumCounter numRecordsOut;
+    private final Counter numBuffersOut;
 
-	private final Meter numBytesInRateLocal;
-	private final Meter numBytesInRateRemote;
-	private final Meter numBytesOutRate;
-	private final Meter numRecordsInRate;
-	private final Meter numRecordsOutRate;
+    private final Meter numBytesInRate;
+    private final Meter numBytesOutRate;
+    private final Meter numRecordsInRate;
+    private final Meter numRecordsOutRate;
+    private final Meter numBuffersOutRate;
+    private final TimerGauge idleTimePerSecond;
+    private final Gauge busyTimePerSecond;
+    private final TimerGauge backPressuredTimePerSecond;
 
-	public TaskIOMetricGroup(TaskMetricGroup parent) {
-		super(parent);
+    private volatile boolean busyTimeEnabled;
 
-		this.numBytesOut = counter(MetricNames.IO_NUM_BYTES_OUT);
-		this.numBytesInLocal = counter(MetricNames.IO_NUM_BYTES_IN_LOCAL);
-		this.numBytesInRemote = counter(MetricNames.IO_NUM_BYTES_IN_REMOTE);
-		this.numBytesOutRate = meter(MetricNames.IO_NUM_BYTES_OUT_RATE, new MeterView(numBytesOut, 60));
-		this.numBytesInRateLocal = meter(MetricNames.IO_NUM_BYTES_IN_LOCAL_RATE, new MeterView(numBytesInLocal, 60));
-		this.numBytesInRateRemote = meter(MetricNames.IO_NUM_BYTES_IN_REMOTE_RATE, new MeterView(numBytesInRemote, 60));
-		this.numRecordsIn = counter(MetricNames.IO_NUM_RECORDS_IN, new SumCounter());
-		this.numRecordsOut = counter(MetricNames.IO_NUM_RECORDS_OUT, new SumCounter());
-		this.numRecordsInRate = meter(MetricNames.IO_NUM_RECORDS_IN_RATE, new MeterView(numRecordsIn, 60));
-		this.numRecordsOutRate = meter(MetricNames.IO_NUM_RECORDS_OUT_RATE, new MeterView(numRecordsOut, 60));
-	}
+    public TaskIOMetricGroup(TaskMetricGroup parent) {
+        super(parent);
 
-	public IOMetrics createSnapshot() {
-		return new IOMetrics(numRecordsInRate, numRecordsOutRate, numBytesInRateLocal, numBytesInRateRemote, numBytesOutRate);
-	}
+        this.numBytesIn = counter(MetricNames.IO_NUM_BYTES_IN);
+        this.numBytesOut = counter(MetricNames.IO_NUM_BYTES_OUT);
+        this.numBytesInRate = meter(MetricNames.IO_NUM_BYTES_IN_RATE, new MeterView(numBytesIn));
+        this.numBytesOutRate = meter(MetricNames.IO_NUM_BYTES_OUT_RATE, new MeterView(numBytesOut));
 
-	// ============================================================================================
-	// Getters
-	// ============================================================================================
-	public Counter getNumBytesOutCounter() {
-		return numBytesOut;
-	}
+        this.numRecordsIn = counter(MetricNames.IO_NUM_RECORDS_IN, new SumCounter());
+        this.numRecordsOut = counter(MetricNames.IO_NUM_RECORDS_OUT, new SumCounter());
+        this.numRecordsInRate =
+                meter(MetricNames.IO_NUM_RECORDS_IN_RATE, new MeterView(numRecordsIn));
+        this.numRecordsOutRate =
+                meter(MetricNames.IO_NUM_RECORDS_OUT_RATE, new MeterView(numRecordsOut));
 
-	public Counter getNumBytesInLocalCounter() {
-		return numBytesInLocal;
-	}
+        this.numBuffersOut = counter(MetricNames.IO_NUM_BUFFERS_OUT);
+        this.numBuffersOutRate =
+                meter(MetricNames.IO_NUM_BUFFERS_OUT_RATE, new MeterView(numBuffersOut));
 
-	public Counter getNumBytesInRemoteCounter() {
-		return numBytesInRemote;
-	}
+        this.idleTimePerSecond = gauge(MetricNames.TASK_IDLE_TIME, new TimerGauge());
+        this.backPressuredTimePerSecond =
+                gauge(MetricNames.TASK_BACK_PRESSURED_TIME, new TimerGauge());
+        this.busyTimePerSecond = gauge(MetricNames.TASK_BUSY_TIME, this::getBusyTimePerSecond);
+    }
 
-	public Counter getNumRecordsInCounter() {
-		return numRecordsIn;
-	}
+    public IOMetrics createSnapshot() {
+        return new IOMetrics(numRecordsInRate, numRecordsOutRate, numBytesInRate, numBytesOutRate);
+    }
 
-	public Counter getNumRecordsOutCounter() {
-		return numRecordsOut;
-	}
+    // ============================================================================================
+    // Getters
+    // ============================================================================================
 
-	public Meter getNumBytesInLocalRateMeter() {
-		return numBytesInRateLocal;
-	}
+    public Counter getNumBytesInCounter() {
+        return numBytesIn;
+    }
 
-	public Meter getNumBytesInRemoteRateMeter() {
-		return numBytesInRateRemote;
-	}
+    public Counter getNumBytesOutCounter() {
+        return numBytesOut;
+    }
 
-	public Meter getNumBytesOutRateMeter() {
-		return numBytesOutRate;
-	}
+    public Counter getNumRecordsInCounter() {
+        return numRecordsIn;
+    }
 
-	// ============================================================================================
-	// Buffer metrics
-	// ============================================================================================
+    public Counter getNumRecordsOutCounter() {
+        return numRecordsOut;
+    }
 
-	/**
-	 * Initialize Buffer Metrics for a task
-	 */
-	public void initializeBufferMetrics(Task task) {
-		final MetricGroup buffers = addGroup("buffers");
-		buffers.gauge("inputQueueLength", new InputBuffersGauge(task));
-		buffers.gauge("outputQueueLength", new OutputBuffersGauge(task));
-		buffers.gauge("inPoolUsage", new InputBufferPoolUsageGauge(task));
-		buffers.gauge("outPoolUsage", new OutputBufferPoolUsageGauge(task));
-	}
+    public Counter getNumBuffersOutCounter() {
+        return numBuffersOut;
+    }
 
-	/**
-	 * Gauge measuring the number of queued input buffers of a task.
-	 */
-	private static final class InputBuffersGauge implements Gauge<Integer> {
+    public TimerGauge getIdleTimeMsPerSecond() {
+        return idleTimePerSecond;
+    }
 
-		private final Task task;
+    public TimerGauge getBackPressuredTimePerSecond() {
+        return backPressuredTimePerSecond;
+    }
 
-		public InputBuffersGauge(Task task) {
-			this.task = task;
-		}
+    public void setEnableBusyTime(boolean enabled) {
+        busyTimeEnabled = enabled;
+    }
 
-		@Override
-		public Integer getValue() {
-			int totalBuffers = 0;
+    private double getBusyTimePerSecond() {
+        double busyTime = idleTimePerSecond.getValue() + backPressuredTimePerSecond.getValue();
+        return busyTimeEnabled ? 1000.0 - Math.min(busyTime, 1000.0) : Double.NaN;
+    }
 
-			for (SingleInputGate inputGate : task.getAllInputGates()) {
-				totalBuffers += inputGate.getNumberOfQueuedBuffers();
-			}
+    // ============================================================================================
+    // Metric Reuse
+    // ============================================================================================
+    public void reuseRecordsInputCounter(Counter numRecordsInCounter) {
+        this.numRecordsIn.addCounter(numRecordsInCounter);
+    }
 
-			return totalBuffers;
-		}
-	}
+    public void reuseRecordsOutputCounter(Counter numRecordsOutCounter) {
+        this.numRecordsOut.addCounter(numRecordsOutCounter);
+    }
 
-	/**
-	 * Gauge measuring the number of queued output buffers of a task.
-	 */
-	private static final class OutputBuffersGauge implements Gauge<Integer> {
+    /**
+     * A {@link SimpleCounter} that can contain other {@link Counter}s. A call to {@link
+     * SumCounter#getCount()} returns the sum of this counters and all contained counters.
+     */
+    private static class SumCounter extends SimpleCounter {
+        private final List<Counter> internalCounters = new ArrayList<>();
 
-		private final Task task;
+        SumCounter() {}
 
-		public OutputBuffersGauge(Task task) {
-			this.task = task;
-		}
+        public void addCounter(Counter toAdd) {
+            internalCounters.add(toAdd);
+        }
 
-		@Override
-		public Integer getValue() {
-			int totalBuffers = 0;
-
-			for (ResultPartition producedPartition : task.getProducedPartitions()) {
-				totalBuffers += producedPartition.getNumberOfQueuedBuffers();
-			}
-
-			return totalBuffers;
-		}
-	}
-
-	/**
-	 * Gauge measuring the input buffer pool usage gauge of a task.
-	 */
-	private static final class InputBufferPoolUsageGauge implements Gauge<Float> {
-
-		private final Task task;
-
-		public InputBufferPoolUsageGauge(Task task) {
-			this.task = task;
-		}
-
-		@Override
-		public Float getValue() {
-			int usedBuffers = 0;
-			int bufferPoolSize = 0;
-
-			for (SingleInputGate inputGate : task.getAllInputGates()) {
-				usedBuffers += inputGate.getBufferPool().bestEffortGetNumOfUsedBuffers();
-				bufferPoolSize += inputGate.getBufferPool().getNumBuffers();
-			}
-
-			if (bufferPoolSize != 0) {
-				return ((float) usedBuffers) / bufferPoolSize;
-			} else {
-				return 0.0f;
-			}
-		}
-	}
-
-	/**
-	 * Gauge measuring the output buffer pool usage gauge of a task.
-	 */
-	private static final class OutputBufferPoolUsageGauge implements Gauge<Float> {
-
-		private final Task task;
-
-		public OutputBufferPoolUsageGauge(Task task) {
-			this.task = task;
-		}
-
-		@Override
-		public Float getValue() {
-			int usedBuffers = 0;
-			int bufferPoolSize = 0;
-
-			for (ResultPartition resultPartition : task.getProducedPartitions()) {
-				usedBuffers += resultPartition.getBufferPool().bestEffortGetNumOfUsedBuffers();
-				bufferPoolSize += resultPartition.getBufferPool().getNumBuffers();
-			}
-
-			if (bufferPoolSize != 0) {
-				return ((float) usedBuffers) / bufferPoolSize;
-			} else {
-				return 0.0f;
-			}
-		}
-	}
-
-	// ============================================================================================
-	// Metric Reuse
-	// ============================================================================================
-	public void reuseRecordsInputCounter(Counter numRecordsInCounter) {
-		this.numRecordsIn.addCounter(numRecordsInCounter);
-	}
-
-	public void reuseRecordsOutputCounter(Counter numRecordsOutCounter) {
-		this.numRecordsOut.addCounter(numRecordsOutCounter);
-	}
-
-	/**
-	 * A {@link SimpleCounter} that can contain other {@link Counter}s. A call to {@link SumCounter#getCount()} returns
-	 * the sum of this counters and all contained counters.
-	 */
-	private static class SumCounter extends SimpleCounter {
-		private final List<Counter> internalCounters = new ArrayList<>();
-
-		SumCounter() {
-		}
-
-		public void addCounter(Counter toAdd) {
-			internalCounters.add(toAdd);
-		}
-
-		@Override
-		public long getCount() {
-			long sum = super.getCount();
-			for (Counter counter : internalCounters) {
-				sum += counter.getCount();
-			}
-			return sum;
-		}
-	}
+        @Override
+        public long getCount() {
+            long sum = super.getCount();
+            for (Counter counter : internalCounters) {
+                sum += counter.getCount();
+            }
+            return sum;
+        }
+    }
 }

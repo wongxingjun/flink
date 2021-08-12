@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,22 +22,17 @@ import org.apache.flink.annotation.Internal;
 
 /**
  * An exception for wrapping exceptions that are thrown by an operator in threads other than the
- * main compute thread of that operator. 
+ * main compute thread of that operator.
  */
 @Internal
 public class AsynchronousException extends Exception {
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	public AsynchronousException(Throwable cause) {
-		super(cause);
-	}
+    public AsynchronousException(Throwable cause) {
+        super(cause);
+    }
 
-	public AsynchronousException(String message, Throwable cause) {
-		super(message, cause);
-	}
-
-	@Override
-	public String toString() {
-		return "AsynchronousException{" + getCause() + "}";
-	}
+    public AsynchronousException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

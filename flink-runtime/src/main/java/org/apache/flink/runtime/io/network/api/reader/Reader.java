@@ -18,18 +18,16 @@
 
 package org.apache.flink.runtime.io.network.api.reader;
 
-import java.io.IOException;
-
 import org.apache.flink.core.io.IOReadableWritable;
 
-/**
- * A record-oriented reader for immutable record types.
- */
+import java.io.IOException;
+
+/** A record-oriented reader for immutable record types. */
 public interface Reader<T extends IOReadableWritable> extends ReaderBase {
 
-	boolean hasNext() throws IOException, InterruptedException;
+    boolean hasNext() throws IOException, InterruptedException;
 
-	T next() throws IOException, InterruptedException;
+    T next() throws IOException, InterruptedException;
 
-	void clearBuffers();
+    void clearBuffers();
 }

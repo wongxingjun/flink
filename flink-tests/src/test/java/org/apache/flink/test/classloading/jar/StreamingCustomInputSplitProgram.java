@@ -25,145 +25,146 @@ import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
-import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.io.InputSplit;
 import org.apache.flink.core.io.InputSplitAssigner;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
+import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+/** Test class used by the {@link org.apache.flink.test.classloading.ClassLoaderITCase}. */
 @SuppressWarnings("serial")
 public class StreamingCustomInputSplitProgram {
-	
-	public static void main(String[] args) throws Exception {
-		final String jarFile = args[0];
-		final String host = args[1];
-		final int port = Integer.parseInt(args[2]);
-		final int parallelism = Integer.parseInt(args[3]);
 
-		Configuration config = new Configuration();
+    public static void main(String[] args) throws Exception {
+        Configuration config = new Configuration();
 
-		config.setString(ConfigConstants.AKKA_ASK_TIMEOUT, "5 s");
+        config.set(AkkaOptions.ASK_TIMEOUT_DURATION, Duration.ofSeconds(5));
 
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.createRemoteEnvironment(host, port, config, jarFile);
-		env.getConfig().disableSysoutLogging();
-		env.setParallelism(parallelism);
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-		DataStream<Integer> data = env.createInput(new CustomInputFormat());
+        DataStream<Integer> data = env.createInput(new CustomInputFormat());
 
-		data.map(new MapFunction<Integer, Tuple2<Integer, Double>>() {
-			@Override
-			public Tuple2<Integer, Double> map(Integer value) throws Exception {
-				return new Tuple2<Integer, Double>(value, value * 0.5);
-			}
-		}).addSink(new NoOpSink());
+        data.map(
+                        new MapFunction<Integer, Tuple2<Integer, Double>>() {
+                            @Override
+                            public Tuple2<Integer, Double> map(Integer value) throws Exception {
+                                return new Tuple2<Integer, Double>(value, value * 0.5);
+                            }
+                        })
+                .addSink(new DiscardingSink<>());
 
-		env.execute();
-	}
-	// --------------------------------------------------------------------------------------------
-	
-	public static final class CustomInputFormat implements InputFormat<Integer, CustomInputSplit>, ResultTypeQueryable<Integer> {
+        env.execute();
+    }
+    // --------------------------------------------------------------------------------------------
 
-		private static final long serialVersionUID = 1L;
+    private static final class CustomInputFormat
+            implements InputFormat<Integer, CustomInputSplit>, ResultTypeQueryable<Integer> {
 
-		private Integer value;
+        private static final long serialVersionUID = 1L;
 
-		CustomInputSplit split = new CustomInputSplit(0);
+        private Integer value;
 
-		@Override
-		public void configure(Configuration parameters) {}
+        CustomInputSplit split = new CustomInputSplit(0);
 
-		@Override
-		public BaseStatistics getStatistics(BaseStatistics cachedStatistics) {
-			return null;
-		}
+        @Override
+        public void configure(Configuration parameters) {}
 
-		@Override
-		public CustomInputSplit[] createInputSplits(int minNumSplits) {
-			CustomInputSplit[] splits = new CustomInputSplit[minNumSplits];
-			for (int i = 0; i < minNumSplits; i++) {
-				splits[i] = new CustomInputSplit(i);
-			}
-			return splits;
-		}
+        @Override
+        public BaseStatistics getStatistics(BaseStatistics cachedStatistics) {
+            return null;
+        }
 
-		@Override
-		public InputSplitAssigner getInputSplitAssigner(CustomInputSplit[] inputSplits) {
-			return new CustomSplitAssigner(inputSplits);
-		}
+        @Override
+        public CustomInputSplit[] createInputSplits(int minNumSplits) {
+            CustomInputSplit[] splits = new CustomInputSplit[minNumSplits];
+            for (int i = 0; i < minNumSplits; i++) {
+                splits[i] = new CustomInputSplit(i);
+            }
+            return splits;
+        }
 
-		@Override
-		public void open(CustomInputSplit split) {
-			this.value = split.getSplitNumber();
-		}
+        @Override
+        public InputSplitAssigner getInputSplitAssigner(CustomInputSplit[] inputSplits) {
+            return new CustomSplitAssigner(inputSplits);
+        }
 
-		@Override
-		public boolean reachedEnd() {
-			return this.value == null;
-		}
+        @Override
+        public void open(CustomInputSplit split) {
+            this.value = split.getSplitNumber();
+        }
 
-		@Override
-		public Integer nextRecord(Integer reuse) {
-			Integer val = this.value;
-			this.value = null;
-			return val;
-		}
+        @Override
+        public boolean reachedEnd() {
+            return this.value == null;
+        }
 
-		@Override
-		public void close() {}
+        @Override
+        public Integer nextRecord(Integer reuse) {
+            Integer val = this.value;
+            this.value = null;
+            return val;
+        }
 
-		@Override
-		public TypeInformation<Integer> getProducedType() {
-			return BasicTypeInfo.INT_TYPE_INFO;
-		}
-	}
+        @Override
+        public void close() {}
 
-	public static final class CustomInputSplit implements InputSplit {
+        @Override
+        public TypeInformation<Integer> getProducedType() {
+            return BasicTypeInfo.INT_TYPE_INFO;
+        }
+    }
 
-		private static final long serialVersionUID = 1L;
+    private static final class CustomInputSplit implements InputSplit {
 
-		private final int splitNumber;
+        private static final long serialVersionUID = 1L;
 
-		public CustomInputSplit(int splitNumber) {
-			this.splitNumber = splitNumber;
-		}
+        private final int splitNumber;
 
-		@Override
-		public int getSplitNumber() {
-			return this.splitNumber;
-		}
-	}
+        public CustomInputSplit(int splitNumber) {
+            this.splitNumber = splitNumber;
+        }
 
-	public static final class CustomSplitAssigner implements InputSplitAssigner, Serializable {
+        @Override
+        public int getSplitNumber() {
+            return this.splitNumber;
+        }
+    }
 
-		private final List<CustomInputSplit> remainingSplits;
+    private static final class CustomSplitAssigner implements InputSplitAssigner, Serializable {
 
-		public CustomSplitAssigner(CustomInputSplit[] splits) {
-			this.remainingSplits = new ArrayList<CustomInputSplit>(Arrays.asList(splits));
-		}
+        private final List<CustomInputSplit> remainingSplits;
 
-		@Override
-		public InputSplit getNextInputSplit(String host, int taskId) {
-			synchronized (this) {
-				int size = remainingSplits.size();
-				if (size > 0) {
-					return remainingSplits.remove(size - 1);
-				} else {
-					return null;
-				}
-			}
-		}
-	}
+        public CustomSplitAssigner(CustomInputSplit[] splits) {
+            this.remainingSplits = new ArrayList<CustomInputSplit>(Arrays.asList(splits));
+        }
 
-	public static class NoOpSink implements SinkFunction<Tuple2<Integer, Double>> {
-		@Override
-		public void invoke(Tuple2<Integer, Double> value) throws Exception {
-		}
-	}
+        @Override
+        public InputSplit getNextInputSplit(String host, int taskId) {
+            synchronized (this) {
+                int size = remainingSplits.size();
+                if (size > 0) {
+                    return remainingSplits.remove(size - 1);
+                } else {
+                    return null;
+                }
+            }
+        }
+
+        @Override
+        public void returnInputSplit(List<InputSplit> splits, int taskId) {
+            synchronized (this) {
+                for (InputSplit split : splits) {
+                    remainingSplits.add((CustomInputSplit) split);
+                }
+            }
+        }
+    }
 }

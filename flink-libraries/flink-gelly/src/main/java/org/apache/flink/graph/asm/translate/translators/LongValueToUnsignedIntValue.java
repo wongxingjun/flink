@@ -25,26 +25,25 @@ import org.apache.flink.types.LongValue;
 /**
  * Translate {@link LongValue} to {@link IntValue}.
  *
- * Throws {@link RuntimeException} for integer overflow.
+ * <p>Throws {@link RuntimeException} for integer overflow.
  */
-public class LongValueToUnsignedIntValue
-implements TranslateFunction<LongValue, IntValue> {
+public class LongValueToUnsignedIntValue implements TranslateFunction<LongValue, IntValue> {
 
-	@Override
-	public IntValue translate(LongValue value, IntValue reuse)
-			throws Exception {
-		if (reuse == null) {
-			reuse = new IntValue();
-		}
+    public static final long MAX_VERTEX_COUNT = 1L << 32;
 
-		long l = value.getValue();
+    @Override
+    public IntValue translate(LongValue value, IntValue reuse) throws Exception {
+        if (reuse == null) {
+            reuse = new IntValue();
+        }
 
-		if (l < 0 || l >= (1L << 32)) {
-			throw new IllegalArgumentException("Cannot cast long value " + value + " to integer.");
-		} else {
-			reuse.setValue((int)(l & 0xffffffffL));
-		}
+        long l = value.getValue();
 
-		return reuse;
-	}
+        if (l < 0 || l >= MAX_VERTEX_COUNT) {
+            throw new IllegalArgumentException("Cannot cast long value " + value + " to integer.");
+        }
+
+        reuse.setValue((int) (l & (MAX_VERTEX_COUNT - 1)));
+        return reuse;
+    }
 }

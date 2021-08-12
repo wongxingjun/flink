@@ -17,115 +17,116 @@
 
 package org.apache.flink.streaming.runtime.tasks;
 
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.runtime.execution.Environment;
+import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.io.BlockingQueueBroker;
+import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.mailbox.MailboxDefaultAction;
+import org.apache.flink.util.FlinkRuntimeException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.common.JobID;
-import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
-import org.apache.flink.streaming.runtime.io.BlockingQueueBroker;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+/**
+ * A special {@link StreamTask} that is used for executing feedback edges. This is used in
+ * combination with {@link StreamIterationTail}.
+ */
 @Internal
 public class StreamIterationHead<OUT> extends OneInputStreamTask<OUT, OUT> {
 
-	private static final Logger LOG = LoggerFactory.getLogger(StreamIterationHead.class);
+    private static final Logger LOG = LoggerFactory.getLogger(StreamIterationHead.class);
 
-	private volatile boolean running = true;
+    private RecordWriterOutput<OUT>[] streamOutputs;
 
-	// ------------------------------------------------------------------------
-	
-	@Override
-	protected void run() throws Exception {
-		
-		final String iterationId = getConfiguration().getIterationId();
-		if (iterationId == null || iterationId.length() == 0) {
-			throw new Exception("Missing iteration ID in the task configuration");
-		}
-		
-		final String brokerID = createBrokerIdString(getEnvironment().getJobID(), iterationId ,
-				getEnvironment().getTaskInfo().getIndexOfThisSubtask());
-		
-		final long iterationWaitTime = getConfiguration().getIterationWaitTime();
-		final boolean shouldWait = iterationWaitTime > 0;
+    private final BlockingQueue<StreamRecord<OUT>> dataChannel;
+    private final String brokerID;
+    private final long iterationWaitTime;
+    private final boolean shouldWait;
 
-		final BlockingQueue<StreamRecord<OUT>> dataChannel = new ArrayBlockingQueue<StreamRecord<OUT>>(1);
+    public StreamIterationHead(Environment env) throws Exception {
+        super(env);
+        final String iterationId = getConfiguration().getIterationId();
+        if (iterationId == null || iterationId.length() == 0) {
+            throw new FlinkRuntimeException("Missing iteration ID in the task configuration");
+        }
 
-		// offer the queue for the tail
-		BlockingQueueBroker.INSTANCE.handIn(brokerID, dataChannel);
-		LOG.info("Iteration head {} added feedback queue under {}", getName(), brokerID);
+        this.dataChannel = new ArrayBlockingQueue<>(1);
+        this.brokerID =
+                createBrokerIdString(
+                        getEnvironment().getJobID(),
+                        iterationId,
+                        getEnvironment().getTaskInfo().getIndexOfThisSubtask());
+        this.iterationWaitTime = getConfiguration().getIterationWaitTime();
+        this.shouldWait = iterationWaitTime > 0;
+    }
 
-		// do the work 
-		try {
-			@SuppressWarnings("unchecked")
-			RecordWriterOutput<OUT>[] outputs = (RecordWriterOutput<OUT>[]) getStreamOutputs();
+    // ------------------------------------------------------------------------
 
-			// If timestamps are enabled we make sure to remove cyclic watermark dependencies
-			if (isSerializingTimestamps()) {
-				for (RecordWriterOutput<OUT> output : outputs) {
-					output.emitWatermark(new Watermark(Long.MAX_VALUE));
-				}
-			}
+    @Override
+    protected void processInput(MailboxDefaultAction.Controller controller) throws Exception {
+        StreamRecord<OUT> nextRecord =
+                shouldWait
+                        ? dataChannel.poll(iterationWaitTime, TimeUnit.MILLISECONDS)
+                        : dataChannel.take();
 
-			while (running) {
-				StreamRecord<OUT> nextRecord = shouldWait ?
-					dataChannel.poll(iterationWaitTime, TimeUnit.MILLISECONDS) :
-					dataChannel.take();
+        if (nextRecord != null) {
+            for (RecordWriterOutput<OUT> output : streamOutputs) {
+                output.collect(nextRecord);
+            }
+        } else {
+            controller.suspendDefaultAction();
+            mailboxProcessor.suspend();
+        }
+    }
 
-				if (nextRecord != null) {
-					for (RecordWriterOutput<OUT> output : outputs) {
-						output.collect(nextRecord);
-					}
-				}
-				else {
-					// done
-					break;
-				}
-			}
-		}
-		finally {
-			// make sure that we remove the queue from the broker, to prevent a resource leak
-			BlockingQueueBroker.INSTANCE.remove(brokerID);
-			LOG.info("Iteration head {} removed feedback queue under {}", getName(), brokerID);
-		}
-	}
+    // ------------------------------------------------------------------------
 
-	@Override
-	protected void cancelTask() {
-		running = false;
-	}
+    @SuppressWarnings("unchecked")
+    @Override
+    public void init() {
+        // offer the queue for the tail
+        BlockingQueueBroker.INSTANCE.handIn(brokerID, dataChannel);
+        LOG.info("Iteration head {} added feedback queue under {}", getName(), brokerID);
 
-	// ------------------------------------------------------------------------
+        this.streamOutputs = (RecordWriterOutput<OUT>[]) getStreamOutputs();
 
-	@Override
-	public void init() {
-		// does not hold any resources, no initialization necessary
-	}
+        // If timestamps are enabled we make sure to remove cyclic watermark dependencies
+        if (isSerializingTimestamps()) {
+            for (RecordWriterOutput<OUT> output : streamOutputs) {
+                output.emitWatermark(new Watermark(Long.MAX_VALUE));
+            }
+        }
+    }
 
-	@Override
-	protected void cleanup() throws Exception {
-		// does not hold any resources, no cleanup necessary
-	}
-	
-	// ------------------------------------------------------------------------
-	//  Utilities
-	// ------------------------------------------------------------------------
+    @Override
+    protected void cleanup() {
+        // make sure that we remove the queue from the broker, to prevent a resource leak
+        BlockingQueueBroker.INSTANCE.remove(brokerID);
+        LOG.info("Iteration head {} removed feedback queue under {}", getName(), brokerID);
+    }
 
-	/**
-	 * Creates the identification string with which head and tail task find the shared blocking
-	 * queue for the back channel. The identification string is unique per parallel head/tail pair
-	 * per iteration per job.
-	 * 
-	 * @param jid The job ID.
-	 * @param iterationID The id of the iteration in the job.
-	 * @param subtaskIndex The parallel subtask number
-	 * @return The identification string.
-	 */
-	public static String createBrokerIdString(JobID jid, String iterationID, int subtaskIndex) {
-		return jid + "-" + iterationID + "-" + subtaskIndex;
-	}
+    // ------------------------------------------------------------------------
+    //  Utilities
+    // ------------------------------------------------------------------------
+
+    /**
+     * Creates the identification string with which head and tail task find the shared blocking
+     * queue for the back channel. The identification string is unique per parallel head/tail pair
+     * per iteration per job.
+     *
+     * @param jid The job ID.
+     * @param iterationID The id of the iteration in the job.
+     * @param subtaskIndex The parallel subtask number
+     * @return The identification string.
+     */
+    public static String createBrokerIdString(JobID jid, String iterationID, int subtaskIndex) {
+        return jid + "-" + iterationID + "-" + subtaskIndex;
+    }
 }

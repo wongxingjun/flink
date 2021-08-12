@@ -18,8 +18,6 @@
 
 package org.apache.flink.test.optimizer.examples;
 
-import java.util.Arrays;
-
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.Plan;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -33,85 +31,91 @@ import org.apache.flink.optimizer.plan.Channel;
 import org.apache.flink.optimizer.plan.OptimizedPlan;
 import org.apache.flink.optimizer.plan.SingleInputPlanNode;
 import org.apache.flink.optimizer.plan.SinkPlanNode;
+import org.apache.flink.optimizer.util.CompilerTestBase;
 import org.apache.flink.runtime.operators.DriverStrategy;
 import org.apache.flink.runtime.operators.shipping.ShipStrategyType;
 import org.apache.flink.runtime.operators.util.LocalStrategy;
-import org.apache.flink.optimizer.util.CompilerTestBase;
+
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.util.Arrays;
+
+/** Validate program compilation. */
 public class WordCountCompilerTest extends CompilerTestBase {
 
-	private static final long serialVersionUID = 8988304231385358228L;
+    private static final long serialVersionUID = 8988304231385358228L;
 
-	/**
-	 * This method tests the simple word count.
-	 */
-	@Test
-	public void testWordCount() {
-		checkWordCount(true);
-		checkWordCount(false);
-	}
-	
-	private void checkWordCount(boolean estimates) {
+    /** This method tests the simple word count. */
+    @Test
+    public void testWordCount() {
+        checkWordCount(true);
+        checkWordCount(false);
+    }
 
-		final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		env.setParallelism(DEFAULT_PARALLELISM);
+    private void checkWordCount(boolean estimates) {
 
-		// get input data
-		DataSet<String> lines = env.readTextFile(IN_FILE).name("Input Lines");
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(DEFAULT_PARALLELISM);
 
-		lines
-			// dummy map
-			.map(new MapFunction<String, Tuple2<String, Integer>>() {
-				private static final long serialVersionUID = -3952739820618875030L;
-				@Override
-				public Tuple2<String, Integer> map(String v) throws Exception {
-					return new Tuple2<>(v, 1);
-				}
-			}).name("Tokenize Lines")
-			// count
-				.groupBy(0).sum(1).name("Count Words")
-			// discard
-				.output(new DiscardingOutputFormat<Tuple2<String, Integer>>()).name("Word Counts");
+        // get input data
+        DataSet<String> lines = env.readTextFile(IN_FILE).name("Input Lines");
 
-		// get the plan and compile it
-		Plan p = env.createProgramPlan();
-		p.setExecutionConfig(new ExecutionConfig());
+        lines
+                // dummy map
+                .map(
+                        new MapFunction<String, Tuple2<String, Integer>>() {
+                            private static final long serialVersionUID = -3952739820618875030L;
 
-		OptimizedPlan plan;
-		if (estimates) {
-			GenericDataSourceBase<?,?> source = getContractResolver(p).getNode("Input Lines");
-			setSourceStatistics(source, 1024*1024*1024*1024L, 24f);
-			plan = compileWithStats(p);
-		} else {
-			plan = compileNoStats(p);
-		}
+                            @Override
+                            public Tuple2<String, Integer> map(String v) throws Exception {
+                                return new Tuple2<>(v, 1);
+                            }
+                        })
+                .name("Tokenize Lines")
+                // count
+                .groupBy(0)
+                .sum(1)
+                .name("Count Words")
+                // discard
+                .output(new DiscardingOutputFormat<Tuple2<String, Integer>>())
+                .name("Word Counts");
 
-		// get the optimizer plan nodes
-		OptimizerPlanNodeResolver resolver = getOptimizerPlanNodeResolver(plan);
-		SinkPlanNode sink = resolver.getNode("Word Counts");
-		SingleInputPlanNode reducer = resolver.getNode("Count Words");
-		SingleInputPlanNode mapper = resolver.getNode("Tokenize Lines");
+        // get the plan and compile it
+        Plan p = env.createProgramPlan();
+        p.setExecutionConfig(new ExecutionConfig());
 
-		// verify the strategies
-		Assert.assertEquals(ShipStrategyType.FORWARD, mapper.getInput().getShipStrategy());
-		Assert.assertEquals(ShipStrategyType.PARTITION_HASH, reducer.getInput().getShipStrategy());
-		Assert.assertEquals(ShipStrategyType.FORWARD, sink.getInput().getShipStrategy());
+        OptimizedPlan plan;
+        if (estimates) {
+            GenericDataSourceBase<?, ?> source = getContractResolver(p).getNode("Input Lines");
+            setSourceStatistics(source, 1024 * 1024 * 1024 * 1024L, 24f);
+            plan = compileWithStats(p);
+        } else {
+            plan = compileNoStats(p);
+        }
 
-		Channel c = reducer.getInput();
-		Assert.assertEquals(LocalStrategy.COMBININGSORT, c.getLocalStrategy());
-		FieldList l = new FieldList(0);
-		Assert.assertEquals(l, c.getShipStrategyKeys());
-		Assert.assertEquals(l, c.getLocalStrategyKeys());
-		Assert.assertTrue(Arrays.equals(c.getLocalStrategySortOrder(), reducer.getSortOrders(0)));
+        // get the optimizer plan nodes
+        OptimizerPlanNodeResolver resolver = getOptimizerPlanNodeResolver(plan);
+        SinkPlanNode sink = resolver.getNode("Word Counts");
+        SingleInputPlanNode reducer = resolver.getNode("Count Words");
+        SingleInputPlanNode mapper = resolver.getNode("Tokenize Lines");
 
-		// check the combiner
-		SingleInputPlanNode combiner = (SingleInputPlanNode) reducer.getPredecessor();
-		Assert.assertEquals(DriverStrategy.SORTED_GROUP_COMBINE, combiner.getDriverStrategy());
-		Assert.assertEquals(l, combiner.getKeys(0));
-		Assert.assertEquals(ShipStrategyType.FORWARD, combiner.getInput().getShipStrategy());
-			
-	}
-	
+        // verify the strategies
+        Assert.assertEquals(ShipStrategyType.FORWARD, mapper.getInput().getShipStrategy());
+        Assert.assertEquals(ShipStrategyType.PARTITION_HASH, reducer.getInput().getShipStrategy());
+        Assert.assertEquals(ShipStrategyType.FORWARD, sink.getInput().getShipStrategy());
+
+        Channel c = reducer.getInput();
+        Assert.assertEquals(LocalStrategy.COMBININGSORT, c.getLocalStrategy());
+        FieldList l = new FieldList(0);
+        Assert.assertEquals(l, c.getShipStrategyKeys());
+        Assert.assertEquals(l, c.getLocalStrategyKeys());
+        Assert.assertTrue(Arrays.equals(c.getLocalStrategySortOrder(), reducer.getSortOrders(0)));
+
+        // check the combiner
+        SingleInputPlanNode combiner = (SingleInputPlanNode) reducer.getPredecessor();
+        Assert.assertEquals(DriverStrategy.SORTED_GROUP_COMBINE, combiner.getDriverStrategy());
+        Assert.assertEquals(l, combiner.getKeys(0));
+        Assert.assertEquals(ShipStrategyType.FORWARD, combiner.getInput().getShipStrategy());
+    }
 }

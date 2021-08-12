@@ -28,6 +28,7 @@ import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.typeutils.runtime.WritableComparator;
 import org.apache.flink.api.java.typeutils.runtime.WritableSerializer;
+
 import org.apache.hadoop.io.Writable;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -40,115 +41,118 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * @param <T> The type of the class represented by this type information.
  */
 @Public
-public class WritableTypeInfo<T extends Writable> extends TypeInformation<T> implements AtomicType<T> {
-	
-	private static final long serialVersionUID = 1L;
-	
-	private final Class<T> typeClass;
+public class WritableTypeInfo<T extends Writable> extends TypeInformation<T>
+        implements AtomicType<T> {
 
-	@PublicEvolving
-	public WritableTypeInfo(Class<T> typeClass) {
-		this.typeClass = checkNotNull(typeClass);
+    private static final long serialVersionUID = 1L;
 
-		checkArgument(
-			Writable.class.isAssignableFrom(typeClass) && !typeClass.equals(Writable.class),
-			"WritableTypeInfo can only be used for subclasses of %s", Writable.class.getName());
-	}
+    private final Class<T> typeClass;
 
-	@SuppressWarnings({ "rawtypes", "unchecked" })
-	@Override
-	@PublicEvolving
-	public TypeComparator<T> createComparator(boolean sortOrderAscending, ExecutionConfig executionConfig) {
-		if(Comparable.class.isAssignableFrom(typeClass)) {
-			return new WritableComparator(sortOrderAscending, typeClass);
-		}
-		else {
-			throw new UnsupportedOperationException("Cannot create Comparator for "+typeClass.getCanonicalName()+". " +
-													"Class does not implement Comparable interface.");
-		}
-	}
+    @PublicEvolving
+    public WritableTypeInfo(Class<T> typeClass) {
+        this.typeClass = checkNotNull(typeClass);
 
-	@Override
-	@PublicEvolving
-	public boolean isBasicType() {
-		return false;
-	}
+        checkArgument(
+                Writable.class.isAssignableFrom(typeClass) && !typeClass.equals(Writable.class),
+                "WritableTypeInfo can only be used for subclasses of %s",
+                Writable.class.getName());
+    }
 
-	@Override
-	@PublicEvolving
-	public boolean isTupleType() {
-		return false;
-	}
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    @Override
+    @PublicEvolving
+    public TypeComparator<T> createComparator(
+            boolean sortOrderAscending, ExecutionConfig executionConfig) {
+        if (Comparable.class.isAssignableFrom(typeClass)) {
+            return new WritableComparator(sortOrderAscending, typeClass);
+        } else {
+            throw new UnsupportedOperationException(
+                    "Cannot create Comparator for "
+                            + typeClass.getCanonicalName()
+                            + ". "
+                            + "Class does not implement Comparable interface.");
+        }
+    }
 
-	@Override
-	@PublicEvolving
-	public int getArity() {
-		return 1;
-	}
-	
-	@Override
-	@PublicEvolving
-	public int getTotalFields() {
-		return 1;
-	}
+    @Override
+    @PublicEvolving
+    public boolean isBasicType() {
+        return false;
+    }
 
-	@Override
-	@PublicEvolving
-	public Class<T> getTypeClass() {
-		return this.typeClass;
-	}
+    @Override
+    @PublicEvolving
+    public boolean isTupleType() {
+        return false;
+    }
 
-	@Override
-	@PublicEvolving
-	public boolean isKeyType() {
-		return Comparable.class.isAssignableFrom(typeClass);
-	}
+    @Override
+    @PublicEvolving
+    public int getArity() {
+        return 1;
+    }
 
-	@Override
-	@PublicEvolving
-	public TypeSerializer<T> createSerializer(ExecutionConfig executionConfig) {
-		return new WritableSerializer<T>(typeClass);
-	}
-	
-	@Override
-	public String toString() {
-		return "WritableType<" + typeClass.getName() + ">";
-	}	
-	
-	@Override
-	public int hashCode() {
-		return typeClass.hashCode();
-	}
-	
-	@Override
-	public boolean equals(Object obj) {
-		if (obj instanceof WritableTypeInfo) {
-			@SuppressWarnings("unchecked")
-			WritableTypeInfo<T> writableTypeInfo = (WritableTypeInfo<T>) obj;
+    @Override
+    @PublicEvolving
+    public int getTotalFields() {
+        return 1;
+    }
 
-			return writableTypeInfo.canEqual(this) &&
-				typeClass == writableTypeInfo.typeClass;
+    @Override
+    @PublicEvolving
+    public Class<T> getTypeClass() {
+        return this.typeClass;
+    }
 
-		} else {
-			return false;
-		}
-	}
+    @Override
+    @PublicEvolving
+    public boolean isKeyType() {
+        return Comparable.class.isAssignableFrom(typeClass);
+    }
 
-	@Override
-	public boolean canEqual(Object obj) {
-		return obj instanceof WritableTypeInfo;
-	}
-	
-	// --------------------------------------------------------------------------------------------
+    @Override
+    @PublicEvolving
+    public TypeSerializer<T> createSerializer(ExecutionConfig executionConfig) {
+        return new WritableSerializer<T>(typeClass);
+    }
 
-	@PublicEvolving
-	static <T extends Writable> TypeInformation<T> getWritableTypeInfo(Class<T> typeClass) {
-		if (Writable.class.isAssignableFrom(typeClass) && !typeClass.equals(Writable.class)) {
-			return new WritableTypeInfo<T>(typeClass);
-		}
-		else {
-			throw new InvalidTypesException("The given class is no subclass of " + Writable.class.getName());
-		}
-	}
-	
+    @Override
+    public String toString() {
+        return "WritableType<" + typeClass.getName() + ">";
+    }
+
+    @Override
+    public int hashCode() {
+        return typeClass.hashCode();
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj instanceof WritableTypeInfo) {
+            @SuppressWarnings("unchecked")
+            WritableTypeInfo<T> writableTypeInfo = (WritableTypeInfo<T>) obj;
+
+            return writableTypeInfo.canEqual(this) && typeClass == writableTypeInfo.typeClass;
+
+        } else {
+            return false;
+        }
+    }
+
+    @Override
+    public boolean canEqual(Object obj) {
+        return obj instanceof WritableTypeInfo;
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    @PublicEvolving
+    static <T extends Writable> TypeInformation<T> getWritableTypeInfo(Class<T> typeClass) {
+        if (Writable.class.isAssignableFrom(typeClass) && !typeClass.equals(Writable.class)) {
+            return new WritableTypeInfo<T>(typeClass);
+        } else {
+            throw new InvalidTypesException(
+                    "The given class is no subclass of " + Writable.class.getName());
+        }
+    }
 }

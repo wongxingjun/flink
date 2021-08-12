@@ -18,8 +18,9 @@
 
 package org.apache.flink.dropwizard.metrics;
 
-import com.codahale.metrics.Snapshot;
 import org.apache.flink.metrics.HistogramStatistics;
+
+import com.codahale.metrics.Snapshot;
 
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -32,55 +33,56 @@ import java.nio.charset.Charset;
  */
 class HistogramStatisticsWrapper extends Snapshot {
 
-	private static final Charset UTF_8 = Charset.forName("UTF-8");
+    private static final Charset UTF_8 = Charset.forName("UTF-8");
 
-	private final HistogramStatistics histogramStatistics;
+    private final HistogramStatistics histogramStatistics;
 
-	HistogramStatisticsWrapper(HistogramStatistics histogramStatistics) {
-		this.histogramStatistics = histogramStatistics;
-	}
-	@Override
-	public double getValue(double quantile) {
-		return histogramStatistics.getQuantile(quantile);
-	}
+    HistogramStatisticsWrapper(HistogramStatistics histogramStatistics) {
+        this.histogramStatistics = histogramStatistics;
+    }
 
-	@Override
-	public long[] getValues() {
-		return histogramStatistics.getValues();
-	}
+    @Override
+    public double getValue(double quantile) {
+        return histogramStatistics.getQuantile(quantile);
+    }
 
-	@Override
-	public int size() {
-		return histogramStatistics.size();
-	}
+    @Override
+    public long[] getValues() {
+        return histogramStatistics.getValues();
+    }
 
-	@Override
-	public long getMax() {
-		return histogramStatistics.getMax();
-	}
+    @Override
+    public int size() {
+        return histogramStatistics.size();
+    }
 
-	@Override
-	public double getMean() {
-		return histogramStatistics.getMean();
-	}
+    @Override
+    public long getMax() {
+        return histogramStatistics.getMax();
+    }
 
-	@Override
-	public long getMin() {
-		return histogramStatistics.getMin();
-	}
+    @Override
+    public double getMean() {
+        return histogramStatistics.getMean();
+    }
 
-	@Override
-	public double getStdDev() {
-		return histogramStatistics.getStdDev();
-	}
+    @Override
+    public long getMin() {
+        return histogramStatistics.getMin();
+    }
 
-	@Override
-	public void dump(OutputStream output) {
-		try(PrintWriter printWriter = new PrintWriter(new OutputStreamWriter(output, UTF_8))){
+    @Override
+    public double getStdDev() {
+        return histogramStatistics.getStdDev();
+    }
 
-			for (Long value : histogramStatistics.getValues()) {
-				printWriter.printf("%d%n", value);
-			}
-		}
-	}
+    @Override
+    public void dump(OutputStream output) {
+        try (PrintWriter printWriter = new PrintWriter(new OutputStreamWriter(output, UTF_8))) {
+
+            for (Long value : histogramStatistics.getValues()) {
+                printWriter.printf("%d%n", value);
+            }
+        }
+    }
 }

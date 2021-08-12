@@ -18,188 +18,511 @@
 
 package org.apache.flink.runtime.executiongraph;
 
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-
-import java.lang.reflect.Field;
-import java.net.InetAddress;
-import java.util.concurrent.Executor;
-
-import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.akka.AkkaUtils;
-import org.apache.flink.runtime.clusterframework.types.ResourceID;
-import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor;
+import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.api.common.time.Deadline;
+import org.apache.flink.api.common.time.Time;
+import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
 import org.apache.flink.runtime.execution.ExecutionState;
-import org.apache.flink.runtime.executiongraph.restart.NoRestartStrategy;
-import org.apache.flink.runtime.instance.BaseTestingActorGateway;
-import org.apache.flink.runtime.instance.HardwareDescription;
-import org.apache.flink.runtime.instance.Instance;
-import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
-import org.apache.flink.runtime.messages.Acknowledge;
-import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
-import org.apache.flink.runtime.instance.InstanceID;
-import org.apache.flink.runtime.instance.SimpleSlot;
+import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.jobgraph.JobGraphTestUtils;
 import org.apache.flink.runtime.jobgraph.JobVertex;
-import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.jobgraph.JobStatus;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
-import org.apache.flink.runtime.messages.TaskMessages.SubmitTask;
-import org.apache.flink.runtime.messages.TaskMessages.FailIntermediateResultPartitions;
-import org.apache.flink.runtime.messages.TaskMessages.CancelTask;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
-import org.apache.flink.util.SerializedValue;
-import org.mockito.Matchers;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
-import scala.concurrent.ExecutionContext;
+import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
+import org.apache.flink.runtime.jobmaster.LogicalSlot;
+import org.apache.flink.runtime.scheduler.SchedulerBase;
+import org.apache.flink.runtime.scheduler.SchedulerTestingUtils;
+import org.apache.flink.runtime.scheduler.strategy.ConsumedPartitionGroup;
+import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
+import org.apache.flink.runtime.testtasks.NoOpInvokable;
+import org.apache.flink.runtime.testutils.DirectScheduledExecutorService;
+import org.apache.flink.runtime.testutils.TestingUtils;
 
+import javax.annotation.Nullable;
+
+import java.lang.reflect.Field;
+import java.time.Duration;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
+
+import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+
+/** A collection of utility methods for testing the ExecutionGraph and its related classes. */
 public class ExecutionGraphTestUtils {
 
-	// --------------------------------------------------------------------------------------------
-	//  state modifications
-	// --------------------------------------------------------------------------------------------
-	
-	public static void setVertexState(ExecutionVertex vertex, ExecutionState state) {
-		try {
-			Execution exec = vertex.getCurrentExecutionAttempt();
-			
-			Field f = Execution.class.getDeclaredField("state");
-			f.setAccessible(true);
-			f.set(exec, state);
-		}
-		catch (Exception e) {
-			throw new RuntimeException("Modifying the state failed", e);
-		}
-	}
-	
-	public static void setVertexResource(ExecutionVertex vertex, SimpleSlot slot) {
-		try {
-			Execution exec = vertex.getCurrentExecutionAttempt();
-			
-			Field f = Execution.class.getDeclaredField("assignedResource");
-			f.setAccessible(true);
-			f.set(exec, slot);
-		}
-		catch (Exception e) {
-			throw new RuntimeException("Modifying the slot failed", e);
-		}
-	}
-	
-	public static void setGraphStatus(ExecutionGraph graph, JobStatus status) {
-		try {
-			Field f = ExecutionGraph.class.getDeclaredField("state");
-			f.setAccessible(true);
-			f.set(graph, status);
-		}
-		catch (Exception e) {
-			throw new RuntimeException("Modifying the status failed", e);
-		}
-	}
-	
-	// --------------------------------------------------------------------------------------------
-	//  utility mocking methods
-	// --------------------------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    //  reaching states
+    // ------------------------------------------------------------------------
 
-	public static Instance getInstance(final TaskManagerGateway gateway) throws Exception {
-		return getInstance(gateway, 1);
-	}
+    /**
+     * Waits until the Job has reached a certain state.
+     *
+     * <p>This method is based on polling and might miss very fast state transitions!
+     */
+    public static void waitUntilJobStatus(ExecutionGraph eg, JobStatus status, long maxWaitMillis)
+            throws TimeoutException {
+        checkNotNull(eg);
+        checkNotNull(status);
+        checkArgument(maxWaitMillis >= 0);
 
-	public static Instance getInstance(final TaskManagerGateway gateway, final int numberOfSlots) throws Exception {
-		ResourceID resourceID = ResourceID.generate();
-		HardwareDescription hardwareDescription = new HardwareDescription(4, 2L*1024*1024*1024, 1024*1024*1024, 512*1024*1024);
-		InetAddress address = InetAddress.getByName("127.0.0.1");
-		TaskManagerLocation connection = new TaskManagerLocation(resourceID, address, 10001);
+        // this is a poor implementation - we may want to improve it eventually
+        final long deadline =
+                maxWaitMillis == 0
+                        ? Long.MAX_VALUE
+                        : System.nanoTime() + (maxWaitMillis * 1_000_000);
 
-		return new Instance(gateway, connection, new InstanceID(), hardwareDescription, numberOfSlots);
-	}
+        while (eg.getState() != status && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(2);
+            } catch (InterruptedException ignored) {
+            }
+        }
 
-	@SuppressWarnings("serial")
-	public static class SimpleActorGateway extends BaseTestingActorGateway {
-		
-		public TaskDeploymentDescriptor lastTDD;
+        if (System.nanoTime() >= deadline) {
+            throw new TimeoutException(
+                    String.format(
+                            "The job did not reach status %s in time. Current status is %s.",
+                            status, eg.getState()));
+        }
+    }
 
-		public SimpleActorGateway(ExecutionContext executionContext){
-			super(executionContext);
-		}
+    /**
+     * Waits until the Execution has reached a certain state.
+     *
+     * <p>This method is based on polling and might miss very fast state transitions!
+     */
+    public static void waitUntilExecutionState(
+            Execution execution, ExecutionState state, long maxWaitMillis) throws TimeoutException {
+        checkNotNull(execution);
+        checkNotNull(state);
+        checkArgument(maxWaitMillis >= 0);
 
-		@Override
-		public Object handleMessage(Object message) {
-			Object result = null;
-			if(message instanceof SubmitTask) {
-				SubmitTask submitTask = (SubmitTask) message;
-				lastTDD = submitTask.tasks();
+        // this is a poor implementation - we may want to improve it eventually
+        final long deadline =
+                maxWaitMillis == 0
+                        ? Long.MAX_VALUE
+                        : System.nanoTime() + (maxWaitMillis * 1_000_000);
 
-				result = Acknowledge.get();
-			} else if(message instanceof CancelTask) {
-				CancelTask cancelTask = (CancelTask) message;
+        while (execution.getState() != state && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(2);
+            } catch (InterruptedException ignored) {
+            }
+        }
 
-				result = Acknowledge.get();
-			} else if(message instanceof FailIntermediateResultPartitions) {
-				result = new Object();
-			}
+        if (System.nanoTime() >= deadline) {
+            throw new TimeoutException(
+                    String.format(
+                            "The execution did not reach state %s in time. Current state is %s.",
+                            state, execution.getState()));
+        }
+    }
 
-			return result;
-		}
-	}
+    /**
+     * Waits until the ExecutionVertex has reached a certain state.
+     *
+     * <p>This method is based on polling and might miss very fast state transitions!
+     */
+    public static void waitUntilExecutionVertexState(
+            ExecutionVertex executionVertex, ExecutionState state, long maxWaitMillis)
+            throws TimeoutException {
+        checkNotNull(executionVertex);
+        checkNotNull(state);
+        checkArgument(maxWaitMillis >= 0);
 
-	@SuppressWarnings("serial")
-	public static class SimpleFailingActorGateway extends BaseTestingActorGateway {
+        // this is a poor implementation - we may want to improve it eventually
+        final long deadline =
+                maxWaitMillis == 0
+                        ? Long.MAX_VALUE
+                        : System.nanoTime() + (maxWaitMillis * 1_000_000);
 
-		public SimpleFailingActorGateway(ExecutionContext executionContext) {
-			super(executionContext);
-		}
+        while (true) {
+            Execution execution = executionVertex.getCurrentExecutionAttempt();
 
-		@Override
-		public Object handleMessage(Object message) throws Exception {
-			if(message instanceof SubmitTask) {
-				throw new Exception(ERROR_MESSAGE);
-			} else if (message instanceof CancelTask) {
-				CancelTask cancelTask = (CancelTask) message;
+            if (execution == null
+                    || (execution.getState() != state && System.nanoTime() < deadline)) {
+                try {
+                    Thread.sleep(2);
+                } catch (InterruptedException ignored) {
+                }
+            } else {
+                break;
+            }
 
-				return Acknowledge.get();
-			} else {
-				return null;
-			}
-		}
-	}
+            if (System.nanoTime() >= deadline) {
+                if (execution != null) {
+                    throw new TimeoutException(
+                            String.format(
+                                    "The execution vertex did not reach state %s in time. Current state is %s.",
+                                    state, execution.getState()));
+                } else {
+                    throw new TimeoutException(
+                            "Cannot get current execution attempt of " + executionVertex + '.');
+                }
+            }
+        }
+    }
 
-	public static final String ERROR_MESSAGE = "test_failure_error_message";
+    /**
+     * Waits until all executions fulfill the given predicate.
+     *
+     * @param executionGraph for which to check the executions
+     * @param executionPredicate predicate which is to be fulfilled
+     * @param maxWaitMillis timeout for the wait operation
+     * @throws TimeoutException if the executions did not reach the target state in time
+     */
+    public static void waitForAllExecutionsPredicate(
+            ExecutionGraph executionGraph,
+            Predicate<AccessExecution> executionPredicate,
+            long maxWaitMillis)
+            throws TimeoutException {
+        final Predicate<AccessExecutionGraph> allExecutionsPredicate =
+                allExecutionsPredicate(executionPredicate);
+        final Deadline deadline = Deadline.fromNow(Duration.ofMillis(maxWaitMillis));
+        boolean predicateResult;
 
-	public static ExecutionJobVertex getExecutionVertex(JobVertexID id, Executor executor) throws Exception {
-		JobVertex ajv = new JobVertex("TestVertex", id);
-		ajv.setInvokableClass(mock(AbstractInvokable.class).getClass());
+        do {
+            predicateResult = allExecutionsPredicate.test(executionGraph);
 
-		ExecutionGraph graph = new ExecutionGraph(
-			executor,
-			executor,
-			new JobID(), 
-			"test job", 
-			new Configuration(),
-			new SerializedValue<>(new ExecutionConfig()),
-			AkkaUtils.getDefaultTimeout(),
-			new NoRestartStrategy());
+            if (!predicateResult) {
+                try {
+                    Thread.sleep(2L);
+                } catch (InterruptedException ignored) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        } while (!predicateResult && deadline.hasTimeLeft());
 
-		ExecutionJobVertex ejv = spy(new ExecutionJobVertex(graph, ajv, 1,
-				AkkaUtils.getDefaultTimeout()));
+        if (!predicateResult) {
+            throw new TimeoutException("Not all executions fulfilled the predicate in time.");
+        }
+    }
 
-		Answer<Void> noop = new Answer<Void>() {
-			@Override
-			public Void answer(InvocationOnMock invocation) {
-				return null;
-			}
-		};
+    public static Predicate<AccessExecutionGraph> allExecutionsPredicate(
+            final Predicate<AccessExecution> executionPredicate) {
+        return accessExecutionGraph -> {
+            final Iterable<? extends AccessExecutionVertex> allExecutionVertices =
+                    accessExecutionGraph.getAllExecutionVertices();
 
-		doAnswer(noop).when(ejv).vertexCancelled(Matchers.anyInt());
-		doAnswer(noop).when(ejv).vertexFailed(Matchers.anyInt(), Matchers.any(Throwable.class));
-		doAnswer(noop).when(ejv).vertexFinished(Matchers.anyInt());
+            for (AccessExecutionVertex executionVertex : allExecutionVertices) {
+                final AccessExecution currentExecutionAttempt =
+                        executionVertex.getCurrentExecutionAttempt();
 
-		return ejv;
-	}
-	
-	public static ExecutionJobVertex getExecutionVertex(JobVertexID id) throws Exception {
-		return getExecutionVertex(id, TestingUtils.defaultExecutionContext());
-	}
+                if (currentExecutionAttempt == null
+                        || !executionPredicate.test(currentExecutionAttempt)) {
+                    return false;
+                }
+            }
+
+            return true;
+        };
+    }
+
+    public static Predicate<AccessExecution> isInExecutionState(ExecutionState executionState) {
+        return (AccessExecution execution) -> execution.getState() == executionState;
+    }
+
+    /**
+     * Takes all vertices in the given ExecutionGraph and switches their current execution to
+     * RUNNING.
+     */
+    public static void switchAllVerticesToRunning(ExecutionGraph eg) {
+        for (ExecutionVertex vertex : eg.getAllExecutionVertices()) {
+            vertex.getCurrentExecutionAttempt().switchToRecovering();
+            vertex.getCurrentExecutionAttempt().switchToRunning();
+        }
+    }
+
+    /**
+     * Takes all vertices in the given ExecutionGraph and attempts to move them from CANCELING to
+     * CANCELED.
+     */
+    public static void completeCancellingForAllVertices(ExecutionGraph eg) {
+        for (ExecutionVertex vertex : eg.getAllExecutionVertices()) {
+            vertex.getCurrentExecutionAttempt().completeCancelling();
+        }
+    }
+
+    /**
+     * Takes all vertices in the given ExecutionGraph and switches their current execution to
+     * FINISHED.
+     */
+    public static void finishAllVertices(ExecutionGraph eg) {
+        for (ExecutionVertex vertex : eg.getAllExecutionVertices()) {
+            vertex.getCurrentExecutionAttempt().markFinished();
+        }
+    }
+
+    /** Checks that all execution are in state DEPLOYING and then switches them to state RUNNING. */
+    public static void switchToRunning(ExecutionGraph eg) {
+        // check that all execution are in state DEPLOYING
+        for (ExecutionVertex ev : eg.getAllExecutionVertices()) {
+            final Execution exec = ev.getCurrentExecutionAttempt();
+            final ExecutionState executionState = exec.getState();
+            assert executionState == ExecutionState.DEPLOYING
+                    : "Expected executionState to be DEPLOYING, was: " + executionState;
+        }
+
+        // switch executions to RUNNING
+        for (ExecutionVertex ev : eg.getAllExecutionVertices()) {
+            final Execution exec = ev.getCurrentExecutionAttempt();
+            exec.switchToRunning();
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    //  state modifications
+    // ------------------------------------------------------------------------
+
+    public static void setVertexState(ExecutionVertex vertex, ExecutionState state) {
+        try {
+            Execution exec = vertex.getCurrentExecutionAttempt();
+
+            Field f = Execution.class.getDeclaredField("state");
+            f.setAccessible(true);
+            f.set(exec, state);
+        } catch (Exception e) {
+            throw new RuntimeException("Modifying the state failed", e);
+        }
+    }
+
+    public static void setVertexResource(ExecutionVertex vertex, LogicalSlot slot) {
+        Execution exec = vertex.getCurrentExecutionAttempt();
+
+        if (!exec.tryAssignResource(slot)) {
+            throw new RuntimeException("Could not assign resource.");
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    //  Mocking ExecutionGraph
+    // ------------------------------------------------------------------------
+
+    /** Creates an execution graph with on job vertex of parallelism 10. */
+    public static ExecutionGraph createSimpleTestGraph() throws Exception {
+        JobVertex vertex = createNoOpVertex(10);
+
+        return createSimpleTestGraph(vertex);
+    }
+
+    /** Creates an execution graph containing the given vertices. */
+    public static DefaultExecutionGraph createSimpleTestGraph(JobVertex... vertices)
+            throws Exception {
+        return createExecutionGraph(TestingUtils.defaultExecutor(), vertices);
+    }
+
+    public static DefaultExecutionGraph createExecutionGraph(
+            ScheduledExecutorService executor, JobVertex... vertices) throws Exception {
+
+        return createExecutionGraph(executor, Time.seconds(10L), vertices);
+    }
+
+    public static DefaultExecutionGraph createExecutionGraph(
+            ScheduledExecutorService executor, Time timeout, JobVertex... vertices)
+            throws Exception {
+
+        checkNotNull(vertices);
+        checkNotNull(timeout);
+
+        DefaultExecutionGraph executionGraph =
+                TestingDefaultExecutionGraphBuilder.newBuilder()
+                        .setJobGraph(JobGraphTestUtils.streamingJobGraph(vertices))
+                        .setFutureExecutor(executor)
+                        .setIoExecutor(executor)
+                        .setRpcTimeout(timeout)
+                        .build();
+        executionGraph.start(ComponentMainThreadExecutorServiceAdapter.forMainThread());
+        return executionGraph;
+    }
+
+    public static JobVertex createNoOpVertex(int parallelism) {
+        return createNoOpVertex("vertex", parallelism);
+    }
+
+    public static JobVertex createNoOpVertex(String name, int parallelism) {
+        return createNoOpVertex(name, parallelism, JobVertex.MAX_PARALLELISM_DEFAULT);
+    }
+
+    public static JobVertex createNoOpVertex(String name, int parallelism, int maxParallelism) {
+        JobVertex vertex = new JobVertex(name);
+        vertex.setInvokableClass(NoOpInvokable.class);
+        vertex.setParallelism(parallelism);
+        vertex.setMaxParallelism(maxParallelism);
+        return vertex;
+    }
+
+    // ------------------------------------------------------------------------
+    //  utility mocking methods
+    // ------------------------------------------------------------------------
+
+    public static ExecutionVertexID createRandomExecutionVertexId() {
+        return new ExecutionVertexID(new JobVertexID(), new Random().nextInt(Integer.MAX_VALUE));
+    }
+
+    public static JobVertex createJobVertex(
+            String task1, int numTasks, Class<NoOpInvokable> invokable) {
+        JobVertex groupVertex = new JobVertex(task1);
+        groupVertex.setInvokableClass(invokable);
+        groupVertex.setParallelism(numTasks);
+        return groupVertex;
+    }
+
+    public static ExecutionJobVertex getExecutionJobVertex(
+            JobVertexID id, ScheduledExecutorService executor) throws Exception {
+
+        return getExecutionJobVertex(id, 1, null, executor);
+    }
+
+    public static ExecutionJobVertex getExecutionJobVertex(
+            JobVertexID id,
+            int parallelism,
+            @Nullable SlotSharingGroup slotSharingGroup,
+            ScheduledExecutorService executor)
+            throws Exception {
+
+        JobVertex ajv = new JobVertex("TestVertex", id);
+        ajv.setInvokableClass(AbstractInvokable.class);
+        ajv.setParallelism(parallelism);
+        if (slotSharingGroup != null) {
+            ajv.setSlotSharingGroup(slotSharingGroup);
+        }
+
+        return getExecutionJobVertex(ajv, executor);
+    }
+
+    public static ExecutionJobVertex getExecutionJobVertex(JobVertex jobVertex) throws Exception {
+        return getExecutionJobVertex(jobVertex, new DirectScheduledExecutorService());
+    }
+
+    public static ExecutionJobVertex getExecutionJobVertex(
+            JobVertex jobVertex, ScheduledExecutorService executor) throws Exception {
+
+        JobGraph jobGraph = JobGraphTestUtils.batchJobGraph(jobVertex);
+
+        SchedulerBase scheduler =
+                SchedulerTestingUtils.newSchedulerBuilder(
+                                jobGraph, ComponentMainThreadExecutorServiceAdapter.forMainThread())
+                        .setIoExecutor(executor)
+                        .setFutureExecutor(executor)
+                        .build();
+
+        return scheduler.getExecutionJobVertex(jobVertex.getID());
+    }
+
+    public static ExecutionJobVertex getExecutionJobVertex(JobVertexID id) throws Exception {
+        return getExecutionJobVertex(id, new DirectScheduledExecutorService());
+    }
+
+    public static ExecutionVertex getExecutionVertex() throws Exception {
+        return getExecutionJobVertex(new JobVertexID(), new DirectScheduledExecutorService())
+                .getTaskVertices()[0];
+    }
+
+    public static Execution getExecution() throws Exception {
+        final ExecutionJobVertex ejv = getExecutionJobVertex(new JobVertexID());
+        return ejv.getTaskVertices()[0].getCurrentExecutionAttempt();
+    }
+
+    public static Execution getExecution(
+            final JobVertexID jid,
+            final int subtaskIndex,
+            final int numTasks,
+            final SlotSharingGroup slotSharingGroup)
+            throws Exception {
+
+        final ExecutionJobVertex ejv =
+                getExecutionJobVertex(
+                        jid, numTasks, slotSharingGroup, new DirectScheduledExecutorService());
+
+        return ejv.getTaskVertices()[subtaskIndex].getCurrentExecutionAttempt();
+    }
+
+    // ------------------------------------------------------------------------
+    //  graph vertex verifications
+    // ------------------------------------------------------------------------
+
+    /**
+     * Verifies the generated {@link ExecutionJobVertex} for a given {@link JobVertex} in a {@link
+     * ExecutionGraph}.
+     *
+     * @param executionGraph the generated execution graph
+     * @param originJobVertex the vertex to verify for
+     * @param inputJobVertices upstream vertices of the verified vertex, used to check inputs of
+     *     generated vertex
+     * @param outputJobVertices downstream vertices of the verified vertex, used to check produced
+     *     data sets of generated vertex
+     */
+    public static void verifyGeneratedExecutionJobVertex(
+            ExecutionGraph executionGraph,
+            JobVertex originJobVertex,
+            @Nullable List<JobVertex> inputJobVertices,
+            @Nullable List<JobVertex> outputJobVertices) {
+
+        ExecutionJobVertex ejv = executionGraph.getAllVertices().get(originJobVertex.getID());
+        assertNotNull(ejv);
+
+        // verify basic properties
+        assertEquals(originJobVertex.getParallelism(), ejv.getParallelism());
+        assertEquals(executionGraph.getJobID(), ejv.getJobId());
+        assertEquals(originJobVertex.getID(), ejv.getJobVertexId());
+        assertEquals(originJobVertex, ejv.getJobVertex());
+
+        // verify produced data sets
+        if (outputJobVertices == null) {
+            assertEquals(0, ejv.getProducedDataSets().length);
+        } else {
+            assertEquals(outputJobVertices.size(), ejv.getProducedDataSets().length);
+            for (int i = 0; i < outputJobVertices.size(); i++) {
+                assertEquals(
+                        originJobVertex.getProducedDataSets().get(i).getId(),
+                        ejv.getProducedDataSets()[i].getId());
+                assertEquals(
+                        originJobVertex.getParallelism(),
+                        ejv.getProducedDataSets()[0].getPartitions().length);
+            }
+        }
+
+        // verify task vertices for their basic properties and their inputs
+        assertEquals(originJobVertex.getParallelism(), ejv.getTaskVertices().length);
+
+        int subtaskIndex = 0;
+        for (ExecutionVertex ev : ejv.getTaskVertices()) {
+            assertEquals(executionGraph.getJobID(), ev.getJobId());
+            assertEquals(originJobVertex.getID(), ev.getJobvertexId());
+
+            assertEquals(originJobVertex.getParallelism(), ev.getTotalNumberOfParallelSubtasks());
+            assertEquals(subtaskIndex, ev.getParallelSubtaskIndex());
+
+            if (inputJobVertices == null) {
+                assertEquals(0, ev.getNumberOfInputs());
+            } else {
+                assertEquals(inputJobVertices.size(), ev.getNumberOfInputs());
+
+                for (int i = 0; i < inputJobVertices.size(); i++) {
+                    ConsumedPartitionGroup consumedPartitionGroup = ev.getConsumedPartitionGroup(i);
+                    assertEquals(
+                            inputJobVertices.get(i).getParallelism(),
+                            consumedPartitionGroup.size());
+
+                    int expectedPartitionNum = 0;
+                    for (IntermediateResultPartitionID consumedPartitionId :
+                            consumedPartitionGroup) {
+                        assertEquals(
+                                expectedPartitionNum, consumedPartitionId.getPartitionNumber());
+
+                        expectedPartitionNum++;
+                    }
+                }
+            }
+
+            subtaskIndex++;
+        }
+    }
 }

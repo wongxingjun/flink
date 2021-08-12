@@ -19,85 +19,81 @@
 package org.apache.flink.types.parser;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.configuration.ConfigConstants;
 
 @PublicEvolving
 public class BooleanParser extends FieldParser<Boolean> {
 
-	private boolean result;
+    private boolean result;
 
-	/** Values for true and false respectively. Must be lower case. */
-	private static final byte[][] TRUE = new byte[][] {
-			"true".getBytes(),
-			"1".getBytes()
-	};
-	private static final byte[][] FALSE = new byte[][] {
-			"false".getBytes(),
-			"0".getBytes()
-	};
+    /** Values for true and false respectively. Must be lower case. */
+    private static final byte[][] TRUE =
+            new byte[][] {
+                "true".getBytes(ConfigConstants.DEFAULT_CHARSET),
+                "1".getBytes(ConfigConstants.DEFAULT_CHARSET)
+            };
 
-	@Override
-	public int parseField(byte[] bytes, int startPos, int limit, byte[] delim, Boolean reuse) {
+    private static final byte[][] FALSE =
+            new byte[][] {
+                "false".getBytes(ConfigConstants.DEFAULT_CHARSET),
+                "0".getBytes(ConfigConstants.DEFAULT_CHARSET)
+            };
 
-		final int delimLimit = limit - delim.length + 1;
+    @Override
+    public int parseField(byte[] bytes, int startPos, int limit, byte[] delimiter, Boolean reuse) {
 
-		int i = startPos;
+        final int i = nextStringEndPos(bytes, startPos, limit, delimiter);
 
-		while (i < limit) {
-			if (i < delimLimit && delimiterNext(bytes, i, delim)) {
-				if (i == startPos) {
-					setErrorState(ParseErrorState.EMPTY_COLUMN);
-					return -1;
-				}
-				break;
-			}
-			i++;
-		}
+        if (i < 0) {
+            return -1;
+        }
 
-		for (byte[] aTRUE : TRUE) {
-			if (byteArrayEquals(bytes, startPos, i - startPos, aTRUE)) {
-				result = true;
-				return (i == limit) ? limit : i + delim.length;
-			}
-		}
+        for (byte[] aTRUE : TRUE) {
+            if (byteArrayEquals(bytes, startPos, i - startPos, aTRUE)) {
+                result = true;
+                return (i == limit) ? limit : i + delimiter.length;
+            }
+        }
 
-		for (byte[] aFALSE : FALSE) {
-			if (byteArrayEquals(bytes, startPos, i - startPos, aFALSE)) {
-				result = false;
-				return (i == limit) ? limit : i + delim.length;
-			}
-		}
+        for (byte[] aFALSE : FALSE) {
+            if (byteArrayEquals(bytes, startPos, i - startPos, aFALSE)) {
+                result = false;
+                return (i == limit) ? limit : i + delimiter.length;
+            }
+        }
 
-		setErrorState(ParseErrorState.BOOLEAN_INVALID);
-		return -1;
-	}
+        setErrorState(ParseErrorState.BOOLEAN_INVALID);
+        return -1;
+    }
 
-	@Override
-	public Boolean getLastResult() {
-		return result;
-	}
+    @Override
+    public Boolean getLastResult() {
+        return result;
+    }
 
-	@Override
-	public Boolean createValue() {
-		return false;
-	}
+    @Override
+    public Boolean createValue() {
+        return false;
+    }
 
-	/**
-	 * Checks if a part of a byte array matches another byte array with chars (case-insensitive).
-	 * @param source The source byte array.
-	 * @param start The offset into the source byte array.
-	 * @param length The length of the match.
-	 * @param other The byte array which is fully compared to the part of the source array.
-	 * @return true if other can be found in the specified part of source, false otherwise.
-	 */
-	private static boolean byteArrayEquals(byte[] source, int start, int length, byte[] other) {
-		if (length != other.length) {
-			return false;
-		}
-		for (int i = 0; i < other.length; i++) {
-			if (Character.toLowerCase(source[i + start]) != other[i]) {
-				return false;
-			}
-		}
-		return true;
-	}
+    /**
+     * Checks if a part of a byte array matches another byte array with chars (case-insensitive).
+     *
+     * @param source The source byte array.
+     * @param start The offset into the source byte array.
+     * @param length The length of the match.
+     * @param other The byte array which is fully compared to the part of the source array.
+     * @return true if other can be found in the specified part of source, false otherwise.
+     */
+    private static boolean byteArrayEquals(byte[] source, int start, int length, byte[] other) {
+        if (length != other.length) {
+            return false;
+        }
+        for (int i = 0; i < other.length; i++) {
+            if (Character.toLowerCase(source[i + start]) != other[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
 }

@@ -16,29 +16,26 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.memory;
 
-/**
- * An exception to be thrown when a memory allocation operation is not successful.
- */
+/** An exception to be thrown when a memory allocation operation is not successful. */
 public class MemoryAllocationException extends Exception {
-	
-	private static final long serialVersionUID = -403983866457947012L;
 
-	public MemoryAllocationException() {
-		super();
-	}
+    private static final long serialVersionUID = -403983866457947012L;
 
-	public MemoryAllocationException(String message, Throwable cause) {
-		super(message, cause);
-	}
+    public MemoryAllocationException() {
+        super();
+    }
 
-	public MemoryAllocationException(String message) {
-		super(message);
-	}
+    public MemoryAllocationException(String message, Throwable cause) {
+        super(message, cause);
+    }
 
-	public MemoryAllocationException(Throwable cause) {
-		super(cause);
-	}
+    public MemoryAllocationException(String message) {
+        super(message);
+    }
+
+    public MemoryAllocationException(Throwable cause) {
+        super(cause);
+    }
 }

@@ -18,123 +18,131 @@
 
 package org.apache.flink.runtime.state;
 
-import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.java.typeutils.runtime.DataInputViewStream;
-import org.apache.flink.api.java.typeutils.runtime.DataOutputViewStream;
-import org.apache.flink.core.io.IOReadableWritable;
 import org.apache.flink.core.io.VersionedIOReadableWritable;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.util.InstantiationUtil;
+import org.apache.flink.runtime.state.metainfo.StateMetaInfoReader;
+import org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshot;
+import org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshotReadersWriters;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+
+import static org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshotReadersWriters.CURRENT_STATE_META_INFO_SNAPSHOT_VERSION;
 
 /**
- * Serialization proxy for all meta data in operator state backends. In the future we might also migrate the actual state
- * serialization logic here.
+ * Serialization proxy for all meta data in operator state backends. In the future we might also
+ * requiresMigration the actual state serialization logic here.
  */
 public class OperatorBackendSerializationProxy extends VersionedIOReadableWritable {
 
-	private static final int VERSION = 1;
+    public static final int VERSION = 5;
 
-	private List<StateMetaInfo<?>> namedStateSerializationProxies;
-	private ClassLoader userCodeClassLoader;
+    private static final Map<Integer, Integer> META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER =
+            new HashMap<>();
 
-	public OperatorBackendSerializationProxy(ClassLoader userCodeClassLoader) {
-		this.userCodeClassLoader = Preconditions.checkNotNull(userCodeClassLoader);
-	}
+    static {
+        META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER.put(1, 1);
+        META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER.put(2, 2);
+        META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER.put(3, 3);
+        META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER.put(4, 5);
+        META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER.put(5, CURRENT_STATE_META_INFO_SNAPSHOT_VERSION);
+    }
 
-	public OperatorBackendSerializationProxy(List<StateMetaInfo<?>> namedStateSerializationProxies) {
-		this.namedStateSerializationProxies = Preconditions.checkNotNull(namedStateSerializationProxies);
-		Preconditions.checkArgument(namedStateSerializationProxies.size() <= Short.MAX_VALUE);
-	}
+    private List<StateMetaInfoSnapshot> operatorStateMetaInfoSnapshots;
+    private List<StateMetaInfoSnapshot> broadcastStateMetaInfoSnapshots;
+    private ClassLoader userCodeClassLoader;
 
-	@Override
-	public int getVersion() {
-		return VERSION;
-	}
+    public OperatorBackendSerializationProxy(ClassLoader userCodeClassLoader) {
+        this.userCodeClassLoader = Preconditions.checkNotNull(userCodeClassLoader);
+    }
 
-	@Override
-	public void write(DataOutputView out) throws IOException {
-		super.write(out);
+    public OperatorBackendSerializationProxy(
+            List<StateMetaInfoSnapshot> operatorStateMetaInfoSnapshots,
+            List<StateMetaInfoSnapshot> broadcastStateMetaInfoSnapshots) {
 
-		out.writeShort(namedStateSerializationProxies.size());
+        this.operatorStateMetaInfoSnapshots =
+                Preconditions.checkNotNull(operatorStateMetaInfoSnapshots);
+        this.broadcastStateMetaInfoSnapshots =
+                Preconditions.checkNotNull(broadcastStateMetaInfoSnapshots);
+        Preconditions.checkArgument(
+                operatorStateMetaInfoSnapshots.size() <= Short.MAX_VALUE
+                        && broadcastStateMetaInfoSnapshots.size() <= Short.MAX_VALUE);
+    }
 
-		for (StateMetaInfo<?> kvState : namedStateSerializationProxies) {
-			kvState.write(out);
-		}
-	}
+    @Override
+    public int getVersion() {
+        return VERSION;
+    }
 
-	@Override
-	public void read(DataInputView out) throws IOException {
-		super.read(out);
+    @Override
+    public int[] getCompatibleVersions() {
+        return new int[] {VERSION, 4, 3, 2, 1};
+    }
 
-		int numKvStates = out.readShort();
-		namedStateSerializationProxies = new ArrayList<>(numKvStates);
-		for (int i = 0; i < numKvStates; ++i) {
-			StateMetaInfo<?> stateSerializationProxy = new StateMetaInfo<>(userCodeClassLoader);
-			stateSerializationProxy.read(out);
-			namedStateSerializationProxies.add(stateSerializationProxy);
-		}
-	}
+    @Override
+    public void write(DataOutputView out) throws IOException {
+        super.write(out);
+        writeStateMetaInfoSnapshots(operatorStateMetaInfoSnapshots, out);
+        writeStateMetaInfoSnapshots(broadcastStateMetaInfoSnapshots, out);
+    }
 
-	public List<StateMetaInfo<?>> getNamedStateSerializationProxies() {
-		return namedStateSerializationProxies;
-	}
+    private void writeStateMetaInfoSnapshots(
+            List<StateMetaInfoSnapshot> snapshots, DataOutputView out) throws IOException {
+        out.writeShort(snapshots.size());
+        for (StateMetaInfoSnapshot state : snapshots) {
+            StateMetaInfoSnapshotReadersWriters.getWriter().writeStateMetaInfoSnapshot(state, out);
+        }
+    }
 
-	//----------------------------------------------------------------------------------------------------------------------
+    @Override
+    public void read(DataInputView in) throws IOException {
+        super.read(in);
 
-	public static class StateMetaInfo<S> implements IOReadableWritable {
+        final int proxyReadVersion = getReadVersion();
+        final Integer metaInfoSnapshotVersion =
+                META_INFO_SNAPSHOT_FORMAT_VERSION_MAPPER.get(proxyReadVersion);
+        if (metaInfoSnapshotVersion == null) {
+            // this should not happen; guard for the future
+            throw new IOException(
+                    "Cannot determine corresponding meta info snapshot version for operator backend serialization readVersion="
+                            + proxyReadVersion);
+        }
 
-		private String name;
-		private TypeSerializer<S> stateSerializer;
-		private ClassLoader userClassLoader;
+        final StateMetaInfoReader stateMetaInfoReader =
+                StateMetaInfoSnapshotReadersWriters.getReader(
+                        metaInfoSnapshotVersion,
+                        StateMetaInfoSnapshotReadersWriters.StateTypeHint.OPERATOR_STATE);
 
-		private StateMetaInfo(ClassLoader userClassLoader) {
-			this.userClassLoader = Preconditions.checkNotNull(userClassLoader);
-		}
+        int numOperatorStates = in.readShort();
+        operatorStateMetaInfoSnapshots = new ArrayList<>(numOperatorStates);
+        for (int i = 0; i < numOperatorStates; i++) {
+            operatorStateMetaInfoSnapshots.add(
+                    stateMetaInfoReader.readStateMetaInfoSnapshot(in, userCodeClassLoader));
+        }
 
-		public StateMetaInfo(String name, TypeSerializer<S> stateSerializer) {
-			this.name = Preconditions.checkNotNull(name);
-			this.stateSerializer = Preconditions.checkNotNull(stateSerializer);
-		}
+        if (proxyReadVersion >= 3) {
+            // broadcast states did not exist prior to version 3
+            int numBroadcastStates = in.readShort();
+            broadcastStateMetaInfoSnapshots = new ArrayList<>(numBroadcastStates);
+            for (int i = 0; i < numBroadcastStates; i++) {
+                broadcastStateMetaInfoSnapshots.add(
+                        stateMetaInfoReader.readStateMetaInfoSnapshot(in, userCodeClassLoader));
+            }
+        } else {
+            broadcastStateMetaInfoSnapshots = new ArrayList<>();
+        }
+    }
 
-		public String getName() {
-			return name;
-		}
+    public List<StateMetaInfoSnapshot> getOperatorStateMetaInfoSnapshots() {
+        return operatorStateMetaInfoSnapshots;
+    }
 
-		public void setName(String name) {
-			this.name = name;
-		}
-
-		public TypeSerializer<S> getStateSerializer() {
-			return stateSerializer;
-		}
-
-		public void setStateSerializer(TypeSerializer<S> stateSerializer) {
-			this.stateSerializer = stateSerializer;
-		}
-
-		@Override
-		public void write(DataOutputView out) throws IOException {
-			out.writeUTF(getName());
-			DataOutputViewStream dos = new DataOutputViewStream(out);
-			InstantiationUtil.serializeObject(dos, getStateSerializer());
-		}
-
-		@Override
-		public void read(DataInputView in) throws IOException {
-			setName(in.readUTF());
-			DataInputViewStream dis = new DataInputViewStream(in);
-			try {
-				TypeSerializer<S> stateSerializer = InstantiationUtil.deserializeObject(dis, userClassLoader);
-				setStateSerializer(stateSerializer);
-			} catch (ClassNotFoundException exception) {
-				throw new IOException(exception);
-			}
-		}
-	}
+    public List<StateMetaInfoSnapshot> getBroadcastStateMetaInfoSnapshots() {
+        return broadcastStateMetaInfoSnapshots;
+    }
 }

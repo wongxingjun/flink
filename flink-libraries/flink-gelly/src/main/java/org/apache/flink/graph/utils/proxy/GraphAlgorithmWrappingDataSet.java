@@ -18,12 +18,13 @@
 
 package org.apache.flink.graph.utils.proxy;
 
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.operators.NoOpOperator;
 import org.apache.flink.graph.Graph;
 import org.apache.flink.graph.GraphAlgorithm;
+
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -32,120 +33,98 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * A {@link GraphAlgorithm} transforms an input {@link Graph} into an output of
- * type {@code T}. A {@code GraphAlgorithmWrappingDataSet} wraps the resultant
- * {@link DataSet} with a {@code NoOpOperator}. The input to the wrapped
- * operator can be replaced when the same algorithm is run on the same input
- * with a mergeable configuration. This allows algorithms to be composed of
- * implicitly reusable algorithms without publicly sharing intermediate
- * {@link DataSet}s.
+ * Base class for a mergeable {@link GraphAlgorithm} which wraps and returns a result {@link
+ * DataSet}.
  *
  * @param <K> ID type
  * @param <VV> vertex value type
  * @param <EV> edge value type
- * @param <T> output type
+ * @param <T> output DataSet type
+ * @see GraphAlgorithmWrappingBase
  */
 public abstract class GraphAlgorithmWrappingDataSet<K, VV, EV, T>
-implements GraphAlgorithm<K, VV, EV, DataSet<T>> {
+        extends GraphAlgorithmWrappingBase<K, VV, EV, DataSet<T>> {
 
-	// each algorithm and input pair may map to multiple configurations
-	private static Map<GraphAlgorithmWrappingDataSet, List<GraphAlgorithmWrappingDataSet>> cache =
-		Collections.synchronizedMap(new HashMap<GraphAlgorithmWrappingDataSet, List<GraphAlgorithmWrappingDataSet>>());
+    // each algorithm and input pair may map to multiple configurations
+    private static Map<GraphAlgorithmWrappingDataSet, List<GraphAlgorithmWrappingDataSet>> cache =
+            Collections.synchronizedMap(
+                    new HashMap<
+                            GraphAlgorithmWrappingDataSet, List<GraphAlgorithmWrappingDataSet>>());
 
-	private Graph<K,VV,EV> input;
+    private Graph<K, VV, EV> input;
 
-	private NoOpOperator<T> wrappingOperator;
+    private NoOpOperator<T> wrappingOperator;
 
-	/**
-	 * Algorithms are identified by name rather than by class to allow subclassing.
-	 *
-	 * @return name of the algorithm, which may be shared by multiple classes
-	 *		 implementing the same algorithm and generating the same output
-	 */
-	protected abstract String getAlgorithmName();
+    /**
+     * The implementation of the algorithm, renamed from {@link GraphAlgorithm#run(Graph)}.
+     *
+     * @param input the input graph
+     * @return the algorithm's output
+     * @throws Exception
+     */
+    protected abstract DataSet<T> runInternal(Graph<K, VV, EV> input) throws Exception;
 
-	/**
-	 * An algorithm must first test whether the configurations can be merged
-	 * before merging individual fields.
-	 *
-	 * @param other the algorithm with which to compare and merge
-	 * @return true if and only if configuration has been merged and the
-	 *          algorithm's output can be reused
-	 */
-	protected abstract boolean mergeConfiguration(GraphAlgorithmWrappingDataSet other);
+    @Override
+    public final int hashCode() {
+        return new HashCodeBuilder(17, 37).append(input).append(getAlgorithmName()).toHashCode();
+    }
 
-	/**
-	 * The implementation of the algorithm, renamed from {@link GraphAlgorithm#run(Graph)}.
-	 *
-	 * @param input the input graph
-	 * @return the algorithm's output
-	 * @throws Exception
-	 */
-	protected abstract DataSet<T> runInternal(Graph<K, VV, EV> input) throws Exception;
+    @Override
+    public final boolean equals(Object obj) {
+        if (obj == null) {
+            return false;
+        }
 
-	@Override
-	public final int hashCode() {
-		return new HashCodeBuilder(17, 37)
-			.append(input)
-			.append(getAlgorithmName())
-			.toHashCode();
-	}
+        if (obj == this) {
+            return true;
+        }
 
-	@Override
-	public final boolean equals(Object obj) {
-		if (obj == null) {
-			return false;
-		}
+        if (!GraphAlgorithmWrappingDataSet.class.isAssignableFrom(obj.getClass())) {
+            return false;
+        }
 
-		if (obj == this) {
-			return true;
-		}
+        GraphAlgorithmWrappingDataSet rhs = (GraphAlgorithmWrappingDataSet) obj;
 
-		if (! GraphAlgorithmWrappingDataSet.class.isAssignableFrom(obj.getClass())) {
-			return false;
-		}
+        return new EqualsBuilder()
+                .append(input, rhs.input)
+                .append(getAlgorithmName(), rhs.getAlgorithmName())
+                .isEquals();
+    }
 
-		GraphAlgorithmWrappingDataSet rhs = (GraphAlgorithmWrappingDataSet) obj;
+    @Override
+    @SuppressWarnings("unchecked")
+    public final DataSet<T> run(Graph<K, VV, EV> input) throws Exception {
+        this.input = input;
 
-		return new EqualsBuilder()
-			.append(input, rhs.input)
-			.append(getAlgorithmName(), rhs.getAlgorithmName())
-			.isEquals();
-	}
+        if (cache.containsKey(this)) {
+            for (GraphAlgorithmWrappingDataSet<K, VV, EV, T> other : cache.get(this)) {
+                if (canMergeConfigurationWith(other)) {
+                    mergeConfiguration(other);
 
-	@Override
-	@SuppressWarnings("unchecked")
-	public final DataSet<T> run(Graph<K, VV, EV> input)
-			throws Exception {
-		this.input = input;
+                    // configuration has been merged so generate new output
+                    DataSet<T> output = runInternal(input);
 
-		if (cache.containsKey(this)) {
-			for (GraphAlgorithmWrappingDataSet<K, VV, EV, T> other : cache.get(this)) {
-				if (mergeConfiguration(other)) {
-					// configuration has been merged so generate new output
-					DataSet<T> output = runInternal(input);
+                    other.wrappingOperator.setInput(output);
+                    wrappingOperator = other.wrappingOperator;
 
-					other.wrappingOperator.setInput(output);
-					wrappingOperator = other.wrappingOperator;
+                    return wrappingOperator;
+                }
+            }
+        }
 
-					return wrappingOperator;
-				}
-			}
-		}
+        // no mergeable configuration found so generate new output
+        DataSet<T> output = runInternal(input);
 
-		// no mergeable configuration found so generate new output
-		DataSet<T> output = runInternal(input);
+        // create a new operator to wrap the algorithm output
+        wrappingOperator = new NoOpOperator<>(output, output.getType());
 
-		// create a new operator to wrap the algorithm output
-		wrappingOperator = new NoOpOperator<>(output, output.getType());
+        // cache this result
+        if (cache.containsKey(this)) {
+            cache.get(this).add(this);
+        } else {
+            cache.put(this, new ArrayList(Collections.singletonList(this)));
+        }
 
-		// cache this result
-		if (cache.containsKey(this)) {
-			cache.get(this).add(this);
-		} else {
-			cache.put(this, new ArrayList(Collections.singletonList(this)));
-		}
-
-		return wrappingOperator;
-	}
+        return wrappingOperator;
+    }
 }

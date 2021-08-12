@@ -17,72 +17,77 @@
 
 package org.apache.flink.streaming.util;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.concurrent.ConcurrentLinkedQueue;
-
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+/** Simple test context for stream operators. */
 public class MockContext<IN, OUT> {
-	
-	private List<OUT> outputs;
 
-	private MockOutput<OUT> output;
+    private List<OUT> outputs;
 
-	public MockContext(Collection<IN> inputs) {
-		if (inputs.isEmpty()) {
-			throw new RuntimeException("Inputs must not be empty");
-		}
+    private MockOutput<OUT> output;
 
-		outputs = new ArrayList<OUT>();
-		output = new MockOutput<OUT>(outputs);
-	}
+    public MockContext(Collection<IN> inputs) {
+        if (inputs.isEmpty()) {
+            throw new RuntimeException("Inputs must not be empty");
+        }
 
-	public List<OUT> getOutputs() {
-		return outputs;
-	}
+        outputs = new ArrayList<OUT>();
+        output = new MockOutput<OUT>(outputs);
+    }
 
-	public Output<StreamRecord<OUT>> getOutput() {
-		return output;
-	}
+    public List<OUT> getOutputs() {
+        return outputs;
+    }
 
-	public static <IN, OUT> List<OUT> createAndExecute(OneInputStreamOperator<IN, OUT> operator, List<IN> inputs) throws Exception {
-		return createAndExecuteForKeyedStream(operator, inputs, null, null);
-	}
-	
-	public static <IN, OUT, KEY> List<OUT> createAndExecuteForKeyedStream(
-				OneInputStreamOperator<IN, OUT> operator, List<IN> inputs,
-				KeySelector<IN, KEY> keySelector, TypeInformation<KEY> keyType) throws Exception {
+    public Output<StreamRecord<OUT>> getOutput() {
+        return output;
+    }
 
-		OneInputStreamOperatorTestHarness<IN, OUT> testHarness =
-				new KeyedOneInputStreamOperatorTestHarness<>(operator, keySelector, keyType);
+    public static <IN, OUT> List<OUT> createAndExecute(
+            OneInputStreamOperator<IN, OUT> operator, List<IN> inputs) throws Exception {
+        return createAndExecuteForKeyedStream(operator, inputs, null, null);
+    }
 
-		testHarness.setup();
-		testHarness.open();
-		
-		operator.open();
+    public static <IN, OUT, KEY> List<OUT> createAndExecuteForKeyedStream(
+            OneInputStreamOperator<IN, OUT> operator,
+            List<IN> inputs,
+            KeySelector<IN, KEY> keySelector,
+            TypeInformation<KEY> keyType)
+            throws Exception {
 
-		for (IN in: inputs) {
-			testHarness.processElement(new StreamRecord<>(in));
-		}
+        OneInputStreamOperatorTestHarness<IN, OUT> testHarness =
+                new KeyedOneInputStreamOperatorTestHarness<>(operator, keySelector, keyType);
 
-		testHarness.close();
+        testHarness.setup();
+        testHarness.open();
 
-		ConcurrentLinkedQueue<Object> output = testHarness.getOutput();
+        operator.open();
 
-		List<OUT> result = new ArrayList<>();
+        for (IN in : inputs) {
+            testHarness.processElement(new StreamRecord<>(in));
+        }
 
-		for (Object o : output) {
-			if (o instanceof StreamRecord) {
-				result.add((OUT) ((StreamRecord) o).getValue());
-			}
-		}
+        testHarness.close();
 
-		return result;
-	}
+        ConcurrentLinkedQueue<Object> output = testHarness.getOutput();
+
+        List<OUT> result = new ArrayList<>();
+
+        for (Object o : output) {
+            if (o instanceof StreamRecord) {
+                result.add((OUT) ((StreamRecord) o).getValue());
+            }
+        }
+
+        return result;
+    }
 }

@@ -21,37 +21,20 @@ package org.apache.flink.client.cli;
 import org.apache.commons.cli.CommandLine;
 
 import static org.apache.flink.client.cli.CliFrontendParser.HELP_OPTION;
-import static org.apache.flink.client.cli.CliFrontendParser.ADDRESS_OPTION;
 
 /**
- * Base class for all options parsed from the command line.
- * Contains options for printing help and the JobManager address.
+ * Base class for all options parsed from the command line. Contains options for printing help and
+ * the JobManager address.
  */
 public abstract class CommandLineOptions {
 
-	private final CommandLine commandLine;
+    private final boolean printHelp;
 
-	private final String jobManagerAddress;
+    protected CommandLineOptions(CommandLine line) {
+        this.printHelp = line.hasOption(HELP_OPTION.getOpt());
+    }
 
-	private final boolean printHelp;
-
-
-	protected CommandLineOptions(CommandLine line) {
-		this.commandLine = line;
-		this.printHelp = line.hasOption(HELP_OPTION.getOpt());
-		this.jobManagerAddress = line.hasOption(ADDRESS_OPTION.getOpt()) ?
-				line.getOptionValue(ADDRESS_OPTION.getOpt()) : null;
-	}
-
-	public CommandLine getCommandLine() {
-		return commandLine;
-	}
-
-	public boolean isPrintHelp() {
-		return printHelp;
-	}
-
-	public String getJobManagerAddress() {
-		return jobManagerAddress;
-	}
+    public boolean isPrintHelp() {
+        return printHelp;
+    }
 }

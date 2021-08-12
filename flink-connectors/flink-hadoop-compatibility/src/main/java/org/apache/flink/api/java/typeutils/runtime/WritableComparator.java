@@ -18,171 +18,179 @@
 
 package org.apache.flink.api.java.typeutils.runtime;
 
-import com.esotericsoftware.kryo.Kryo;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.types.NormalizableKey;
 import org.apache.flink.util.InstantiationUtil;
+
+import com.esotericsoftware.kryo.Kryo;
 import org.apache.hadoop.io.Writable;
 import org.objenesis.strategy.StdInstantiatorStrategy;
 
 import java.io.IOException;
 
+/**
+ * A {@link TypeComparator} for {@link Writable}.
+ *
+ * @param <T>
+ */
 public class WritableComparator<T extends Writable & Comparable<T>> extends TypeComparator<T> {
-	
-	private static final long serialVersionUID = 1L;
-	
-	private Class<T> type;
-	
-	private final boolean ascendingComparison;
-	
-	private transient T reference;
-	
-	private transient T tempReference;
-	
-	private transient Kryo kryo;
 
-	@SuppressWarnings("rawtypes")
-	private final TypeComparator[] comparators = new TypeComparator[] {this};
+    private static final long serialVersionUID = 1L;
 
-	public WritableComparator(boolean ascending, Class<T> type) {
-		this.type = type;
-		this.ascendingComparison = ascending;
-	}
-	
-	@Override
-	public int hash(T record) {
-		return record.hashCode();
-	}
-	
-	@Override
-	public void setReference(T toCompare) {
-		checkKryoInitialized();
+    private Class<T> type;
 
-		reference = KryoUtils.copy(toCompare, kryo, new WritableSerializer<T>(type));
-	}
-	
-	@Override
-	public boolean equalToReference(T candidate) {
-		return candidate.equals(reference);
-	}
-	
-	@Override
-	public int compareToReference(TypeComparator<T> referencedComparator) {
-		T otherRef = ((WritableComparator<T>) referencedComparator).reference;
-		int comp = otherRef.compareTo(reference);
-		return ascendingComparison ? comp : -comp;
-	}
-	
-	@Override
-	public int compare(T first, T second) {
-		int comp = first.compareTo(second);
-		return ascendingComparison ? comp : -comp;
-	}
-	
-	@Override
-	public int compareSerialized(DataInputView firstSource, DataInputView secondSource) throws IOException {
-		ensureReferenceInstantiated();
-		ensureTempReferenceInstantiated();
-		
-		reference.readFields(firstSource);
-		tempReference.readFields(secondSource);
-		
-		int comp = reference.compareTo(tempReference);
-		return ascendingComparison ? comp : -comp;
-	}
-	
-	@Override
-	public boolean supportsNormalizedKey() {
-		return NormalizableKey.class.isAssignableFrom(type);
-	}
-	
-	@Override
-	public int getNormalizeKeyLen() {
-		ensureReferenceInstantiated();
-		
-		NormalizableKey<?> key = (NormalizableKey<?>) reference;
-		return key.getMaxNormalizedKeyLen();
-	}
-	
-	@Override
-	public boolean isNormalizedKeyPrefixOnly(int keyBytes) {
-		return keyBytes < getNormalizeKeyLen();
-	}
-	
-	@Override
-	public void putNormalizedKey(T record, MemorySegment target, int offset, int numBytes) {
-		NormalizableKey<?> key = (NormalizableKey<?>) record;
-		key.copyNormalizedKey(target, offset, numBytes);
-	}
-	
-	@Override
-	public boolean invertNormalizedKey() {
-		return !ascendingComparison;
-	}
-	
-	@Override
-	public TypeComparator<T> duplicate() {
-		return new WritableComparator<T>(ascendingComparison, type);
-	}
+    private final boolean ascendingComparison;
 
-	@Override
-	public int extractKeys(Object record, Object[] target, int index) {
-		target[index] = record;
-		return 1;
-	}
+    private transient T reference;
 
-	@SuppressWarnings("rawtypes")
-	@Override
-	public TypeComparator[] getFlatComparators() {
-		return comparators;
-	}
-	
-	// --------------------------------------------------------------------------------------------
-	// unsupported normalization
-	// --------------------------------------------------------------------------------------------
-	
-	@Override
-	public boolean supportsSerializationWithKeyNormalization() {
-		return false;
-	}
-	
-	@Override
-	public void writeWithKeyNormalization(T record, DataOutputView target) throws IOException {
-		throw new UnsupportedOperationException();
-	}
-	
-	@Override
-	public T readWithKeyDenormalization(T reuse, DataInputView source) throws IOException {
-		throw new UnsupportedOperationException();
-	}
-	
-	// --------------------------------------------------------------------------------------------
-	
-	private void checkKryoInitialized() {
-		if (this.kryo == null) {
-			this.kryo = new Kryo();
+    private transient T tempReference;
 
-			Kryo.DefaultInstantiatorStrategy instantiatorStrategy = new Kryo.DefaultInstantiatorStrategy();
-			instantiatorStrategy.setFallbackInstantiatorStrategy(new StdInstantiatorStrategy());
-			kryo.setInstantiatorStrategy(instantiatorStrategy);
+    private transient Kryo kryo;
 
-			this.kryo.setAsmEnabled(true);
-			this.kryo.register(type);
-		}
-	}
-	
-	private void ensureReferenceInstantiated() {
-		if (reference == null) {
-			reference = InstantiationUtil.instantiate(type, Writable.class);
-		}
-	}
-	
-	private void ensureTempReferenceInstantiated() {
-		if (tempReference == null) {
-			tempReference = InstantiationUtil.instantiate(type, Writable.class);
-		}
-	}
+    @SuppressWarnings("rawtypes")
+    private final TypeComparator[] comparators = new TypeComparator[] {this};
+
+    public WritableComparator(boolean ascending, Class<T> type) {
+        this.type = type;
+        this.ascendingComparison = ascending;
+    }
+
+    @Override
+    public int hash(T record) {
+        return record.hashCode();
+    }
+
+    @Override
+    public void setReference(T toCompare) {
+        checkKryoInitialized();
+
+        reference = KryoUtils.copy(toCompare, kryo, new WritableSerializer<T>(type));
+    }
+
+    @Override
+    public boolean equalToReference(T candidate) {
+        return candidate.equals(reference);
+    }
+
+    @Override
+    public int compareToReference(TypeComparator<T> referencedComparator) {
+        T otherRef = ((WritableComparator<T>) referencedComparator).reference;
+        int comp = otherRef.compareTo(reference);
+        return ascendingComparison ? comp : -comp;
+    }
+
+    @Override
+    public int compare(T first, T second) {
+        int comp = first.compareTo(second);
+        return ascendingComparison ? comp : -comp;
+    }
+
+    @Override
+    public int compareSerialized(DataInputView firstSource, DataInputView secondSource)
+            throws IOException {
+        ensureReferenceInstantiated();
+        ensureTempReferenceInstantiated();
+
+        reference.readFields(firstSource);
+        tempReference.readFields(secondSource);
+
+        int comp = reference.compareTo(tempReference);
+        return ascendingComparison ? comp : -comp;
+    }
+
+    @Override
+    public boolean supportsNormalizedKey() {
+        return NormalizableKey.class.isAssignableFrom(type);
+    }
+
+    @Override
+    public int getNormalizeKeyLen() {
+        ensureReferenceInstantiated();
+
+        NormalizableKey<?> key = (NormalizableKey<?>) reference;
+        return key.getMaxNormalizedKeyLen();
+    }
+
+    @Override
+    public boolean isNormalizedKeyPrefixOnly(int keyBytes) {
+        return keyBytes < getNormalizeKeyLen();
+    }
+
+    @Override
+    public void putNormalizedKey(T record, MemorySegment target, int offset, int numBytes) {
+        NormalizableKey<?> key = (NormalizableKey<?>) record;
+        key.copyNormalizedKey(target, offset, numBytes);
+    }
+
+    @Override
+    public boolean invertNormalizedKey() {
+        return !ascendingComparison;
+    }
+
+    @Override
+    public TypeComparator<T> duplicate() {
+        return new WritableComparator<T>(ascendingComparison, type);
+    }
+
+    @Override
+    public int extractKeys(Object record, Object[] target, int index) {
+        target[index] = record;
+        return 1;
+    }
+
+    @SuppressWarnings("rawtypes")
+    @Override
+    public TypeComparator[] getFlatComparators() {
+        return comparators;
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // unsupported normalization
+    // --------------------------------------------------------------------------------------------
+
+    @Override
+    public boolean supportsSerializationWithKeyNormalization() {
+        return false;
+    }
+
+    @Override
+    public void writeWithKeyNormalization(T record, DataOutputView target) throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public T readWithKeyDenormalization(T reuse, DataInputView source) throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    private void checkKryoInitialized() {
+        if (this.kryo == null) {
+            this.kryo = new Kryo();
+
+            Kryo.DefaultInstantiatorStrategy instantiatorStrategy =
+                    new Kryo.DefaultInstantiatorStrategy();
+            instantiatorStrategy.setFallbackInstantiatorStrategy(new StdInstantiatorStrategy());
+            kryo.setInstantiatorStrategy(instantiatorStrategy);
+
+            this.kryo.setAsmEnabled(true);
+            this.kryo.register(type);
+        }
+    }
+
+    private void ensureReferenceInstantiated() {
+        if (reference == null) {
+            reference = InstantiationUtil.instantiate(type, Writable.class);
+        }
+    }
+
+    private void ensureTempReferenceInstantiated() {
+        if (tempReference == null) {
+            tempReference = InstantiationUtil.instantiate(type, Writable.class);
+        }
+    }
 }

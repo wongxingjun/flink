@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.runtime.metrics.groups;
 
 import org.apache.flink.annotation.Internal;
@@ -22,34 +23,42 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.metrics.MetricRegistry;
 
 import javax.annotation.Nullable;
+
 import java.util.Collections;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Special {@link org.apache.flink.metrics.MetricGroup} representing everything belonging to
- * a specific job, running on the JobManager.
+ * Special {@link org.apache.flink.metrics.MetricGroup} representing everything belonging to a
+ * specific job, running on the JobManager.
  */
 @Internal
 public class JobManagerJobMetricGroup extends JobMetricGroup<JobManagerMetricGroup> {
-	public JobManagerJobMetricGroup(
-			MetricRegistry registry,
-			JobManagerMetricGroup parent,
-			JobID jobId,
-			@Nullable String jobName) {
-		super(registry, checkNotNull(parent), jobId, jobName, registry.getScopeFormats().getJobManagerJobFormat().formatScope(checkNotNull(parent), jobId, jobName));
-	}
+    JobManagerJobMetricGroup(
+            MetricRegistry registry,
+            JobManagerMetricGroup parent,
+            JobID jobId,
+            @Nullable String jobName) {
+        super(
+                registry,
+                checkNotNull(parent),
+                jobId,
+                jobName,
+                registry.getScopeFormats()
+                        .getJobManagerJobFormat()
+                        .formatScope(checkNotNull(parent), jobId, jobName));
+    }
 
-	public final JobManagerMetricGroup parent() {
-		return parent;
-	}
+    public final JobManagerMetricGroup parent() {
+        return parent;
+    }
 
-	// ------------------------------------------------------------------------
-	//  Component Metric Group Specifics
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    //  Component Metric Group Specifics
+    // ------------------------------------------------------------------------
 
-	@Override
-	protected Iterable<? extends ComponentMetricGroup> subComponents() {
-		return Collections.emptyList();
-	}
+    @Override
+    protected Iterable<? extends ComponentMetricGroup> subComponents() {
+        return Collections.emptyList();
+    }
 }

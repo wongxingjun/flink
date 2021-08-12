@@ -20,6 +20,8 @@ package org.apache.flink.api.java.typeutils;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.CompositeType.FlatFieldDescriptor;
+import org.apache.flink.api.common.typeutils.TypeInformationTestBase;
+
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -27,126 +29,132 @@ import java.util.List;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
-public class RowTypeInfoTest {
-	private static TypeInformation<?>[] typeList = new TypeInformation<?>[]{
-		BasicTypeInfo.INT_TYPE_INFO,
-		new RowTypeInfo(
-			BasicTypeInfo.SHORT_TYPE_INFO,
-			BasicTypeInfo.BIG_DEC_TYPE_INFO),
-		BasicTypeInfo.STRING_TYPE_INFO
-	};
+/** Test for {@link RowTypeInfo}. */
+public class RowTypeInfoTest extends TypeInformationTestBase<RowTypeInfo> {
+    private static TypeInformation<?>[] typeList =
+            new TypeInformation<?>[] {
+                BasicTypeInfo.INT_TYPE_INFO,
+                new RowTypeInfo(BasicTypeInfo.SHORT_TYPE_INFO, BasicTypeInfo.BIG_DEC_TYPE_INFO),
+                BasicTypeInfo.STRING_TYPE_INFO
+            };
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testWrongNumberOfFieldNames() {
-		new RowTypeInfo(typeList, new String[]{"int", "string"});
-		// number of field names should be equal to number of types, go fail
-	}
+    @Override
+    protected RowTypeInfo[] getTestData() {
+        return new RowTypeInfo[] {
+            new RowTypeInfo(BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO),
+            new RowTypeInfo(BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.BOOLEAN_TYPE_INFO),
+            new RowTypeInfo(typeList),
+            new RowTypeInfo(
+                    new TypeInformation[] {
+                        BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.INT_TYPE_INFO
+                    },
+                    new String[] {"int", "int2"})
+        };
+    }
 
-	@Test(expected = IllegalArgumentException.class)
-	public void testDuplicateCustomFieldNames() {
-		new RowTypeInfo(typeList, new String[]{"int", "string", "string"});
-		// field names should not be the same, go fail
-	}
+    @Test(expected = IllegalArgumentException.class)
+    public void testWrongNumberOfFieldNames() {
+        new RowTypeInfo(typeList, new String[] {"int", "string"});
+        // number of field names should be equal to number of types, go fail
+    }
 
-	@Test
-	public void testCustomFieldNames() {
-		String[] fieldNames = new String[]{"int", "row", "string"};
-		RowTypeInfo typeInfo1 = new RowTypeInfo(typeList, new String[]{"int", "row", "string"});
-		assertArrayEquals(new String[]{"int", "row", "string"}, typeInfo1.getFieldNames());
+    @Test(expected = IllegalArgumentException.class)
+    public void testDuplicateCustomFieldNames() {
+        new RowTypeInfo(typeList, new String[] {"int", "string", "string"});
+        // field names should not be the same, go fail
+    }
 
-		assertEquals(BasicTypeInfo.STRING_TYPE_INFO, typeInfo1.getTypeAt("string"));
-		assertEquals(BasicTypeInfo.STRING_TYPE_INFO, typeInfo1.getTypeAt(2));
-		assertEquals(BasicTypeInfo.SHORT_TYPE_INFO, typeInfo1.getTypeAt("row.0"));
-		assertEquals(BasicTypeInfo.BIG_DEC_TYPE_INFO, typeInfo1.getTypeAt("row.f1"));
+    @Test
+    public void testCustomFieldNames() {
+        String[] fieldNames = new String[] {"int", "row", "string"};
+        RowTypeInfo typeInfo1 = new RowTypeInfo(typeList, new String[] {"int", "row", "string"});
+        assertArrayEquals(new String[] {"int", "row", "string"}, typeInfo1.getFieldNames());
 
-		// change the names in fieldNames
-		fieldNames[1] = "composite";
-		RowTypeInfo typeInfo2 = new RowTypeInfo(typeList, fieldNames);
-		// make sure the field names are deep copied
-		assertArrayEquals(new String[]{"int", "row", "string"}, typeInfo1.getFieldNames());
-		assertArrayEquals(new String[]{"int", "composite", "string"}, typeInfo2.getFieldNames());
-	}
+        assertEquals(BasicTypeInfo.STRING_TYPE_INFO, typeInfo1.getTypeAt("string"));
+        assertEquals(BasicTypeInfo.STRING_TYPE_INFO, typeInfo1.getTypeAt(2));
+        assertEquals(BasicTypeInfo.SHORT_TYPE_INFO, typeInfo1.getTypeAt("row.0"));
+        assertEquals(BasicTypeInfo.BIG_DEC_TYPE_INFO, typeInfo1.getTypeAt("row.f1"));
 
-	@Test
-	public void testGetFlatFields() {
-		RowTypeInfo typeInfo1 = new RowTypeInfo(typeList, new String[]{"int", "row", "string"});
-		List<FlatFieldDescriptor> result = new ArrayList<>();
-		typeInfo1.getFlatFields("row.*", 0, result);
-		assertEquals(2, result.size());
-		assertEquals(
-			new FlatFieldDescriptor(1, BasicTypeInfo.SHORT_TYPE_INFO).toString(),
-			result.get(0).toString());
-		assertEquals(
-			new FlatFieldDescriptor(2, BasicTypeInfo.BIG_DEC_TYPE_INFO).toString(),
-			result.get(1).toString());
+        // change the names in fieldNames
+        fieldNames[1] = "composite";
+        RowTypeInfo typeInfo2 = new RowTypeInfo(typeList, fieldNames);
+        // make sure the field names are deep copied
+        assertArrayEquals(new String[] {"int", "row", "string"}, typeInfo1.getFieldNames());
+        assertArrayEquals(new String[] {"int", "composite", "string"}, typeInfo2.getFieldNames());
+    }
 
-		result.clear();
-		typeInfo1.getFlatFields("string", 0, result);
-		assertEquals(1, result.size());
-		assertEquals(
-			new FlatFieldDescriptor(3, BasicTypeInfo.STRING_TYPE_INFO).toString(),
-			result.get(0).toString());
-	}
+    @Test
+    public void testGetFlatFields() {
+        RowTypeInfo typeInfo1 = new RowTypeInfo(typeList, new String[] {"int", "row", "string"});
+        List<FlatFieldDescriptor> result = new ArrayList<>();
+        typeInfo1.getFlatFields("row.*", 0, result);
+        assertEquals(2, result.size());
+        assertEquals(
+                new FlatFieldDescriptor(1, BasicTypeInfo.SHORT_TYPE_INFO).toString(),
+                result.get(0).toString());
+        assertEquals(
+                new FlatFieldDescriptor(2, BasicTypeInfo.BIG_DEC_TYPE_INFO).toString(),
+                result.get(1).toString());
 
-	@Test
-	public void testGetTypeAt() {
-		RowTypeInfo typeInfo = new RowTypeInfo(
-			BasicTypeInfo.INT_TYPE_INFO,
-			new RowTypeInfo(
-				BasicTypeInfo.SHORT_TYPE_INFO,
-				BasicTypeInfo.BIG_DEC_TYPE_INFO
-			),
-			BasicTypeInfo.STRING_TYPE_INFO);
+        result.clear();
+        typeInfo1.getFlatFields("string", 0, result);
+        assertEquals(1, result.size());
+        assertEquals(
+                new FlatFieldDescriptor(3, BasicTypeInfo.STRING_TYPE_INFO).toString(),
+                result.get(0).toString());
+    }
 
+    @Test
+    public void testGetTypeAt() {
+        RowTypeInfo typeInfo = new RowTypeInfo(typeList);
 
-		assertArrayEquals(new String[]{"f0", "f1", "f2"}, typeInfo.getFieldNames());
+        assertArrayEquals(new String[] {"f0", "f1", "f2"}, typeInfo.getFieldNames());
 
-		assertEquals(BasicTypeInfo.STRING_TYPE_INFO, typeInfo.getTypeAt("f2"));
-		assertEquals(BasicTypeInfo.SHORT_TYPE_INFO, typeInfo.getTypeAt("f1.f0"));
-		assertEquals(BasicTypeInfo.BIG_DEC_TYPE_INFO, typeInfo.getTypeAt("f1.1"));
-	}
+        assertEquals(BasicTypeInfo.STRING_TYPE_INFO, typeInfo.getTypeAt("f2"));
+        assertEquals(BasicTypeInfo.SHORT_TYPE_INFO, typeInfo.getTypeAt("f1.f0"));
+        assertEquals(BasicTypeInfo.BIG_DEC_TYPE_INFO, typeInfo.getTypeAt("f1.1"));
+    }
 
-	@Test
-	public void testRowTypeInfoEquality() {
-		RowTypeInfo typeInfo1 = new RowTypeInfo(
-			BasicTypeInfo.INT_TYPE_INFO,
-			BasicTypeInfo.STRING_TYPE_INFO);
+    @Test
+    public void testNestedRowTypeInfo() {
+        RowTypeInfo typeInfo = new RowTypeInfo(typeList);
 
-		RowTypeInfo typeInfo2 = new RowTypeInfo(
-			BasicTypeInfo.INT_TYPE_INFO,
-			BasicTypeInfo.STRING_TYPE_INFO);
+        assertEquals("Row(f0: Short, f1: BigDecimal)", typeInfo.getTypeAt("f1").toString());
+        assertEquals("Short", typeInfo.getTypeAt("f1.f0").toString());
+    }
 
-		assertEquals(typeInfo1, typeInfo2);
-		assertEquals(typeInfo1.hashCode(), typeInfo2.hashCode());
-	}
+    @Test
+    public void testSchemaEquals() {
+        final RowTypeInfo row1 =
+                new RowTypeInfo(
+                        new TypeInformation[] {
+                            BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO
+                        },
+                        new String[] {"field1", "field2"});
+        final RowTypeInfo row2 =
+                new RowTypeInfo(
+                        new TypeInformation[] {
+                            BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO
+                        },
+                        new String[] {"field1", "field2"});
+        assertTrue(row1.schemaEquals(row2));
 
-	@Test
-	public void testRowTypeInfoInequality() {
-		RowTypeInfo typeInfo1 = new RowTypeInfo(
-			BasicTypeInfo.INT_TYPE_INFO,
-			BasicTypeInfo.STRING_TYPE_INFO);
-
-		RowTypeInfo typeInfo2 = new RowTypeInfo(
-			BasicTypeInfo.INT_TYPE_INFO,
-			BasicTypeInfo.BOOLEAN_TYPE_INFO);
-
-		assertNotEquals(typeInfo1, typeInfo2);
-		assertNotEquals(typeInfo1.hashCode(), typeInfo2.hashCode());
-	}
-
-	@Test
-	public void testNestedRowTypeInfo() {
-		RowTypeInfo typeInfo = new RowTypeInfo(
-			BasicTypeInfo.INT_TYPE_INFO,
-			new RowTypeInfo(
-				BasicTypeInfo.SHORT_TYPE_INFO,
-				BasicTypeInfo.BIG_DEC_TYPE_INFO
-			),
-			BasicTypeInfo.STRING_TYPE_INFO);
-
-		assertEquals("Row(f0: Short, f1: BigDecimal)", typeInfo.getTypeAt("f1").toString());
-		assertEquals("Short", typeInfo.getTypeAt("f1.f0").toString());
-	}
+        final RowTypeInfo other1 =
+                new RowTypeInfo(
+                        new TypeInformation[] {
+                            BasicTypeInfo.INT_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO
+                        },
+                        new String[] {"otherField", "field2"});
+        final RowTypeInfo other2 =
+                new RowTypeInfo(
+                        new TypeInformation[] {
+                            BasicTypeInfo.LONG_TYPE_INFO, BasicTypeInfo.STRING_TYPE_INFO
+                        },
+                        new String[] {"field1", "field2"});
+        assertFalse(row1.schemaEquals(other1));
+        assertFalse(row1.schemaEquals(other2));
+    }
 }

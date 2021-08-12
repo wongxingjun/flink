@@ -14,26 +14,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.batch.connectors.cassandra;
 
-import com.datastax.driver.core.Cluster;
+import org.apache.flink.api.java.tuple.Tuple;
+import org.apache.flink.core.io.InputSplit;
+import org.apache.flink.streaming.connectors.cassandra.ClusterBuilder;
+
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
-import com.datastax.driver.core.Session;
-import com.google.common.base.Strings;
-import org.apache.flink.api.common.io.DefaultInputSplitAssigner;
-import org.apache.flink.api.common.io.NonParallelInput;
-import org.apache.flink.api.common.io.RichInputFormat;
-import org.apache.flink.api.common.io.statistics.BaseStatistics;
-import org.apache.flink.api.java.tuple.Tuple;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.io.GenericInputSplit;
-import org.apache.flink.core.io.InputSplit;
-import org.apache.flink.core.io.InputSplitAssigner;
-import org.apache.flink.streaming.connectors.cassandra.ClusterBuilder;
-import org.apache.flink.util.Preconditions;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 
@@ -42,90 +31,38 @@ import java.io.IOException;
  *
  * @param <OUT> type of Tuple
  */
-public class CassandraInputFormat<OUT extends Tuple> extends RichInputFormat<OUT, InputSplit> implements NonParallelInput {
-	private static final Logger LOG = LoggerFactory.getLogger(CassandraInputFormat.class);
+public class CassandraInputFormat<OUT extends Tuple> extends CassandraInputFormatBase<OUT> {
 
-	private final String query;
-	private final ClusterBuilder builder;
+    private static final long serialVersionUID = 3642323148032444264L;
+    private transient ResultSet resultSet;
 
-	private transient Cluster cluster;
-	private transient Session session;
-	private transient ResultSet resultSet;
+    public CassandraInputFormat(String query, ClusterBuilder builder) {
+        super(query, builder);
+    }
 
-	public CassandraInputFormat(String query, ClusterBuilder builder) {
-		Preconditions.checkArgument(!Strings.isNullOrEmpty(query), "Query cannot be null or empty");
-		Preconditions.checkArgument(builder != null, "Builder cannot be null");
+    /**
+     * Opens a Session and executes the query.
+     *
+     * @param ignored because parameter is not parallelizable.
+     * @throws IOException
+     */
+    @Override
+    public void open(InputSplit ignored) throws IOException {
+        this.session = cluster.connect();
+        this.resultSet = session.execute(query);
+    }
 
-		this.query = query;
-		this.builder = builder;
-	}
+    @Override
+    public boolean reachedEnd() throws IOException {
+        return resultSet.isExhausted();
+    }
 
-	@Override
-	public void configure(Configuration parameters) {
-		this.cluster = builder.getCluster();
-	}
-
-	@Override
-	public BaseStatistics getStatistics(BaseStatistics cachedStatistics) throws IOException {
-		return cachedStatistics;
-	}
-
-	/**
-	 * Opens a Session and executes the query.
-	 *
-	 * @param ignored
-	 * @throws IOException
-	 */
-	@Override
-	public void open(InputSplit ignored) throws IOException {
-		this.session = cluster.connect();
-		this.resultSet = session.execute(query);
-	}
-
-	@Override
-	public boolean reachedEnd() throws IOException {
-		return resultSet.isExhausted();
-	}
-
-	@Override
-	public OUT nextRecord(OUT reuse) throws IOException {
-		final Row item = resultSet.one();
-		for (int i = 0; i < reuse.getArity(); i++) {
-			reuse.setField(item.getObject(i), i);
-		}
-		return reuse;
-	}
-
-	@Override
-	public InputSplit[] createInputSplits(int minNumSplits) throws IOException {
-		GenericInputSplit[] split = {new GenericInputSplit(0, 1)};
-		return split;
-	}
-
-	@Override
-	public InputSplitAssigner getInputSplitAssigner(InputSplit[] inputSplits) {
-		return new DefaultInputSplitAssigner(inputSplits);
-	}
-
-	/**
-	 * Closes all resources used.
-	 */
-	@Override
-	public void close() throws IOException {
-		try {
-			if (session != null) {
-				session.close();
-			}
-		} catch (Exception e) {
-			LOG.error("Error while closing session.", e);
-		}
-
-		try {
-			if (cluster != null ) {
-				cluster.close();
-			}
-		} catch (Exception e) {
-			LOG.error("Error while closing cluster.", e);
-		}
-	}
+    @Override
+    public OUT nextRecord(OUT reuse) throws IOException {
+        final Row item = resultSet.one();
+        for (int i = 0; i < reuse.getArity(); i++) {
+            reuse.setField(item.getObject(i), i);
+        }
+        return reuse;
+    }
 }

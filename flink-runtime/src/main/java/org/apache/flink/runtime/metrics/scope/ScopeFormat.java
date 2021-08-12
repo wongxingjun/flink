@@ -27,281 +27,218 @@ import java.util.List;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * This class represents the format after which the "scope" (or namespace) of the various
- * component metric groups is built. Component metric groups are for example
- * "TaskManager", "Task", or "Operator".
+ * This class represents the format after which the "scope" (or namespace) of the various component
+ * metric groups is built. Component metric groups are for example "TaskManager", "Task", or
+ * "Operator".
  *
- * <p>User defined scope formats allow users to include or exclude
- * certain identifiers from the scope. The scope for metrics belonging to the "Task"
- * group could for example include the task attempt number (more fine grained identification), or
- * exclude it (continuity of the namespace across failure and recovery).
+ * <p>User defined scope formats allow users to include or exclude certain identifiers from the
+ * scope. The scope for metrics belonging to the "Task" group could for example include the task
+ * attempt number (more fine grained identification), or exclude it (continuity of the namespace
+ * across failure and recovery).
  */
 public abstract class ScopeFormat {
 
-	private static CharacterFilter defaultFilter = new CharacterFilter() {
-		@Override
-		public String filterCharacters(String input) {
-			return input;
-		}
-	};
+    // ------------------------------------------------------------------------
+    //  Scope Format Special Characters
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
-	//  Scope Format Special Characters
-	// ------------------------------------------------------------------------
+    /**
+     * If the scope format starts with this character, then the parent components scope format will
+     * be used as a prefix.
+     *
+     * <p>For example, if the TaskManager's job format is {@code "*.<job_name>"}, and the
+     * TaskManager format is {@code "<host>"}, then the job's metrics will have {@code
+     * "<host>.<job_name>"} as their scope.
+     */
+    public static final String SCOPE_INHERIT_PARENT = "*";
 
-	/**
-	 * If the scope format starts with this character, then the parent components scope
-	 * format will be used as a prefix.
-	 * 
-	 * <p>For example, if the TaskManager's job format is {@code "*.<job_name>"}, and the
-	 * TaskManager format is {@code "<host>"}, then the job's metrics
-	 * will have {@code "<host>.<job_name>"} as their scope.
-	 */
-	public static final String SCOPE_INHERIT_PARENT = "*";
+    public static final String SCOPE_SEPARATOR = ".";
 
-	public static final String SCOPE_SEPARATOR = ".";
+    private static final String SCOPE_VARIABLE_PREFIX = "<";
+    private static final String SCOPE_VARIABLE_SUFFIX = ">";
 
-	private static final String SCOPE_VARIABLE_PREFIX = "<";
-	private static final String SCOPE_VARIABLE_SUFFIX = ">";
+    // ------------------------------------------------------------------------
+    //  Scope Variables
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
-	//  Scope Variables
-	// ------------------------------------------------------------------------
+    public static final String SCOPE_HOST = asVariable("host");
 
-	public static final String SCOPE_HOST = asVariable("host");
+    // ----- Task Manager ----
 
-	// ----- Job Manager ----
+    public static final String SCOPE_TASKMANAGER_ID = asVariable("tm_id");
 
-	/** The default scope format of the JobManager component: {@code "<host>.jobmanager"} */
-	public static final String DEFAULT_SCOPE_JOBMANAGER_COMPONENT =
-		concat(SCOPE_HOST, "jobmanager");
+    // ----- Job -----
 
-	/** The default scope format of JobManager metrics: {@code "<host>.jobmanager"} */
-	public static final String DEFAULT_SCOPE_JOBMANAGER_GROUP = DEFAULT_SCOPE_JOBMANAGER_COMPONENT;
+    public static final String SCOPE_JOB_ID = asVariable("job_id");
+    public static final String SCOPE_JOB_NAME = asVariable("job_name");
 
-	// ----- Task Manager ----
+    // ----- Task ----
 
-	public static final String SCOPE_TASKMANAGER_ID = asVariable("tm_id");
+    public static final String SCOPE_TASK_VERTEX_ID = asVariable("task_id");
+    public static final String SCOPE_TASK_NAME = asVariable("task_name");
+    public static final String SCOPE_TASK_ATTEMPT_ID = asVariable("task_attempt_id");
+    public static final String SCOPE_TASK_ATTEMPT_NUM = asVariable("task_attempt_num");
+    public static final String SCOPE_TASK_SUBTASK_INDEX = asVariable("subtask_index");
 
-	/** The default scope format of the TaskManager component: {@code "<host>.taskmanager.<tm_id>"} */
-	public static final String DEFAULT_SCOPE_TASKMANAGER_COMPONENT =
-			concat(SCOPE_HOST, "taskmanager", SCOPE_TASKMANAGER_ID);
+    // ----- Operator ----
 
-	/** The default scope format of TaskManager metrics: {@code "<host>.taskmanager.<tm_id>"} */
-	public static final String DEFAULT_SCOPE_TASKMANAGER_GROUP = DEFAULT_SCOPE_TASKMANAGER_COMPONENT;
+    public static final String SCOPE_OPERATOR_ID = asVariable("operator_id");
+    public static final String SCOPE_OPERATOR_NAME = asVariable("operator_name");
 
-	// ----- Job -----
+    // ------------------------------------------------------------------------
+    //  Scope Format Base
+    // ------------------------------------------------------------------------
 
-	public static final String SCOPE_JOB_ID = asVariable("job_id");
-	public static final String SCOPE_JOB_NAME = asVariable("job_name");
+    /** The scope format. */
+    private final String format;
 
-	/** The default scope format for the job component: {@code "<job_name>"} */
-	public static final String DEFAULT_SCOPE_JOB_COMPONENT = SCOPE_JOB_NAME;
+    /** The format, split into components. */
+    private final String[] template;
 
-	// ----- Job on Job Manager ----
+    private final int[] templatePos;
 
-	/** The default scope format for all job metrics on a jobmanager: {@code "<host>.jobmanager.<job_name>"} */
-	public static final String DEFAULT_SCOPE_JOBMANAGER_JOB_GROUP =
-		concat(DEFAULT_SCOPE_JOBMANAGER_COMPONENT, DEFAULT_SCOPE_JOB_COMPONENT);
+    private final int[] valuePos;
 
-	// ----- Job on Task Manager ----
+    // ------------------------------------------------------------------------
 
-	/** The default scope format for all job metrics on a taskmanager: {@code "<host>.taskmanager.<tm_id>.<job_name>"} */
-	public static final String DEFAULT_SCOPE_TASKMANAGER_JOB_GROUP =
-			concat(DEFAULT_SCOPE_TASKMANAGER_COMPONENT, DEFAULT_SCOPE_JOB_COMPONENT);
+    protected ScopeFormat(String format, ScopeFormat parent, String[] variables) {
+        checkNotNull(format, "format is null");
 
-	// ----- Task ----
+        final String[] rawComponents = format.split("\\" + SCOPE_SEPARATOR);
 
-	public static final String SCOPE_TASK_VERTEX_ID = asVariable("task_id");
-	public static final String SCOPE_TASK_NAME = asVariable("task_name");
-	public static final String SCOPE_TASK_ATTEMPT_ID = asVariable("task_attempt_id");
-	public static final String SCOPE_TASK_ATTEMPT_NUM = asVariable("task_attempt_num");
-	public static final String SCOPE_TASK_SUBTASK_INDEX = asVariable("subtask_index");
+        // compute the template array
+        final boolean parentAsPrefix =
+                rawComponents.length > 0 && rawComponents[0].equals(SCOPE_INHERIT_PARENT);
+        if (parentAsPrefix) {
+            if (parent == null) {
+                throw new IllegalArgumentException(
+                        "Component scope format requires parent prefix (starts with '"
+                                + SCOPE_INHERIT_PARENT
+                                + "'), but this component has no parent (is root component).");
+            }
 
-	/** Default scope of the task component: {@code "<task_name>.<subtask_index>"} */
-	public static final String DEFAULT_SCOPE_TASK_COMPONENT =
-			concat(SCOPE_TASK_NAME, SCOPE_TASK_SUBTASK_INDEX);
+            this.format = format.length() > 2 ? format.substring(2) : "<empty>";
 
-	/** The default scope format for all task metrics:
-	 * {@code "<host>.taskmanager.<tm_id>.<job_name>.<task_name>.<subtask_index>"} */
-	public static final String DEFAULT_SCOPE_TASK_GROUP =
-			concat(DEFAULT_SCOPE_TASKMANAGER_JOB_GROUP, DEFAULT_SCOPE_TASK_COMPONENT);
+            String[] parentTemplate = parent.template;
+            int parentLen = parentTemplate.length;
 
-	// ----- Operator ----
+            this.template = new String[parentLen + rawComponents.length - 1];
+            System.arraycopy(parentTemplate, 0, this.template, 0, parentLen);
+            System.arraycopy(rawComponents, 1, this.template, parentLen, rawComponents.length - 1);
+        } else {
+            this.format = format.isEmpty() ? "<empty>" : format;
+            this.template = rawComponents;
+        }
 
-	public static final String SCOPE_OPERATOR_NAME = asVariable("operator_name");
+        // --- compute the replacement matrix ---
+        // a bit of clumsy Java collections code ;-)
 
-	/** The default scope added by the operator component: "<operator_name>.<subtask_index>" */
-	public static final String DEFAULT_SCOPE_OPERATOR_COMPONENT =
-			concat(SCOPE_OPERATOR_NAME, SCOPE_TASK_SUBTASK_INDEX);
+        HashMap<String, Integer> varToValuePos = arrayToMap(variables);
+        List<Integer> templatePos = new ArrayList<>();
+        List<Integer> valuePos = new ArrayList<>();
 
-	/** The default scope format for all operator metrics:
-	 * {@code "<host>.taskmanager.<tm_id>.<job_name>.<operator_name>.<subtask_index>"} */
-	public static final String DEFAULT_SCOPE_OPERATOR_GROUP =
-			concat(DEFAULT_SCOPE_TASKMANAGER_JOB_GROUP, DEFAULT_SCOPE_OPERATOR_COMPONENT);
-	
+        for (int i = 0; i < template.length; i++) {
+            final String component = template[i];
 
-	// ------------------------------------------------------------------------
-	//  Scope Format Base
-	// ------------------------------------------------------------------------
+            // check if that is a variable
+            if (component != null
+                    && component.length() >= 3
+                    && component.charAt(0) == '<'
+                    && component.charAt(component.length() - 1) == '>') {
 
-	/** The scope format */
-	private final String format;
+                // this is a variable
+                Integer replacementPos = varToValuePos.get(component);
+                if (replacementPos != null) {
+                    templatePos.add(i);
+                    valuePos.add(replacementPos);
+                }
+            }
+        }
 
-	/** The format, split into components */
-	private final String[] template;
+        this.templatePos = integerListToArray(templatePos);
+        this.valuePos = integerListToArray(valuePos);
+    }
 
-	private final int[] templatePos;
+    // ------------------------------------------------------------------------
 
-	private final int[] valuePos;
+    public String format() {
+        return format;
+    }
 
-	// ------------------------------------------------------------------------
+    protected final String[] copyTemplate() {
+        String[] copy = new String[template.length];
+        System.arraycopy(template, 0, copy, 0, template.length);
+        return copy;
+    }
 
-	protected ScopeFormat(String format, ScopeFormat parent, String[] variables) {
-		checkNotNull(format, "format is null");
+    protected final String[] bindVariables(String[] template, String[] values) {
+        final int len = templatePos.length;
+        for (int i = 0; i < len; i++) {
+            template[templatePos[i]] = values[valuePos[i]];
+        }
+        return template;
+    }
 
-		final String[] rawComponents = format.split("\\" + SCOPE_SEPARATOR);
+    // ------------------------------------------------------------------------
 
-		// compute the template array
-		final boolean parentAsPrefix = rawComponents.length > 0 && rawComponents[0].equals(SCOPE_INHERIT_PARENT);
-		if (parentAsPrefix) {
-			if (parent == null) {
-				throw new IllegalArgumentException("Component scope format requires parent prefix (starts with '"
-					+ SCOPE_INHERIT_PARENT + "'), but this component has no parent (is root component).");
-			}
+    @Override
+    public String toString() {
+        return "ScopeFormat '" + format + '\'';
+    }
 
-			this.format = format.length() > 2 ? format.substring(2) : "<empty>";
+    // ------------------------------------------------------------------------
+    //  Utilities
+    // ------------------------------------------------------------------------
 
-			String[] parentTemplate = parent.template;
-			int parentLen = parentTemplate.length;
-			
-			this.template = new String[parentLen + rawComponents.length - 1];
-			System.arraycopy(parentTemplate, 0, this.template, 0, parentLen);
-			System.arraycopy(rawComponents, 1, this.template, parentLen, rawComponents.length - 1);
-		}
-		else {
-			this.format = format.isEmpty() ? "<empty>" : format;
-			this.template = rawComponents;
-		}
+    /**
+     * Formats the given string to resemble a scope variable.
+     *
+     * @param scope The string to format
+     * @return The formatted string
+     */
+    public static String asVariable(String scope) {
+        return SCOPE_VARIABLE_PREFIX + scope + SCOPE_VARIABLE_SUFFIX;
+    }
 
-		// --- compute the replacement matrix ---
-		// a bit of clumsy Java collections code ;-)
-		
-		HashMap<String, Integer> varToValuePos = arrayToMap(variables);
-		List<Integer> templatePos = new ArrayList<>();
-		List<Integer> valuePos = new ArrayList<>();
+    /**
+     * Concatenates the given component names separated by the delimiter character. Additionally the
+     * character filter is applied to all component names.
+     *
+     * @param filter Character filter to be applied to the component names
+     * @param delimiter Delimiter to separate component names
+     * @param components Array of component names
+     * @return The concatenated component name
+     */
+    public static String concat(CharacterFilter filter, Character delimiter, String... components) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(filter.filterCharacters(components[0]));
+        for (int x = 1; x < components.length; x++) {
+            sb.append(delimiter);
+            sb.append(filter.filterCharacters(components[x]));
+        }
+        return sb.toString();
+    }
 
-		for (int i = 0; i < template.length; i++) {
-			final String component = template[i];
-			
-			// check if that is a variable
-			if (component != null && component.length() >= 3 &&
-					component.charAt(0) == '<' && component.charAt(component.length() - 1) == '>') {
+    protected static String valueOrNull(Object value) {
+        return (value == null || (value instanceof String && ((String) value).isEmpty()))
+                ? "null"
+                : value.toString();
+    }
 
-				// this is a variable
-				Integer replacementPos = varToValuePos.get(component);
-				if (replacementPos != null) {
-					templatePos.add(i);
-					valuePos.add(replacementPos);
-				}
-			}
-		}
+    protected static HashMap<String, Integer> arrayToMap(String[] array) {
+        HashMap<String, Integer> map = new HashMap<>(array.length);
+        for (int i = 0; i < array.length; i++) {
+            map.put(array[i], i);
+        }
+        return map;
+    }
 
-		this.templatePos = integerListToArray(templatePos);
-		this.valuePos = integerListToArray(valuePos);
-	}
-
-	// ------------------------------------------------------------------------
-
-	public String format() {
-		return format;
-	}
-
-	protected final String[] copyTemplate() {
-		String[] copy = new String[template.length];
-		System.arraycopy(template, 0, copy, 0, template.length);
-		return copy;
-	}
-
-	protected final String[] bindVariables(String[] template, String[] values) {
-		final int len = templatePos.length;
-		for (int i = 0; i < len; i++) {
-			template[templatePos[i]] = values[valuePos[i]];
-		}
-		return template;
-	}
-
-	// ------------------------------------------------------------------------
-
-	@Override
-	public String toString() {
-		return "ScopeFormat '" + format + '\'';
-	}
-	
-	// ------------------------------------------------------------------------
-	//  Utilities
-	// ------------------------------------------------------------------------
-
-	/**
-	 * Formats the given string to resemble a scope variable.
-	 *
-	 * @param scope The string to format
-	 * @return The formatted string
-	 */
-	public static String asVariable(String scope) {
-		return SCOPE_VARIABLE_PREFIX + scope + SCOPE_VARIABLE_SUFFIX;
-	}
-
-	public static String concat(String... components) {
-		return concat(defaultFilter, '.', components);
-	}
-
-	public static String concat(CharacterFilter filter, String... components) {
-		return concat(filter, '.', components);
-	}
-
-	public static String concat(Character delimiter, String... components) {
-		return concat(defaultFilter, delimiter, components);
-	}
-
-	/**
-	 * Concatenates the given component names separated by the delimiter character. Additionally
-	 * the character filter is applied to all component names.
-	 *
-	 * @param filter Character filter to be applied to the component names
-	 * @param delimiter Delimiter to separate component names
-	 * @param components Array of component names
-	 * @return The concatenated component name
-	 */
-	public static String concat(CharacterFilter filter, Character delimiter, String... components) {
-		StringBuilder sb = new StringBuilder();
-		sb.append(filter.filterCharacters(components[0]));
-		for (int x = 1; x < components.length; x++) {
-			sb.append(delimiter);
-			sb.append(filter.filterCharacters(components[x]));
-		}
-		return sb.toString();
-	}
-	
-	protected static String valueOrNull(Object value) {
-		return (value == null || (value instanceof String && ((String) value).isEmpty())) ?
-				"null" : value.toString();
-	}
-
-	protected static HashMap<String, Integer> arrayToMap(String[] array) {
-		HashMap<String, Integer> map = new HashMap<>(array.length);
-		for (int i = 0; i < array.length; i++) {
-			map.put(array[i], i);
-		}
-		return map;
-	}
-
-	private static int[] integerListToArray(List<Integer> list) {
-		int[] array = new int[list.size()];
-		int pos = 0;
-		for (Integer i : list) {
-			array[pos++] = i;
-		}
-		return array;
-	}
+    private static int[] integerListToArray(List<Integer> list) {
+        int[] array = new int[list.size()];
+        int pos = 0;
+        for (Integer i : list) {
+            array[pos++] = i;
+        }
+        return array;
+    }
 }

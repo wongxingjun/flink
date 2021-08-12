@@ -19,35 +19,60 @@
 package org.apache.flink.api.java.operator;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.operators.ResourceSpec;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.operators.Operator;
 import org.apache.flink.api.java.typeutils.ValueTypeInfo;
+
 import org.junit.Test;
+
+import java.lang.reflect.Method;
 
 import static org.junit.Assert.assertEquals;
 
+/** Tests for {@link Operator}. */
 public class OperatorTest {
 
-	@Test
-	public void testConfigurationOfParallelism() {
-		Operator operator = new MockOperator();
+    @Test
+    public void testConfigurationOfParallelism() {
+        Operator operator = new MockOperator();
 
-		// verify explicit change in parallelism
-		int parallelism = 36;
-		operator.setParallelism(parallelism);
+        // verify explicit change in parallelism
+        int parallelism = 36;
+        operator.setParallelism(parallelism);
 
-		assertEquals(parallelism, operator.getParallelism());
+        assertEquals(parallelism, operator.getParallelism());
 
-		// verify that parallelism is reset to default flag value
-		parallelism = ExecutionConfig.PARALLELISM_DEFAULT;
-		operator.setParallelism(parallelism);
+        // verify that parallelism is reset to default flag value
+        parallelism = ExecutionConfig.PARALLELISM_DEFAULT;
+        operator.setParallelism(parallelism);
 
-		assertEquals(parallelism, operator.getParallelism());
-	}
+        assertEquals(parallelism, operator.getParallelism());
+    }
 
-	private class MockOperator extends Operator {
-		public MockOperator() {
-			super(ExecutionEnvironment.createCollectionsEnvironment(), ValueTypeInfo.NULL_VALUE_TYPE_INFO);
-		}
-	}
+    @Test
+    public void testConfigurationOfResource() throws Exception {
+        Operator operator = new MockOperator();
+
+        Method opMethod =
+                Operator.class.getDeclaredMethod(
+                        "setResources", ResourceSpec.class, ResourceSpec.class);
+        opMethod.setAccessible(true);
+
+        // verify explicit change in resources
+        ResourceSpec minResources = ResourceSpec.newBuilder(1.0, 100).build();
+        ResourceSpec preferredResources = ResourceSpec.newBuilder(2.0, 200).build();
+        opMethod.invoke(operator, minResources, preferredResources);
+
+        assertEquals(minResources, operator.getMinResources());
+        assertEquals(preferredResources, operator.getPreferredResources());
+    }
+
+    private class MockOperator extends Operator {
+        public MockOperator() {
+            super(
+                    ExecutionEnvironment.createCollectionsEnvironment(),
+                    ValueTypeInfo.NULL_VALUE_TYPE_INFO);
+        }
+    }
 }

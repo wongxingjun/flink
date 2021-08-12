@@ -18,110 +18,92 @@
 
 package org.apache.flink.runtime.messages.checkpoint;
 
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
-import org.apache.flink.runtime.checkpoint.SubtaskState;
+import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 
-import static org.apache.flink.util.Preconditions.checkArgument;
-
 /**
- * This message is sent from the {@link org.apache.flink.runtime.taskmanager.TaskManager} to the
- * {@link org.apache.flink.runtime.jobmanager.JobManager} to signal that the checkpoint of an
+ * This message is sent from the {@link org.apache.flink.runtime.taskexecutor.TaskExecutor} to the
+ * {@link org.apache.flink.runtime.jobmaster.JobMaster} to signal that the checkpoint of an
  * individual task is completed.
- * <p>
+ *
  * <p>This message may carry the handle to the task's chained operator state and the key group
  * state.
  */
-public class AcknowledgeCheckpoint extends AbstractCheckpointMessage implements java.io.Serializable {
+public class AcknowledgeCheckpoint extends AbstractCheckpointMessage {
 
-	private static final long serialVersionUID = -7606214777192401493L;
+    private static final long serialVersionUID = -7606214777192401493L;
 
+    private final TaskStateSnapshot subtaskState;
 
-	private final SubtaskState subtaskState;
+    private final CheckpointMetrics checkpointMetrics;
 
-	private final CheckpointMetaData checkpointMetaData;
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
+    public AcknowledgeCheckpoint(
+            JobID job,
+            ExecutionAttemptID taskExecutionId,
+            long checkpointId,
+            CheckpointMetrics checkpointMetrics,
+            TaskStateSnapshot subtaskState) {
 
-	public AcknowledgeCheckpoint(
-			JobID job,
-			ExecutionAttemptID taskExecutionId,
-			CheckpointMetaData checkpointMetaData) {
-		this(job, taskExecutionId, checkpointMetaData, null);
-	}
+        super(job, taskExecutionId, checkpointId);
 
-	public AcknowledgeCheckpoint(
-			JobID job,
-			ExecutionAttemptID taskExecutionId,
-			CheckpointMetaData checkpointMetaData,
-			SubtaskState subtaskState) {
+        this.subtaskState = subtaskState;
+        this.checkpointMetrics = checkpointMetrics;
+    }
 
-		super(job, taskExecutionId, checkpointMetaData.getCheckpointId());
+    @VisibleForTesting
+    public AcknowledgeCheckpoint(
+            JobID jobId, ExecutionAttemptID taskExecutionId, long checkpointId) {
+        this(jobId, taskExecutionId, checkpointId, new CheckpointMetrics(), null);
+    }
 
-		this.subtaskState = subtaskState;
-		this.checkpointMetaData = checkpointMetaData;
-		// these may be "-1", in case the values are unknown or not set
-		checkArgument(checkpointMetaData.getSyncDurationMillis() >= -1);
-		checkArgument(checkpointMetaData.getAsyncDurationMillis() >= -1);
-		checkArgument(checkpointMetaData.getBytesBufferedInAlignment() >= -1);
-		checkArgument(checkpointMetaData.getAlignmentDurationNanos() >= -1);
-	}
+    // ------------------------------------------------------------------------
+    //  properties
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
-	//  properties
-	// ------------------------------------------------------------------------
+    public TaskStateSnapshot getSubtaskState() {
+        return subtaskState;
+    }
 
-	public SubtaskState getSubtaskState() {
-		return subtaskState;
-	}
+    public CheckpointMetrics getCheckpointMetrics() {
+        return checkpointMetrics;
+    }
 
-	public long getSynchronousDurationMillis() {
-		return checkpointMetaData.getSyncDurationMillis();
-	}
+    // --------------------------------------------------------------------------------------------
 
-	public long getAsynchronousDurationMillis() {
-		return checkpointMetaData.getAsyncDurationMillis();
-	}
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof AcknowledgeCheckpoint)) {
+            return false;
+        }
+        if (!super.equals(o)) {
+            return false;
+        }
 
-	public long getBytesBufferedInAlignment() {
-		return checkpointMetaData.getBytesBufferedInAlignment();
-	}
+        AcknowledgeCheckpoint that = (AcknowledgeCheckpoint) o;
+        return subtaskState != null
+                ? subtaskState.equals(that.subtaskState)
+                : that.subtaskState == null;
+    }
 
-	public long getAlignmentDurationNanos() {
-		return checkpointMetaData.getAlignmentDurationNanos();
-	}
+    @Override
+    public int hashCode() {
+        int result = super.hashCode();
+        result = 31 * result + (subtaskState != null ? subtaskState.hashCode() : 0);
+        return result;
+    }
 
-	// --------------------------------------------------------------------------------------------
-
-	@Override
-	public boolean equals(Object o) {
-		if (this == o) {
-			return true;
-		}
-		if (!(o instanceof AcknowledgeCheckpoint)) {
-			return false;
-		}
-		if (!super.equals(o)) {
-			return false;
-		}
-
-		AcknowledgeCheckpoint that = (AcknowledgeCheckpoint) o;
-		return subtaskState != null ?
-				subtaskState.equals(that.subtaskState) : that.subtaskState == null;
-
-	}
-
-	@Override
-	public int hashCode() {
-		int result = super.hashCode();
-		result = 31 * result + (subtaskState != null ? subtaskState.hashCode() : 0);
-		return result;
-	}
-
-	@Override
-	public String toString() {
-		return String.format("Confirm Task Checkpoint %d for (%s/%s) - state=%s",
-				getCheckpointId(), getJob(), getTaskExecutionId(), subtaskState);
-	}
+    @Override
+    public String toString() {
+        return String.format(
+                "Confirm Task Checkpoint %d for (%s/%s) - state=%s",
+                getCheckpointId(), getJob(), getTaskExecutionId(), subtaskState);
+    }
 }

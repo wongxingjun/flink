@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.runtime.blob;
 
 import org.apache.flink.configuration.Configuration;
@@ -24,51 +25,64 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 
+/**
+ * Implements a {@link BlobServer} that, after some initial normal operation, closes incoming
+ * connections for a given number of times and continues normally again.
+ */
 public class TestingFailingBlobServer extends BlobServer {
 
-	private int numFailures;
+    private final int numAccept;
+    private final int numFailures;
 
-	public TestingFailingBlobServer(Configuration config, int numFailures) throws IOException {
-		super(config);
-		this.numFailures = numFailures;
-	}
+    public TestingFailingBlobServer(Configuration config, BlobStore blobStore, int numFailures)
+            throws IOException {
+        this(config, blobStore, 1, numFailures);
+    }
 
-	@Override
-	public void run() {
+    public TestingFailingBlobServer(
+            Configuration config, BlobStore blobStore, int numAccept, int numFailures)
+            throws IOException {
+        super(config, blobStore);
+        this.numAccept = numAccept;
+        this.numFailures = numFailures;
+    }
 
-		// we do properly the first operation (PUT)
-		try {
-			new BlobServerConnection(getServerSocket().accept(), this).start();
-		}
-		catch (Throwable t) {
-			t.printStackTrace();
-		}
+    @Override
+    public void run() {
 
-		// do some failing operations
-		for (int num = 0; num < numFailures && !isShutdown(); num++) {
-			Socket socket = null;
-			try {
-				socket = getServerSocket().accept();
-				InputStream is = socket.getInputStream();
-				OutputStream os = socket.getOutputStream();
+        // we do properly the first operation (PUT)
+        try {
+            for (int num = 0; num < numAccept && !isShutdown(); num++) {
+                new BlobServerConnection(getServerSocket().accept(), this).start();
+            }
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
 
-				// just abort everything
-				is.close();
-				os.close();
-				socket.close();
-			}
-			catch (IOException e) {
-			}
-			finally {
-				if (socket != null) {
-					try {
-						socket.close();
-					} catch(Throwable t) {}
-				}
-			}
-		}
+        // do some failing operations
+        for (int num = 0; num < numFailures && !isShutdown(); num++) {
+            Socket socket = null;
+            try {
+                socket = getServerSocket().accept();
+                InputStream is = socket.getInputStream();
+                OutputStream os = socket.getOutputStream();
 
-		// regular runs
-		super.run();
-	}
+                // just abort everything
+                is.close();
+                os.close();
+                socket.close();
+            } catch (IOException ignored) {
+            } finally {
+                if (socket != null) {
+                    try {
+                        socket.close();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        }
+
+        // regular runs
+        super.run();
+    }
 }

@@ -25,12 +25,10 @@ import org.apache.flink.graph.Edge;
 import org.apache.flink.graph.Graph;
 import org.apache.flink.graph.Vertex;
 import org.apache.flink.graph.asm.degree.annotate.DegreeAnnotationFunctions.JoinEdgeWithVertexDegree;
+import org.apache.flink.graph.utils.proxy.GraphAlgorithmWrappingBase;
 import org.apache.flink.graph.utils.proxy.GraphAlgorithmWrappingDataSet;
 import org.apache.flink.graph.utils.proxy.OptionalBoolean;
 import org.apache.flink.types.LongValue;
-import org.apache.flink.util.Preconditions;
-
-import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
 
 /**
  * Annotates edges of an undirected graph with degree of the source vertex.
@@ -40,81 +38,51 @@ import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
  * @param <EV> edge value type
  */
 public class EdgeSourceDegree<K, VV, EV>
-extends GraphAlgorithmWrappingDataSet<K, VV, EV, Edge<K, Tuple2<EV, LongValue>>> {
+        extends GraphAlgorithmWrappingDataSet<K, VV, EV, Edge<K, Tuple2<EV, LongValue>>> {
 
-	// Optional configuration
-	private OptionalBoolean reduceOnTargetId = new OptionalBoolean(false, false);
+    // Optional configuration
+    private OptionalBoolean reduceOnTargetId = new OptionalBoolean(false, false);
 
-	private int parallelism = PARALLELISM_DEFAULT;
+    /**
+     * The degree can be counted from either the edge source or target IDs. By default the source
+     * IDs are counted. Reducing on target IDs may optimize the algorithm if the input edge list is
+     * sorted by target ID.
+     *
+     * @param reduceOnTargetId set to {@code true} if the input edge list is sorted by target ID
+     * @return this
+     */
+    public EdgeSourceDegree<K, VV, EV> setReduceOnTargetId(boolean reduceOnTargetId) {
+        this.reduceOnTargetId.set(reduceOnTargetId);
 
-	/**
-	 * The degree can be counted from either the edge source or target IDs.
-	 * By default the source IDs are counted. Reducing on target IDs may
-	 * optimize the algorithm if the input edge list is sorted by target ID.
-	 *
-	 * @param reduceOnTargetId set to {@code true} if the input edge list
-	 *                         is sorted by target ID
-	 * @return this
-	 */
-	public EdgeSourceDegree<K, VV, EV> setReduceOnTargetId(boolean reduceOnTargetId) {
-		this.reduceOnTargetId.set(reduceOnTargetId);
+        return this;
+    }
 
-		return this;
-	}
+    @Override
+    protected void mergeConfiguration(GraphAlgorithmWrappingBase other) {
+        super.mergeConfiguration(other);
 
-	/**
-	 * Override the operator parallelism.
-	 *
-	 * @param parallelism operator parallelism
-	 * @return this
-	 */
-	public EdgeSourceDegree<K, VV, EV> setParallelism(int parallelism) {
-		Preconditions.checkArgument(parallelism > 0 || parallelism == PARALLELISM_DEFAULT,
-			"The parallelism must be greater than zero.");
+        EdgeSourceDegree rhs = (EdgeSourceDegree) other;
 
-		this.parallelism = parallelism;
+        reduceOnTargetId.mergeWith(rhs.reduceOnTargetId);
+    }
 
-		return this;
-	}
+    @Override
+    public DataSet<Edge<K, Tuple2<EV, LongValue>>> runInternal(Graph<K, VV, EV> input)
+            throws Exception {
+        // s, d(s)
+        DataSet<Vertex<K, LongValue>> vertexDegrees =
+                input.run(
+                        new VertexDegree<K, VV, EV>()
+                                .setReduceOnTargetId(reduceOnTargetId.get())
+                                .setParallelism(parallelism));
 
-	@Override
-	protected String getAlgorithmName() {
-		return EdgeSourceDegree.class.getName();
-	}
-
-	@Override
-	protected boolean mergeConfiguration(GraphAlgorithmWrappingDataSet other) {
-		Preconditions.checkNotNull(other);
-
-		if (! EdgeSourceDegree.class.isAssignableFrom(other.getClass())) {
-			return false;
-		}
-
-		EdgeSourceDegree rhs = (EdgeSourceDegree) other;
-
-		reduceOnTargetId.mergeWith(rhs.reduceOnTargetId);
-		parallelism = (parallelism == PARALLELISM_DEFAULT) ? rhs.parallelism :
-			((rhs.parallelism == PARALLELISM_DEFAULT) ? parallelism : Math.min(parallelism, rhs.parallelism));
-
-		return true;
-	}
-
-	@Override
-	public DataSet<Edge<K, Tuple2<EV, LongValue>>> runInternal(Graph<K, VV, EV> input)
-			throws Exception {
-		// s, d(s)
-		DataSet<Vertex<K, LongValue>> vertexDegrees = input
-			.run(new VertexDegree<K, VV, EV>()
-				.setReduceOnTargetId(reduceOnTargetId.get())
-				.setParallelism(parallelism));
-
-		// s, t, d(s)
-		return input.getEdges()
-			.join(vertexDegrees, JoinHint.REPARTITION_HASH_SECOND)
-			.where(0)
-			.equalTo(0)
-			.with(new JoinEdgeWithVertexDegree<K, EV, LongValue>())
-				.setParallelism(parallelism)
-				.name("Edge source degree");
-	}
+        // s, t, d(s)
+        return input.getEdges()
+                .join(vertexDegrees, JoinHint.REPARTITION_HASH_SECOND)
+                .where(0)
+                .equalTo(0)
+                .with(new JoinEdgeWithVertexDegree<>())
+                .setParallelism(parallelism)
+                .name("Edge source degree");
+    }
 }

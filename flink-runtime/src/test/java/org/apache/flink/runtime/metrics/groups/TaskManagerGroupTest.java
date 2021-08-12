@@ -19,17 +19,20 @@
 package org.apache.flink.runtime.metrics.groups;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MetricOptions;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.runtime.metrics.MetricRegistry;
-import org.apache.flink.runtime.metrics.MetricRegistryConfiguration;
+import org.apache.flink.runtime.metrics.MetricRegistryImpl;
+import org.apache.flink.runtime.metrics.MetricRegistryTestUtils;
 import org.apache.flink.runtime.metrics.dump.QueryScopeInfo;
 import org.apache.flink.runtime.metrics.util.DummyCharacterFilter;
 import org.apache.flink.util.AbstractID;
 import org.apache.flink.util.TestLogger;
 
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -39,144 +42,162 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+/** Tests for the {@link TaskManagerMetricGroup}. */
 public class TaskManagerGroupTest extends TestLogger {
 
-	// ------------------------------------------------------------------------
-	//  adding and removing jobs
-	// ------------------------------------------------------------------------
+    private MetricRegistryImpl registry;
 
-	@Test
-	public void addAndRemoveJobs() throws IOException {
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
+    @Before
+    public void setup() {
+        registry =
+                new MetricRegistryImpl(
+                        MetricRegistryTestUtils.defaultMetricRegistryConfiguration());
+    }
 
-		final TaskManagerMetricGroup group = new TaskManagerMetricGroup(
-				registry, "localhost", new AbstractID().toString());
+    @After
+    public void teardown() throws Exception {
+        if (registry != null) {
+            registry.shutdown().get();
+        }
+    }
 
-		final JobID jid1 = new JobID();
-		final JobID jid2 = new JobID();
+    // ------------------------------------------------------------------------
+    //  adding and removing jobs
+    // ------------------------------------------------------------------------
 
-		final String jobName1 = "testjob";
-		final String jobName2 = "anotherJob";
+    @Test
+    public void addAndRemoveJobs() throws IOException {
+        final TaskManagerMetricGroup group =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "localhost", ResourceID.generate());
 
-		final JobVertexID vertex11 = new JobVertexID();
-		final JobVertexID vertex12 = new JobVertexID();
-		final JobVertexID vertex13 = new JobVertexID();
-		final JobVertexID vertex21 = new JobVertexID();
+        final JobID jid1 = new JobID();
+        final JobID jid2 = new JobID();
 
-		final ExecutionAttemptID execution11 = new ExecutionAttemptID();
-		final ExecutionAttemptID execution12 = new ExecutionAttemptID();
-		final ExecutionAttemptID execution13 = new ExecutionAttemptID();
-		final ExecutionAttemptID execution21 = new ExecutionAttemptID();
+        final String jobName1 = "testjob";
+        final String jobName2 = "anotherJob";
 
-		TaskMetricGroup tmGroup11 = group.addTaskForJob(
-			jid1, jobName1, vertex11, execution11, "test", 17, 0);
-		TaskMetricGroup tmGroup12 = group.addTaskForJob(
-			jid1, jobName1, vertex12, execution12, "test", 13, 1);
-		TaskMetricGroup tmGroup21 = group.addTaskForJob(
-			jid2, jobName2, vertex21, execution21, "test", 7, 2);
-		
-		assertEquals(2, group.numRegisteredJobMetricGroups());
-		assertFalse(tmGroup11.parent().isClosed());
-		assertFalse(tmGroup12.parent().isClosed());
-		assertFalse(tmGroup21.parent().isClosed());
-		
-		// close all for job 2 and one from job 1
-		tmGroup11.close();
-		tmGroup21.close();
-		assertTrue(tmGroup11.isClosed());
-		assertTrue(tmGroup21.isClosed());
-		
-		// job 2 should be removed, job should still be there
-		assertFalse(tmGroup11.parent().isClosed());
-		assertFalse(tmGroup12.parent().isClosed());
-		assertTrue(tmGroup21.parent().isClosed());
-		assertEquals(1, group.numRegisteredJobMetricGroups());
-		
-		// add one more to job one
-		TaskMetricGroup tmGroup13 = group.addTaskForJob(
-			jid1, jobName1, vertex13, execution13, "test", 0, 0);
-		tmGroup12.close();
-		tmGroup13.close();
+        final JobVertexID vertex11 = new JobVertexID();
+        final JobVertexID vertex12 = new JobVertexID();
+        final JobVertexID vertex13 = new JobVertexID();
+        final JobVertexID vertex21 = new JobVertexID();
 
-		assertTrue(tmGroup11.parent().isClosed());
-		assertTrue(tmGroup12.parent().isClosed());
-		assertTrue(tmGroup13.parent().isClosed());
-		
-		assertEquals(0, group.numRegisteredJobMetricGroups());
+        final ExecutionAttemptID execution11 = new ExecutionAttemptID();
+        final ExecutionAttemptID execution12 = new ExecutionAttemptID();
+        final ExecutionAttemptID execution13 = new ExecutionAttemptID();
+        final ExecutionAttemptID execution21 = new ExecutionAttemptID();
 
-		registry.shutdown();
-	}
+        TaskMetricGroup tmGroup11 =
+                group.addTaskForJob(jid1, jobName1, vertex11, execution11, "test", 17, 0);
+        TaskMetricGroup tmGroup12 =
+                group.addTaskForJob(jid1, jobName1, vertex12, execution12, "test", 13, 1);
+        TaskMetricGroup tmGroup21 =
+                group.addTaskForJob(jid2, jobName2, vertex21, execution21, "test", 7, 2);
 
-	@Test
-	public void testCloseClosesAll() throws IOException {
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
-		final TaskManagerMetricGroup group = new TaskManagerMetricGroup(
-				registry, "localhost", new AbstractID().toString());
+        assertEquals(2, group.numRegisteredJobMetricGroups());
+        assertFalse(tmGroup11.parent().isClosed());
+        assertFalse(tmGroup12.parent().isClosed());
+        assertFalse(tmGroup21.parent().isClosed());
 
+        // close all for job 2 and one from job 1
+        tmGroup11.close();
+        tmGroup21.close();
+        assertTrue(tmGroup11.isClosed());
+        assertTrue(tmGroup21.isClosed());
 
-		final JobID jid1 = new JobID();
-		final JobID jid2 = new JobID();
+        // job 2 should be removed, job should still be there
+        assertFalse(tmGroup11.parent().isClosed());
+        assertFalse(tmGroup12.parent().isClosed());
+        assertTrue(tmGroup21.parent().isClosed());
+        assertEquals(1, group.numRegisteredJobMetricGroups());
 
-		final String jobName1 = "testjob";
-		final String jobName2 = "anotherJob";
+        // add one more to job one
+        TaskMetricGroup tmGroup13 =
+                group.addTaskForJob(jid1, jobName1, vertex13, execution13, "test", 0, 0);
+        tmGroup12.close();
+        tmGroup13.close();
 
-		final JobVertexID vertex11 = new JobVertexID();
-		final JobVertexID vertex12 = new JobVertexID();
-		final JobVertexID vertex21 = new JobVertexID();
+        assertTrue(tmGroup11.parent().isClosed());
+        assertTrue(tmGroup12.parent().isClosed());
+        assertTrue(tmGroup13.parent().isClosed());
 
-		final ExecutionAttemptID execution11 = new ExecutionAttemptID();
-		final ExecutionAttemptID execution12 = new ExecutionAttemptID();
-		final ExecutionAttemptID execution21 = new ExecutionAttemptID();
+        assertEquals(0, group.numRegisteredJobMetricGroups());
+    }
 
-		TaskMetricGroup tmGroup11 = group.addTaskForJob(
-			jid1, jobName1, vertex11, execution11, "test", 17, 0);
-		TaskMetricGroup tmGroup12 = group.addTaskForJob(
-			jid1, jobName1, vertex12, execution12, "test", 13, 1);
-		TaskMetricGroup tmGroup21 = group.addTaskForJob(
-			jid2, jobName2, vertex21, execution21, "test", 7, 1);
+    @Test
+    public void testCloseClosesAll() throws IOException {
+        final TaskManagerMetricGroup group =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "localhost", new ResourceID(new AbstractID().toString()));
 
-		group.close();
-		
-		assertTrue(tmGroup11.isClosed());
-		assertTrue(tmGroup12.isClosed());
-		assertTrue(tmGroup21.isClosed());
+        final JobID jid1 = new JobID();
+        final JobID jid2 = new JobID();
 
-		registry.shutdown();
-	}
-	
-	// ------------------------------------------------------------------------
-	//  scope name tests
-	// ------------------------------------------------------------------------
+        final String jobName1 = "testjob";
+        final String jobName2 = "anotherJob";
 
-	@Test
-	public void testGenerateScopeDefault() {
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
-		TaskManagerMetricGroup group = new TaskManagerMetricGroup(registry, "localhost", "id");
+        final JobVertexID vertex11 = new JobVertexID();
+        final JobVertexID vertex12 = new JobVertexID();
+        final JobVertexID vertex21 = new JobVertexID();
 
-		assertArrayEquals(new String[] { "localhost", "taskmanager", "id" }, group.getScopeComponents());
-		assertEquals("localhost.taskmanager.id.name", group.getMetricIdentifier("name"));
-		registry.shutdown();
-	}
+        final ExecutionAttemptID execution11 = new ExecutionAttemptID();
+        final ExecutionAttemptID execution12 = new ExecutionAttemptID();
+        final ExecutionAttemptID execution21 = new ExecutionAttemptID();
 
-	@Test
-	public void testGenerateScopeCustom() {
-		Configuration cfg = new Configuration();
-		cfg.setString(ConfigConstants.METRICS_SCOPE_NAMING_TM, "constant.<host>.foo.<host>");
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.fromConfiguration(cfg));
-		TaskManagerMetricGroup group = new TaskManagerMetricGroup(registry, "host", "id");
+        TaskMetricGroup tmGroup11 =
+                group.addTaskForJob(jid1, jobName1, vertex11, execution11, "test", 17, 0);
+        TaskMetricGroup tmGroup12 =
+                group.addTaskForJob(jid1, jobName1, vertex12, execution12, "test", 13, 1);
+        TaskMetricGroup tmGroup21 =
+                group.addTaskForJob(jid2, jobName2, vertex21, execution21, "test", 7, 1);
 
-		assertArrayEquals(new String[] { "constant", "host", "foo", "host" }, group.getScopeComponents());
-		assertEquals("constant.host.foo.host.name", group.getMetricIdentifier("name"));
-		registry.shutdown();
-	}
+        group.close();
 
-	@Test
-	public void testCreateQueryServiceMetricInfo() {
-		MetricRegistry registry = new MetricRegistry(MetricRegistryConfiguration.defaultMetricRegistryConfiguration());
-		TaskManagerMetricGroup tm = new TaskManagerMetricGroup(registry, "host", "id");
+        assertTrue(tmGroup11.isClosed());
+        assertTrue(tmGroup12.isClosed());
+        assertTrue(tmGroup21.isClosed());
+    }
 
-		QueryScopeInfo.TaskManagerQueryScopeInfo info = tm.createQueryServiceMetricInfo(new DummyCharacterFilter());
-		assertEquals("", info.scope);
-		assertEquals("id", info.taskManagerID);
-	}
+    // ------------------------------------------------------------------------
+    //  scope name tests
+    // ------------------------------------------------------------------------
+
+    @Test
+    public void testGenerateScopeDefault() {
+        TaskManagerMetricGroup group =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "localhost", new ResourceID("id"));
+
+        assertArrayEquals(
+                new String[] {"localhost", "taskmanager", "id"}, group.getScopeComponents());
+        assertEquals("localhost.taskmanager.id.name", group.getMetricIdentifier("name"));
+    }
+
+    @Test
+    public void testGenerateScopeCustom() throws Exception {
+        Configuration cfg = new Configuration();
+        cfg.setString(MetricOptions.SCOPE_NAMING_TM, "constant.<host>.foo.<host>");
+        MetricRegistryImpl registry =
+                new MetricRegistryImpl(MetricRegistryTestUtils.fromConfiguration(cfg));
+        TaskManagerMetricGroup group =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "host", new ResourceID("id"));
+
+        assertArrayEquals(
+                new String[] {"constant", "host", "foo", "host"}, group.getScopeComponents());
+        assertEquals("constant.host.foo.host.name", group.getMetricIdentifier("name"));
+        registry.shutdown().get();
+    }
+
+    @Test
+    public void testCreateQueryServiceMetricInfo() {
+        TaskManagerMetricGroup tm =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        registry, "host", new ResourceID("id"));
+
+        QueryScopeInfo.TaskManagerQueryScopeInfo info =
+                tm.createQueryServiceMetricInfo(new DummyCharacterFilter());
+        assertEquals("", info.scope);
+        assertEquals("id", info.taskManagerID);
+    }
 }

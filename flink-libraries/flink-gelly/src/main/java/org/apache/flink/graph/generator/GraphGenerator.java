@@ -21,31 +21,29 @@ package org.apache.flink.graph.generator;
 import org.apache.flink.graph.Graph;
 
 /**
- * Graph generators shall be
- * - parallelizable, in order to create large datasets
- * - scale-free, generating the same graph regardless of parallelism
- * - thrifty, using as few operators as possible
+ * Graph generators shall be - parallelizable, in order to create large datasets - scale-free,
+ * generating the same graph regardless of parallelism - thrifty, using as few operators as possible
  *
- * Graph generators should prefer to emit edges sorted by the source label.
+ * <p>Graph generators should prefer to emit edges sorted by the source label.
  *
- * @param <K> the key type for edge and vertex identifiers
- * @param <VV> the value type for vertices
- * @param <EV> the value type for edges
+ * @param <K> graph ID type
+ * @param <VV> vertex value type
+ * @param <EV> edge value type
  */
 public interface GraphGenerator<K, VV, EV> {
 
-	/**
-	 * Generates the configured graph.
-	 *
-	 * @return generated graph
-	 */
-	Graph<K,VV,EV> generate();
+    /**
+     * Generates the configured graph.
+     *
+     * @return generated graph
+     */
+    Graph<K, VV, EV> generate();
 
-	/**
-	 * Override the operator parallelism.
-	 *
-	 * @param parallelism operator parallelism
-	 * @return this
-	 */
-	GraphGenerator<K,VV,EV> setParallelism(int parallelism);
+    /**
+     * Override the operator parallelism.
+     *
+     * @param parallelism operator parallelism
+     * @return this
+     */
+    GraphGenerator<K, VV, EV> setParallelism(int parallelism);
 }

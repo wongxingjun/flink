@@ -25,36 +25,40 @@ import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.functions.util.FunctionUtils;
 import org.apache.flink.configuration.Configuration;
 
+/**
+ * Wrapper around {@link Function}.
+ *
+ * @param <T>
+ */
 @Internal
 public abstract class WrappingFunction<T extends Function> extends AbstractRichFunction {
-	
-	private static final long serialVersionUID = 1L;
 
-	protected T wrappedFunction;
+    private static final long serialVersionUID = 1L;
 
-	protected WrappingFunction(T wrappedFunction) {
-		this.wrappedFunction = wrappedFunction;
-	}
+    protected T wrappedFunction;
 
-	
-	@Override
-	public void open(Configuration parameters) throws Exception {
-		FunctionUtils.openFunction(this.wrappedFunction, parameters);
-	}
-	
-	@Override
-	public void close() throws Exception {
-		FunctionUtils.closeFunction(this.wrappedFunction);
-	}
-	
-	@Override
-	public void setRuntimeContext(RuntimeContext t) {
-		super.setRuntimeContext(t);
-		
-		FunctionUtils.setFunctionRuntimeContext(this.wrappedFunction, t);
-	}
+    protected WrappingFunction(T wrappedFunction) {
+        this.wrappedFunction = wrappedFunction;
+    }
 
-	public T getWrappedFunction () {
-		return this.wrappedFunction;
-	}
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        FunctionUtils.openFunction(this.wrappedFunction, parameters);
+    }
+
+    @Override
+    public void close() throws Exception {
+        FunctionUtils.closeFunction(this.wrappedFunction);
+    }
+
+    @Override
+    public void setRuntimeContext(RuntimeContext t) {
+        super.setRuntimeContext(t);
+
+        FunctionUtils.setFunctionRuntimeContext(this.wrappedFunction, t);
+    }
+
+    public T getWrappedFunction() {
+        return this.wrappedFunction;
+    }
 }

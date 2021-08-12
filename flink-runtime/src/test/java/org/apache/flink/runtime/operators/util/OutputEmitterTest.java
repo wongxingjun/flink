@@ -35,10 +35,10 @@ import org.apache.flink.runtime.testutils.recordutils.RecordSerializerFactory;
 import org.apache.flink.types.DeserializationException;
 import org.apache.flink.types.DoubleValue;
 import org.apache.flink.types.IntValue;
-import org.apache.flink.types.KeyFieldOutOfBoundsException;
 import org.apache.flink.types.NullKeyFieldException;
 import org.apache.flink.types.Record;
 import org.apache.flink.types.StringValue;
+import org.apache.flink.types.Value;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -47,474 +47,408 @@ import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+@SuppressWarnings({"unchecked", "rawtypes"})
 public class OutputEmitterTest {
-	
-	
-	@Test
-	public void testPartitionHash() {
-		// Test for IntValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> intComp = new RecordComparatorFactory(new int[] {0}, new Class[] {IntValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_HASH, intComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
-		
-		int numChans = 100;
-		int numRecs = 50000;
-		int[] hit = new int[numChans];
 
-		for (int i = 0; i < numRecs; i++) {
-			IntValue k = new IntValue(i);
-			Record rec = new Record(k);
-			
-			delegate.setInstance(rec);
-			
-			int[] chans = oe1.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+    @Test
+    public void testPartitionHash() {
+        // Test for IntValue
+        verifyPartitionHashSelectedChannels(50000, 100, RecordType.INTEGER);
+        // Test for StringValue
+        verifyPartitionHashSelectedChannels(10000, 100, RecordType.STRING);
 
-		int cnt = 0;
-		for (int aHit : hit) {
-			assertTrue(aHit > 0);
-			cnt += aHit;
-		}
-		assertTrue(cnt == numRecs);
+        // Test hash corner cases
+        final TestIntComparator testIntComp = new TestIntComparator();
+        final ChannelSelector<SerializationDelegate<Integer>> selector =
+                createChannelSelector(ShipStrategyType.PARTITION_HASH, testIntComp, 100);
+        final SerializationDelegate<Integer> serializationDelegate =
+                new SerializationDelegate<>(new IntSerializer());
 
-		// Test for StringValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> stringComp = new RecordComparatorFactory(new int[] {0}, new Class[] {StringValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe2 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_HASH, stringComp);
+        assertPartitionHashSelectedChannels(
+                selector, serializationDelegate, Integer.MIN_VALUE, 100);
+        assertPartitionHashSelectedChannels(selector, serializationDelegate, -1, 100);
+        assertPartitionHashSelectedChannels(selector, serializationDelegate, 0, 100);
+        assertPartitionHashSelectedChannels(selector, serializationDelegate, 1, 100);
+        assertPartitionHashSelectedChannels(
+                selector, serializationDelegate, Integer.MAX_VALUE, 100);
+    }
 
-		numChans = 100;
-		numRecs = 10000;
-		
-		hit = new int[numChans];
+    @Test
+    public void testForward() {
+        final int numberOfChannels = 100;
 
-		for (int i = 0; i < numRecs; i++) {
-			StringValue k = new StringValue(i + "");
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
-				
-			int[] chans = oe2.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+        // Test for IntValue
+        int numRecords = 50000 + numberOfChannels / 2;
+        verifyForwardSelectedChannels(numRecords, numberOfChannels, RecordType.INTEGER);
 
-		cnt = 0;
-		for (int aHit : hit) {
-			assertTrue(aHit > 0);
-			cnt += aHit;
-		}
-		assertTrue(cnt == numRecs);
-		
-		// test hash corner cases
-		final TestIntComparator testIntComp = new TestIntComparator();
-		final ChannelSelector<SerializationDelegate<Integer>> oe3 = new OutputEmitter<Integer>(ShipStrategyType.PARTITION_HASH, testIntComp);
-		final SerializationDelegate<Integer> intDel = new SerializationDelegate<Integer>(new IntSerializer());
-		
-		numChans = 100;
-		
-		// MinVal hash
-		intDel.setInstance(Integer.MIN_VALUE);
-		int[] chans = oe3.selectChannels(intDel, numChans);
-		assertTrue(chans.length == 1);
-		assertTrue(chans[0] >= 0 && chans[0] <= numChans-1);
-		
-		// -1 hash
-		intDel.setInstance(-1);
-		chans = oe3.selectChannels(intDel, hit.length);
-		assertTrue(chans.length == 1);
-		assertTrue(chans[0] >= 0 && chans[0] <= numChans-1);
-		
-		// 0 hash
-		intDel.setInstance(0);
-		chans = oe3.selectChannels(intDel, hit.length);
-		assertTrue(chans.length == 1);
-		assertTrue(chans[0] >= 0 && chans[0] <= numChans-1);
-		
-		// 1 hash
-		intDel.setInstance(1);
-		chans = oe3.selectChannels(intDel, hit.length);
-		assertTrue(chans.length == 1);
-		assertTrue(chans[0] >= 0 && chans[0] <= numChans-1);
-		
-		// MaxVal hash
-		intDel.setInstance(Integer.MAX_VALUE);
-		chans = oe3.selectChannels(intDel, hit.length);
-		assertTrue(chans.length == 1);
-		assertTrue(chans[0] >= 0 && chans[0] <= numChans-1);
-	}
+        // Test for StringValue
+        numRecords = 10000 + numberOfChannels / 2;
+        verifyForwardSelectedChannels(numRecords, numberOfChannels, RecordType.STRING);
+    }
 
-	@Test
-	public void testForward() {
-		// Test for IntValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> intComp = new RecordComparatorFactory(new int[] {0}, new Class[] {IntValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.FORWARD, intComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
+    @Test
+    public void testForcedRebalance() {
+        final int numberOfChannels = 100;
+        int toTaskIndex = numberOfChannels * 6 / 7;
+        int fromTaskIndex = toTaskIndex + numberOfChannels;
+        int extraRecords = numberOfChannels / 3;
+        int numRecords = 50000 + extraRecords;
+        final SerializationDelegate<Record> delegate =
+                new SerializationDelegate<>(new RecordSerializerFactory().getSerializer());
+        final ChannelSelector<SerializationDelegate<Record>> selector =
+                new OutputEmitter<>(ShipStrategyType.PARTITION_FORCED_REBALANCE, fromTaskIndex);
+        selector.setup(numberOfChannels);
 
-		int numChannels = 100;
-		int numRecords = 50000 + numChannels / 2;
+        // Test for IntValue
+        int[] hits =
+                getSelectedChannelsHitCount(
+                        selector, delegate, RecordType.INTEGER, numRecords, numberOfChannels);
+        int totalHitCount = 0;
+        for (int i = 0; i < hits.length; i++) {
+            if (toTaskIndex <= i || i < toTaskIndex + extraRecords - numberOfChannels) {
+                assertTrue(hits[i] == (numRecords / numberOfChannels) + 1);
+            } else {
+                assertTrue(hits[i] == numRecords / numberOfChannels);
+            }
+            totalHitCount += hits[i];
+        }
+        assertTrue(totalHitCount == numRecords);
 
-		int[] hit = new int[numChannels];
+        toTaskIndex = numberOfChannels / 5;
+        fromTaskIndex = toTaskIndex + 2 * numberOfChannels;
+        extraRecords = numberOfChannels * 2 / 9;
+        numRecords = 10000 + extraRecords;
 
-		for (int i = 0; i < numRecords; i++) {
-			IntValue k = new IntValue(i);
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
+        // Test for StringValue
+        final ChannelSelector<SerializationDelegate<Record>> selector2 =
+                new OutputEmitter<>(ShipStrategyType.PARTITION_FORCED_REBALANCE, fromTaskIndex);
+        selector2.setup(numberOfChannels);
+        hits =
+                getSelectedChannelsHitCount(
+                        selector2, delegate, RecordType.STRING, numRecords, numberOfChannels);
+        totalHitCount = 0;
+        for (int i = 0; i < hits.length; i++) {
+            if (toTaskIndex <= i && i < toTaskIndex + extraRecords) {
+                assertTrue(hits[i] == (numRecords / numberOfChannels) + 1);
+            } else {
+                assertTrue(hits[i] == numRecords / numberOfChannels);
+            }
+            totalHitCount += hits[i];
+        }
+        assertTrue(totalHitCount == numRecords);
+    }
 
-			int[] chans = oe1.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+    @Test
+    public void testBroadcast() {
+        // Test for IntValue
+        verifyBroadcastSelectedChannels(100, 50000, RecordType.INTEGER);
+        // Test for StringValue
+        verifyBroadcastSelectedChannels(100, 50000, RecordType.STRING);
+    }
 
-		assertTrue(hit[0] == numRecords);
-		for (int i = 1; i < hit.length; i++) {
-			assertTrue(hit[i] == 0);
-		}
+    @Test
+    public void testMultiKeys() {
+        final int numberOfChannels = 100;
+        final int numRecords = 5000;
+        final TypeComparator<Record> multiComp =
+                new RecordComparatorFactory(
+                                new int[] {0, 1, 3},
+                                new Class[] {IntValue.class, StringValue.class, DoubleValue.class})
+                        .createComparator();
 
-		// Test for StringValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> stringComp = new RecordComparatorFactory(new int[] {0}, new Class[] {StringValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe2 = new OutputEmitter<Record>(ShipStrategyType.FORWARD, stringComp);
+        final ChannelSelector<SerializationDelegate<Record>> selector =
+                createChannelSelector(ShipStrategyType.PARTITION_HASH, multiComp, numberOfChannels);
+        final SerializationDelegate<Record> delegate =
+                new SerializationDelegate<>(new RecordSerializerFactory().getSerializer());
 
-		numChannels = 100;
-		numRecords = 10000 + numChannels / 2;
+        int[] hits = new int[numberOfChannels];
+        for (int i = 0; i < numRecords; i++) {
+            Record record = new Record(4);
+            record.setField(0, new IntValue(i));
+            record.setField(1, new StringValue("AB" + i + "CD" + i));
+            record.setField(3, new DoubleValue(i * 3.141d));
+            delegate.setInstance(record);
 
-		hit = new int[numChannels];
+            int channel = selector.selectChannel(delegate);
+            hits[channel]++;
+        }
 
-		for (int i = 0; i < numRecords; i++) {
-			StringValue k = new StringValue(i + "");
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
+        int totalHitCount = 0;
+        for (int hit : hits) {
+            assertTrue(hit > 0);
+            totalHitCount += hit;
+        }
+        assertTrue(totalHitCount == numRecords);
+    }
 
-			int[] chans = oe2.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+    @Test
+    public void testMissingKey() {
+        if (!verifyWrongPartitionHashKey(1, 0)) {
+            Assert.fail("Expected a KeyFieldOutOfBoundsException.");
+        }
+    }
 
-		assertTrue(hit[0] == numRecords);
-		for (int i = 1; i < hit.length; i++) {
-			assertTrue(hit[i] == 0);
-		}
-	}
+    @Test
+    public void testNullKey() {
+        if (!verifyWrongPartitionHashKey(0, 1)) {
+            Assert.fail("Expected a NullKeyFieldException.");
+        }
+    }
 
-	@Test
-	public void testForcedRebalance() {
-		// Test for IntValue
-		int numChannels = 100;
-		int toTaskIndex = numChannels * 6/7;
-		int fromTaskIndex = toTaskIndex + numChannels;
-		int extraRecords = numChannels / 3;
-		int numRecords = 50000 + extraRecords;
+    @Test
+    public void testWrongKeyClass() throws Exception {
+        // Test for IntValue
+        final TypeComparator<Record> doubleComp =
+                new RecordComparatorFactory(new int[] {0}, new Class[] {DoubleValue.class})
+                        .createComparator();
+        final ChannelSelector<SerializationDelegate<Record>> selector =
+                createChannelSelector(ShipStrategyType.PARTITION_HASH, doubleComp, 100);
+        final SerializationDelegate<Record> delegate =
+                new SerializationDelegate<>(new RecordSerializerFactory().getSerializer());
 
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_FORCED_REBALANCE, fromTaskIndex);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
+        PipedInputStream pipedInput = new PipedInputStream(1024 * 1024);
+        DataInputView in = new DataInputViewStreamWrapper(pipedInput);
+        DataOutputView out = new DataOutputViewStreamWrapper(new PipedOutputStream(pipedInput));
 
-		int[] hit = new int[numChannels];
+        Record record = new Record(1);
+        record.setField(0, new IntValue());
+        record.write(out);
+        record = new Record();
+        record.read(in);
 
-		for (int i = 0; i < numRecords; i++) {
-			IntValue k = new IntValue(i);
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
+        try {
+            delegate.setInstance(record);
+            selector.selectChannel(delegate);
+        } catch (DeserializationException re) {
+            return;
+        }
+        Assert.fail("Expected a NullKeyFieldException.");
+    }
 
-			int[] chans = oe1.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+    private void verifyPartitionHashSelectedChannels(
+            int numRecords, int numberOfChannels, Enum recordType) {
+        int[] hits =
+                getSelectedChannelsHitCount(
+                        ShipStrategyType.PARTITION_HASH, numRecords, numberOfChannels, recordType);
 
-		int cnt = 0;
-		for (int i = 0; i < hit.length; i++) {
-			if (toTaskIndex <= i || i < toTaskIndex+extraRecords-numChannels) {
-				assertTrue(hit[i] == (numRecords/numChannels)+1);
-			} else {
-				assertTrue(hit[i] == numRecords/numChannels);
-			}
-			cnt += hit[i];
-		}
-		assertTrue(cnt == numRecords);
+        int totalHitCount = 0;
+        for (int hit : hits) {
+            assertTrue(hit > 0);
+            totalHitCount += hit;
+        }
+        assertTrue(totalHitCount == numRecords);
+    }
 
-		// Test for StringValue
-		numChannels = 100;
-		toTaskIndex = numChannels / 5;
-		fromTaskIndex = toTaskIndex + 2 * numChannels;
-		extraRecords = numChannels * 2/9;
-		numRecords = 10000 + extraRecords;
+    private void verifyForwardSelectedChannels(
+            int numRecords, int numberOfChannels, Enum recordType) {
+        int[] hits =
+                getSelectedChannelsHitCount(
+                        ShipStrategyType.FORWARD, numRecords, numberOfChannels, recordType);
 
-		final ChannelSelector<SerializationDelegate<Record>> oe2 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_FORCED_REBALANCE, fromTaskIndex);
+        assertTrue(hits[0] == numRecords);
+        for (int i = 1; i < hits.length; i++) {
+            assertTrue(hits[i] == 0);
+        }
+    }
 
-		hit = new int[numChannels];
+    private void verifyBroadcastSelectedChannels(
+            int numRecords, int numberOfChannels, Enum recordType) {
+        try {
+            getSelectedChannelsHitCount(
+                    ShipStrategyType.BROADCAST, numRecords, numberOfChannels, recordType);
+        } catch (UnsupportedOperationException ex) {
+            return;
+        }
 
-		for (int i = 0; i < numRecords; i++) {
-			StringValue k = new StringValue(i + "");
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
+        fail("Broadcast selector does not support select channels.");
+    }
 
-			int[] chans = oe2.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+    private boolean verifyWrongPartitionHashKey(int position, int fieldNum) {
+        final TypeComparator<Record> comparator =
+                new RecordComparatorFactory(new int[] {position}, new Class[] {IntValue.class})
+                        .createComparator();
+        final ChannelSelector<SerializationDelegate<Record>> selector =
+                createChannelSelector(ShipStrategyType.PARTITION_HASH, comparator, 100);
+        final SerializationDelegate<Record> delegate =
+                new SerializationDelegate<>(new RecordSerializerFactory().getSerializer());
 
-		cnt = 0;
-		for (int i = 0; i < hit.length; i++) {
-			if (toTaskIndex <= i && i < toTaskIndex+extraRecords) {
-				assertTrue(hit[i] == (numRecords/numChannels)+1);
-			} else {
-				assertTrue(hit[i] == numRecords/numChannels);
-			}
-			cnt += hit[i];
-		}
-		assertTrue(cnt == numRecords);
-	}
-	
-	@Test
-	public void testBroadcast() {
-		// Test for IntValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> intComp = new RecordComparatorFactory(new int[] {0}, new Class[] {IntValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.BROADCAST, intComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
-		
-		int numChannels = 100;
-		int numRecords = 50000;
-		
-		int[] hit = new int[numChannels];
+        Record record = new Record(2);
+        record.setField(fieldNum, new IntValue(1));
+        delegate.setInstance(record);
 
-		for (int i = 0; i < numRecords; i++) {
-			IntValue k = new IntValue(i);
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
-			
-			int[] chans = oe1.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+        try {
+            selector.selectChannel(delegate);
+        } catch (NullKeyFieldException re) {
+            Assert.assertEquals(position, re.getFieldNumber());
+            return true;
+        }
+        return false;
+    }
 
-		for (int aHit : hit) {
-			assertTrue(aHit + "", aHit == numRecords);
-		}
-		
-		// Test for StringValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> stringComp = new RecordComparatorFactory(new int[] {0}, new Class[] {StringValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe2 = new OutputEmitter<Record>(ShipStrategyType.BROADCAST, stringComp);
+    private int[] getSelectedChannelsHitCount(
+            ShipStrategyType shipStrategyType,
+            int numRecords,
+            int numberOfChannels,
+            Enum recordType) {
+        final TypeComparator<Record> comparator =
+                new RecordComparatorFactory(
+                                new int[] {0},
+                                new Class[] {
+                                    recordType == RecordType.INTEGER
+                                            ? IntValue.class
+                                            : StringValue.class
+                                })
+                        .createComparator();
+        final ChannelSelector<SerializationDelegate<Record>> selector =
+                createChannelSelector(shipStrategyType, comparator, numberOfChannels);
+        final SerializationDelegate<Record> delegate =
+                new SerializationDelegate<>(new RecordSerializerFactory().getSerializer());
 
-		numChannels = 100;
-		numRecords = 5000;
-		
-		hit = new int[numChannels];
+        return getSelectedChannelsHitCount(
+                selector, delegate, recordType, numRecords, numberOfChannels);
+    }
 
-		for (int i = 0; i < numRecords; i++) {
-			StringValue k = new StringValue(i + "");
-			Record rec = new Record(k);
-			delegate.setInstance(rec);
-				
-			int[] chans = oe2.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+    private ChannelSelector createChannelSelector(
+            ShipStrategyType shipStrategyType, TypeComparator comparator, int numberOfChannels) {
+        final ChannelSelector selector = new OutputEmitter<>(shipStrategyType, comparator);
+        selector.setup(numberOfChannels);
+        assertEquals(shipStrategyType == ShipStrategyType.BROADCAST, selector.isBroadcast());
+        return selector;
+    }
 
-		for (int aHit : hit) {
-			assertTrue(aHit + "", aHit == numRecords);
-		}
-	}
-	
-	@Test
-	public void testMultiKeys() {
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> multiComp = new RecordComparatorFactory(new int[] {0,1,3}, new Class[] {IntValue.class, StringValue.class, DoubleValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_HASH, multiComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
-		
-		int numChannels = 100;
-		int numRecords = 5000;
-		
-		int[] hit = new int[numChannels];
+    private int[] getSelectedChannelsHitCount(
+            ChannelSelector<SerializationDelegate<Record>> selector,
+            SerializationDelegate<Record> delegate,
+            Enum recordType,
+            int numRecords,
+            int numberOfChannels) {
+        int[] hits = new int[numberOfChannels];
+        Value value;
+        for (int i = 0; i < numRecords; i++) {
+            if (recordType == RecordType.INTEGER) {
+                value = new IntValue(i);
+            } else {
+                value = new StringValue(i + "");
+            }
+            Record record = new Record(value);
+            delegate.setInstance(record);
 
-		for (int i = 0; i < numRecords; i++) {
-			Record rec = new Record(4);
-			rec.setField(0, new IntValue(i));
-			rec.setField(1, new StringValue("AB"+i+"CD"+i));
-			rec.setField(3, new DoubleValue(i*3.141d));
-			delegate.setInstance(rec);
-			
-			int[] chans = oe1.selectChannels(delegate, hit.length);
-			for (int chan : chans) {
-				hit[chan]++;
-			}
-		}
+            int channel = selector.selectChannel(delegate);
+            hits[channel]++;
+        }
+        return hits;
+    }
 
-		int cnt = 0;
-		for (int aHit : hit) {
-			assertTrue(aHit > 0);
-			cnt += aHit;
-		}
-		assertTrue(cnt == numRecords);
-		
-	}
-	
-	@Test
-	public void testMissingKey() {
-		// Test for IntValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> intComp = new RecordComparatorFactory(new int[] {1}, new Class[] {IntValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_HASH, intComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
-		
-		Record rec = new Record(0);
-		rec.setField(0, new IntValue(1));
-		delegate.setInstance(rec);
-		
-		try {
-			oe1.selectChannels(delegate, 100);
-		} catch (KeyFieldOutOfBoundsException re) {
-			Assert.assertEquals(1, re.getFieldNumber());
-			return;
-		}
-		Assert.fail("Expected a KeyFieldOutOfBoundsException.");
-	}
-	
-	@Test
-	public void testNullKey() {
-		// Test for IntValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> intComp = new RecordComparatorFactory(new int[] {0}, new Class[] {IntValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_HASH, intComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
-		
-		Record rec = new Record(2);
-		rec.setField(1, new IntValue(1));
-		delegate.setInstance(rec);
+    private void assertPartitionHashSelectedChannels(
+            ChannelSelector selector,
+            SerializationDelegate<Integer> serializationDelegate,
+            int record,
+            int numberOfChannels) {
+        serializationDelegate.setInstance(record);
+        int selectedChannel = selector.selectChannel(serializationDelegate);
 
-		try {
-			oe1.selectChannels(delegate, 100);
-		} catch (NullKeyFieldException re) {
-			Assert.assertEquals(0, re.getFieldNumber());
-			return;
-		}
-		Assert.fail("Expected a NullKeyFieldException.");
-	}
-	
-	@Test
-	public void testWrongKeyClass() {
-		
-		// Test for IntValue
-		@SuppressWarnings({"unchecked", "rawtypes"})
-		final TypeComparator<Record> doubleComp = new RecordComparatorFactory(new int[] {0}, new Class[] {DoubleValue.class}).createComparator();
-		final ChannelSelector<SerializationDelegate<Record>> oe1 = new OutputEmitter<Record>(ShipStrategyType.PARTITION_HASH, doubleComp);
-		final SerializationDelegate<Record> delegate = new SerializationDelegate<Record>(new RecordSerializerFactory().getSerializer());
-		
-		
-		;
-		
-		Record rec = null;
-		
-		try {
-			PipedInputStream pipedInput = new PipedInputStream(1024*1024);
-			
-			DataInputView in = new DataInputViewStreamWrapper(pipedInput);
-			DataOutputView out = new DataOutputViewStreamWrapper(new PipedOutputStream(pipedInput));
-			
-			rec = new Record(1);
-			rec.setField(0, new IntValue());
-			
-			rec.write(out);
-			rec = new Record();
-			rec.read(in);
-		} catch (IOException e) {
-			fail("Test erroneous");
-		}
+        assertTrue(selectedChannel >= 0 && selectedChannel <= numberOfChannels - 1);
+    }
 
-		try {
-			delegate.setInstance(rec);
-			oe1.selectChannels(delegate, 100);
-		} catch (DeserializationException re) {
-			return;
-		}
-		Assert.fail("Expected a NullKeyFieldException.");
-	}
-	
-	@SuppressWarnings({"serial", "rawtypes"})
-	private static class TestIntComparator extends TypeComparator<Integer> {
-		private TypeComparator[] comparators = new TypeComparator[]{new IntComparator(true)};
+    private static class TestIntComparator extends TypeComparator<Integer> {
+        private TypeComparator[] comparators = new TypeComparator[] {new IntComparator(true)};
 
-		@Override
-		public int hash(Integer record) {
-			return record;
-		}
+        @Override
+        public int hash(Integer record) {
+            return record;
+        }
 
-		@Override
-		public void setReference(Integer toCompare) { throw new UnsupportedOperationException(); }
+        @Override
+        public void setReference(Integer toCompare) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public boolean equalToReference(Integer candidate) { throw new UnsupportedOperationException(); }
+        @Override
+        public boolean equalToReference(Integer candidate) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public int compareToReference( TypeComparator<Integer> referencedComparator) {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public int compareToReference(TypeComparator<Integer> referencedComparator) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public int compare(Integer first, Integer second) { throw new UnsupportedOperationException(); }
+        @Override
+        public int compare(Integer first, Integer second) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public int compareSerialized(DataInputView firstSource, DataInputView secondSource) {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public int compareSerialized(DataInputView firstSource, DataInputView secondSource) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public boolean supportsNormalizedKey() { throw new UnsupportedOperationException(); }
+        @Override
+        public boolean supportsNormalizedKey() {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public boolean supportsSerializationWithKeyNormalization() { throw new UnsupportedOperationException(); }
+        @Override
+        public boolean supportsSerializationWithKeyNormalization() {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public int getNormalizeKeyLen() { throw new UnsupportedOperationException(); }
+        @Override
+        public int getNormalizeKeyLen() {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public boolean isNormalizedKeyPrefixOnly(int keyBytes) { throw new UnsupportedOperationException(); }
+        @Override
+        public boolean isNormalizedKeyPrefixOnly(int keyBytes) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public void putNormalizedKey(Integer record, MemorySegment target, int offset, int numBytes) {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public void putNormalizedKey(
+                Integer record, MemorySegment target, int offset, int numBytes) {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public void writeWithKeyNormalization(Integer record, DataOutputView target) throws IOException {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public void writeWithKeyNormalization(Integer record, DataOutputView target)
+                throws IOException {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public Integer readWithKeyDenormalization(Integer reuse, DataInputView source) throws IOException {
-			throw new UnsupportedOperationException();
-		}
+        @Override
+        public Integer readWithKeyDenormalization(Integer reuse, DataInputView source)
+                throws IOException {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public boolean invertNormalizedKey() { throw new UnsupportedOperationException(); }
+        @Override
+        public boolean invertNormalizedKey() {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public TypeComparator<Integer> duplicate() { throw new UnsupportedOperationException(); }
+        @Override
+        public TypeComparator<Integer> duplicate() {
+            throw new UnsupportedOperationException();
+        }
 
-		@Override
-		public int extractKeys(Object record, Object[] target, int index) {
-			target[index] = record;
-			return 1;
-		}
+        @Override
+        public int extractKeys(Object record, Object[] target, int index) {
+            target[index] = record;
+            return 1;
+        }
 
-		@Override
-		public TypeComparator[] getFlatComparators() {
-			return comparators;
-		}
-	}
+        @Override
+        public TypeComparator[] getFlatComparators() {
+            return comparators;
+        }
+    }
+
+    private enum RecordType {
+        STRING,
+        INTEGER
+    }
 }

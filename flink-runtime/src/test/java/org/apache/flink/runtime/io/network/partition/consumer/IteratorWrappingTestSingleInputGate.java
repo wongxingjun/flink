@@ -19,84 +19,109 @@
 package org.apache.flink.runtime.io.network.partition.consumer;
 
 import org.apache.flink.core.io.IOReadableWritable;
-import org.apache.flink.core.memory.MemorySegmentFactory;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
 import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
-import org.apache.flink.runtime.io.network.api.serialization.RecordSerializer;
-import org.apache.flink.runtime.io.network.api.serialization.SpanningRecordSerializer;
+import org.apache.flink.runtime.io.network.api.writer.RecordWriter;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.buffer.BufferRecycler;
-import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
+import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
+import org.apache.flink.runtime.io.network.partition.consumer.InputChannel.BufferAndAvailability;
+import org.apache.flink.runtime.io.network.partition.consumer.TestInputChannel.BufferAndAvailabilityProvider;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.MutableObjectIterator;
-import org.mockito.invocation.InvocationOnMock;
-import org.mockito.stubbing.Answer;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.Optional;
 
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
+import static org.apache.flink.runtime.io.network.buffer.BufferBuilderTestUtils.createBufferBuilder;
 
-public class IteratorWrappingTestSingleInputGate<T extends IOReadableWritable> extends TestSingleInputGate {
+/**
+ * Input gate helper for unit tests.
+ *
+ * @param <T> type of the value to handle
+ */
+public class IteratorWrappingTestSingleInputGate<T extends IOReadableWritable>
+        extends TestSingleInputGate {
 
-	private final TestInputChannel inputChannel = new TestInputChannel(inputGate, 0);
+    private final TestInputChannel inputChannel = new TestInputChannel(inputGate, 0);
 
-	private final int bufferSize;
+    private final int bufferSize;
 
-	private MutableObjectIterator<T> inputIterator;
+    private MutableObjectIterator<T> inputIterator;
 
-	private RecordSerializer<T> serializer;
+    private DataOutputSerializer serializer;
 
-	private final T reuse;
+    private final T reuse;
 
-	public IteratorWrappingTestSingleInputGate(int bufferSize, Class<T> recordType, MutableObjectIterator<T> iterator) throws IOException, InterruptedException {
-		super(1, false);
+    public IteratorWrappingTestSingleInputGate(
+            int bufferSize, int gateIndex, MutableObjectIterator<T> iterator, Class<T> recordType)
+            throws IOException, InterruptedException {
+        super(1, gateIndex, false);
 
-		this.bufferSize = bufferSize;
-		this.reuse = InstantiationUtil.instantiate(recordType);
+        this.bufferSize = bufferSize;
+        this.reuse = InstantiationUtil.instantiate(recordType);
 
-		wrapIterator(iterator);
-	}
+        wrapIterator(iterator);
+    }
 
-	private IteratorWrappingTestSingleInputGate<T> wrapIterator(MutableObjectIterator<T> iterator) throws IOException, InterruptedException {
-		inputIterator = iterator;
-		serializer = new SpanningRecordSerializer<T>();
+    private IteratorWrappingTestSingleInputGate<T> wrapIterator(MutableObjectIterator<T> iterator)
+            throws IOException, InterruptedException {
+        inputIterator = iterator;
+        serializer = new DataOutputSerializer(128);
 
-		// The input iterator can produce an infinite stream. That's why we have to serialize each
-		// record on demand and cannot do it upfront.
-		final Answer<InputChannel.BufferAndAvailability> answer = new Answer<InputChannel.BufferAndAvailability>() {
+        // The input iterator can produce an infinite stream. That's why we have to serialize each
+        // record on demand and cannot do it upfront.
+        final BufferAndAvailabilityProvider answer =
+                new BufferAndAvailabilityProvider() {
 
-			private boolean hasData = inputIterator.next(reuse) != null;
+                    private boolean hasData = inputIterator.next(reuse) != null;
 
-			@Override
-			public InputChannel.BufferAndAvailability answer(InvocationOnMock invocationOnMock) throws Throwable {
-				if (hasData) {
-					final Buffer buffer = new Buffer(MemorySegmentFactory.allocateUnpooledSegment(bufferSize), mock(BufferRecycler.class));
-					serializer.setNextBuffer(buffer);
-					serializer.addRecord(reuse);
+                    @Override
+                    public Optional<BufferAndAvailability> getBufferAvailability()
+                            throws IOException {
+                        if (hasData) {
+                            ByteBuffer serializedRecord =
+                                    RecordWriter.serializeRecord(serializer, reuse);
+                            BufferBuilder bufferBuilder = createBufferBuilder(bufferSize);
+                            BufferConsumer bufferConsumer = bufferBuilder.createBufferConsumer();
+                            bufferBuilder.appendAndCommit(serializedRecord);
 
-					hasData = inputIterator.next(reuse) != null;
+                            hasData = inputIterator.next(reuse) != null;
 
-					// Call getCurrentBuffer to ensure size is set
-					return new InputChannel.BufferAndAvailability(serializer.getCurrentBuffer(), true);
-				} else {
-					when(inputChannel.getInputChannel().isReleased()).thenReturn(true);
+                            // Call getCurrentBuffer to ensure size is set
+                            final Buffer.DataType nextDataType =
+                                    hasData
+                                            ? Buffer.DataType.DATA_BUFFER
+                                            : Buffer.DataType.EVENT_BUFFER;
+                            return Optional.of(
+                                    new BufferAndAvailability(
+                                            bufferConsumer.build(), nextDataType, 0, 0));
+                        } else {
+                            inputChannel.setReleased();
 
-					return new InputChannel.BufferAndAvailability(EventSerializer.toBuffer(EndOfPartitionEvent.INSTANCE), false);
-				}
-			}
-		};
+                            return Optional.of(
+                                    new BufferAndAvailability(
+                                            EventSerializer.toBuffer(
+                                                    EndOfPartitionEvent.INSTANCE, false),
+                                            Buffer.DataType.NONE,
+                                            0,
+                                            0));
+                        }
+                    }
+                };
 
-		when(inputChannel.getInputChannel().getNextBuffer()).thenAnswer(answer);
+        inputChannel.addBufferAndAvailability(answer);
 
-		inputGate.setInputChannel(new IntermediateResultPartitionID(), inputChannel.getInputChannel());
+        inputGate.setInputChannels(inputChannel);
 
-		return this;
-	}
+        return this;
+    }
 
-	public IteratorWrappingTestSingleInputGate<T> notifyNonEmpty() {
-		inputGate.notifyChannelNonEmpty(inputChannel.getInputChannel());
+    public IteratorWrappingTestSingleInputGate<T> notifyNonEmpty() {
+        inputGate.notifyChannelNonEmpty(inputChannel);
 
-		return this;
-	}
+        return this;
+    }
 }

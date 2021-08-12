@@ -18,340 +18,375 @@
 
 package org.apache.flink.graph.library.metric.directed;
 
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.common.accumulators.LongMaximum;
 import org.apache.flink.api.java.DataSet;
-import org.apache.flink.graph.AbstractGraphAnalytic;
 import org.apache.flink.graph.AnalyticHelper;
 import org.apache.flink.graph.Graph;
+import org.apache.flink.graph.GraphAnalyticBase;
 import org.apache.flink.graph.Vertex;
 import org.apache.flink.graph.asm.degree.annotate.directed.VertexDegrees;
 import org.apache.flink.graph.asm.degree.annotate.directed.VertexDegrees.Degrees;
+import org.apache.flink.graph.asm.result.PrintableResult;
 import org.apache.flink.graph.library.metric.directed.VertexMetrics.Result;
+
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 
 import java.io.IOException;
 import java.text.NumberFormat;
 
-import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
-
 /**
- * Compute the following vertex metrics in a directed graph:
- *  - number of vertices
- *  - number of edges
- *  - number of unidirectional edges
- *  - number of bidirectional edges
- *  - average degree
- *  - number of triplets
- *  - maximum degree
- *  - maximum out degree
- *  - maximum in degree
- *  - maximum number of triplets
+ * Compute the following vertex metrics in a directed graph. - number of vertices - number of edges
+ * - number of unidirectional edges - number of bidirectional edges - average degree - number of
+ * triplets - maximum degree - maximum out degree - maximum in degree - maximum number of triplets
  *
  * @param <K> graph ID type
  * @param <VV> vertex value type
  * @param <EV> edge value type
  */
 public class VertexMetrics<K extends Comparable<K>, VV, EV>
-extends AbstractGraphAnalytic<K, VV, EV, Result> {
+        extends GraphAnalyticBase<K, VV, EV, Result> {
 
-	private static final String VERTEX_COUNT = "vertexCount";
+    private static final String VERTEX_COUNT = "vertexCount";
 
-	private static final String UNIDIRECTIONAL_EDGE_COUNT = "unidirectionalEdgeCount";
+    private static final String UNIDIRECTIONAL_EDGE_COUNT = "unidirectionalEdgeCount";
 
-	private static final String BIDIRECTIONAL_EDGE_COUNT = "bidirectionalEdgeCount";
+    private static final String BIDIRECTIONAL_EDGE_COUNT = "bidirectionalEdgeCount";
 
-	private static final String TRIPLET_COUNT = "tripletCount";
+    private static final String TRIPLET_COUNT = "tripletCount";
 
-	private static final String MAXIMUM_DEGREE = "maximumDegree";
+    private static final String MAXIMUM_DEGREE = "maximumDegree";
 
-	private static final String MAXIMUM_OUT_DEGREE = "maximumOutDegree";
+    private static final String MAXIMUM_OUT_DEGREE = "maximumOutDegree";
 
-	private static final String MAXIMUM_IN_DEGREE = "maximumInDegree";
+    private static final String MAXIMUM_IN_DEGREE = "maximumInDegree";
 
-	private static final String MAXIMUM_TRIPLETS = "maximumTriplets";
+    private static final String MAXIMUM_TRIPLETS = "maximumTriplets";
 
-	private VertexMetricsHelper<K> vertexMetricsHelper;
+    private VertexMetricsHelper<K> vertexMetricsHelper;
 
-	// Optional configuration
-	private boolean includeZeroDegreeVertices = false;
+    // Optional configuration
+    private boolean includeZeroDegreeVertices = false;
 
-	private int parallelism = PARALLELISM_DEFAULT;
+    /**
+     * By default only the edge set is processed for the computation of degree. When this flag is
+     * set an additional join is performed against the vertex set in order to output vertices with a
+     * degree of zero.
+     *
+     * @param includeZeroDegreeVertices whether to output vertices with a degree of zero
+     * @return this
+     */
+    public VertexMetrics<K, VV, EV> setIncludeZeroDegreeVertices(
+            boolean includeZeroDegreeVertices) {
+        this.includeZeroDegreeVertices = includeZeroDegreeVertices;
 
-	/**
-	 * By default only the edge set is processed for the computation of degree.
-	 * When this flag is set an additional join is performed against the vertex
-	 * set in order to output vertices with a degree of zero.
-	 *
-	 * @param includeZeroDegreeVertices whether to output vertices with a
-	 *                                  degree of zero
-	 * @return this
-	 */
-	public VertexMetrics<K, VV, EV> setIncludeZeroDegreeVertices(boolean includeZeroDegreeVertices) {
-		this.includeZeroDegreeVertices = includeZeroDegreeVertices;
+        return this;
+    }
 
-		return this;
-	}
+    @Override
+    public VertexMetrics<K, VV, EV> run(Graph<K, VV, EV> input) throws Exception {
+        super.run(input);
 
-	/**
-	 * Override the operator parallelism.
-	 *
-	 * @param parallelism operator parallelism
-	 * @return this
-	 */
-	public VertexMetrics<K, VV, EV> setParallelism(int parallelism) {
-		this.parallelism = parallelism;
+        DataSet<Vertex<K, Degrees>> vertexDegree =
+                input.run(
+                        new VertexDegrees<K, VV, EV>()
+                                .setIncludeZeroDegreeVertices(includeZeroDegreeVertices)
+                                .setParallelism(parallelism));
 
-		return this;
-	}
+        vertexMetricsHelper = new VertexMetricsHelper<>();
 
-	@Override
-	public VertexMetrics<K, VV, EV> run(Graph<K, VV, EV> input)
-			throws Exception {
-		super.run(input);
+        vertexDegree.output(vertexMetricsHelper).name("Vertex metrics");
 
-		DataSet<Vertex<K, Degrees>> vertexDegree = input
-			.run(new VertexDegrees<K, VV, EV>()
-				.setIncludeZeroDegreeVertices(includeZeroDegreeVertices)
-				.setParallelism(parallelism));
+        return this;
+    }
 
-		vertexMetricsHelper = new VertexMetricsHelper<>();
+    @Override
+    public Result getResult() {
+        long vertexCount = vertexMetricsHelper.getAccumulator(env, VERTEX_COUNT);
+        long unidirectionalEdgeCount =
+                vertexMetricsHelper.getAccumulator(env, UNIDIRECTIONAL_EDGE_COUNT);
+        long bidirectionalEdgeCount =
+                vertexMetricsHelper.getAccumulator(env, BIDIRECTIONAL_EDGE_COUNT);
+        long tripletCount = vertexMetricsHelper.getAccumulator(env, TRIPLET_COUNT);
+        long maximumDegree = vertexMetricsHelper.getAccumulator(env, MAXIMUM_DEGREE);
+        long maximumOutDegree = vertexMetricsHelper.getAccumulator(env, MAXIMUM_OUT_DEGREE);
+        long maximumInDegree = vertexMetricsHelper.getAccumulator(env, MAXIMUM_IN_DEGREE);
+        long maximumTriplets = vertexMetricsHelper.getAccumulator(env, MAXIMUM_TRIPLETS);
 
-		vertexDegree
-			.output(vertexMetricsHelper)
-				.name("Vertex metrics");
+        // each edge is counted twice, once from each vertex, so must be halved
+        return new Result(
+                vertexCount,
+                unidirectionalEdgeCount / 2,
+                bidirectionalEdgeCount / 2,
+                tripletCount,
+                maximumDegree,
+                maximumOutDegree,
+                maximumInDegree,
+                maximumTriplets);
+    }
 
-		return this;
-	}
+    /**
+     * Helper class to collect vertex metrics.
+     *
+     * @param <T> ID type
+     */
+    private static class VertexMetricsHelper<T> extends AnalyticHelper<Vertex<T, Degrees>> {
+        private long vertexCount;
+        private long unidirectionalEdgeCount;
+        private long bidirectionalEdgeCount;
+        private long tripletCount;
+        private long maximumDegree;
+        private long maximumOutDegree;
+        private long maximumInDegree;
+        private long maximumTriplets;
 
-	@Override
-	public Result getResult() {
-		long vertexCount = vertexMetricsHelper.getAccumulator(env, VERTEX_COUNT);
-		long unidirectionalEdgeCount = vertexMetricsHelper.getAccumulator(env, UNIDIRECTIONAL_EDGE_COUNT);
-		long bidirectionalEdgeCount = vertexMetricsHelper.getAccumulator(env, BIDIRECTIONAL_EDGE_COUNT);
-		long tripletCount = vertexMetricsHelper.getAccumulator(env, TRIPLET_COUNT);
-		long maximumDegree = vertexMetricsHelper.getAccumulator(env, MAXIMUM_DEGREE);
-		long maximumOutDegree = vertexMetricsHelper.getAccumulator(env, MAXIMUM_OUT_DEGREE);
-		long maximumInDegree = vertexMetricsHelper.getAccumulator(env, MAXIMUM_IN_DEGREE);
-		long maximumTriplets = vertexMetricsHelper.getAccumulator(env, MAXIMUM_TRIPLETS);
+        @Override
+        public void writeRecord(Vertex<T, Degrees> record) throws IOException {
+            long degree = record.f1.getDegree().getValue();
+            long outDegree = record.f1.getOutDegree().getValue();
+            long inDegree = record.f1.getInDegree().getValue();
 
-		// each edge is counted twice, once from each vertex, so must be halved
-		return new Result(vertexCount, unidirectionalEdgeCount / 2, bidirectionalEdgeCount / 2, tripletCount,
-			maximumDegree, maximumOutDegree, maximumInDegree, maximumTriplets);
-	}
+            long bidirectionalEdges = outDegree + inDegree - degree;
+            long triplets = degree * (degree - 1) / 2;
 
-	/**
-	 * Helper class to collect vertex metrics.
-	 *
-	 * @param <T> ID type
-	 */
-	private static class VertexMetricsHelper<T>
-	extends AnalyticHelper<Vertex<T, Degrees>> {
-		private long vertexCount;
-		private long unidirectionalEdgeCount;
-		private long bidirectionalEdgeCount;
-		private long tripletCount;
-		private long maximumDegree;
-		private long maximumOutDegree;
-		private long maximumInDegree;
-		private long maximumTriplets;
+            vertexCount++;
+            unidirectionalEdgeCount += degree - bidirectionalEdges;
+            bidirectionalEdgeCount += bidirectionalEdges;
+            tripletCount += triplets;
+            maximumDegree = Math.max(maximumDegree, degree);
+            maximumOutDegree = Math.max(maximumOutDegree, outDegree);
+            maximumInDegree = Math.max(maximumInDegree, inDegree);
+            maximumTriplets = Math.max(maximumTriplets, triplets);
+        }
 
-		@Override
-		public void writeRecord(Vertex<T, Degrees> record) throws IOException {
-			long degree = record.f1.getDegree().getValue();
-			long outDegree = record.f1.getOutDegree().getValue();
-			long inDegree = record.f1.getInDegree().getValue();
+        @Override
+        public void close() throws IOException {
+            addAccumulator(VERTEX_COUNT, new LongCounter(vertexCount));
+            addAccumulator(UNIDIRECTIONAL_EDGE_COUNT, new LongCounter(unidirectionalEdgeCount));
+            addAccumulator(BIDIRECTIONAL_EDGE_COUNT, new LongCounter(bidirectionalEdgeCount));
+            addAccumulator(TRIPLET_COUNT, new LongCounter(tripletCount));
+            addAccumulator(MAXIMUM_DEGREE, new LongMaximum(maximumDegree));
+            addAccumulator(MAXIMUM_OUT_DEGREE, new LongMaximum(maximumOutDegree));
+            addAccumulator(MAXIMUM_IN_DEGREE, new LongMaximum(maximumInDegree));
+            addAccumulator(MAXIMUM_TRIPLETS, new LongMaximum(maximumTriplets));
+        }
+    }
 
-			long bidirectionalEdges = outDegree + inDegree - degree;
-			long triplets = degree * (degree - 1) / 2;
+    /** Wraps vertex metrics. */
+    public static class Result implements PrintableResult {
+        private long vertexCount;
+        private long unidirectionalEdgeCount;
+        private long bidirectionalEdgeCount;
+        private long tripletCount;
+        private long maximumDegree;
+        private long maximumOutDegree;
+        private long maximumInDegree;
+        private long maximumTriplets;
 
-			vertexCount++;
-			unidirectionalEdgeCount += degree - bidirectionalEdges;
-			bidirectionalEdgeCount += bidirectionalEdges;
-			tripletCount += triplets;
-			maximumDegree = Math.max(maximumDegree, degree);
-			maximumOutDegree = Math.max(maximumOutDegree, outDegree);
-			maximumInDegree = Math.max(maximumInDegree, inDegree);
-			maximumTriplets = Math.max(maximumTriplets, triplets);
-		}
+        public Result(
+                long vertexCount,
+                long unidirectionalEdgeCount,
+                long bidirectionalEdgeCount,
+                long tripletCount,
+                long maximumDegree,
+                long maximumOutDegree,
+                long maximumInDegree,
+                long maximumTriplets) {
+            this.vertexCount = vertexCount;
+            this.unidirectionalEdgeCount = unidirectionalEdgeCount;
+            this.bidirectionalEdgeCount = bidirectionalEdgeCount;
+            this.tripletCount = tripletCount;
+            this.maximumDegree = maximumDegree;
+            this.maximumOutDegree = maximumOutDegree;
+            this.maximumInDegree = maximumInDegree;
+            this.maximumTriplets = maximumTriplets;
+        }
 
-		@Override
-		public void close() throws IOException {
-			addAccumulator(VERTEX_COUNT, new LongCounter(vertexCount));
-			addAccumulator(UNIDIRECTIONAL_EDGE_COUNT, new LongCounter(unidirectionalEdgeCount));
-			addAccumulator(BIDIRECTIONAL_EDGE_COUNT, new LongCounter(bidirectionalEdgeCount));
-			addAccumulator(TRIPLET_COUNT, new LongCounter(tripletCount));
-			addAccumulator(MAXIMUM_DEGREE, new LongMaximum(maximumDegree));
-			addAccumulator(MAXIMUM_OUT_DEGREE, new LongMaximum(maximumOutDegree));
-			addAccumulator(MAXIMUM_IN_DEGREE, new LongMaximum(maximumInDegree));
-			addAccumulator(MAXIMUM_TRIPLETS, new LongMaximum(maximumTriplets));
-		}
-	}
+        /**
+         * Get the number of vertices.
+         *
+         * @return number of vertices
+         */
+        public long getNumberOfVertices() {
+            return vertexCount;
+        }
 
-	/**
-	 * Wraps vertex metrics.
-	 */
-	public static class Result {
-		private long vertexCount;
-		private long unidirectionalEdgeCount;
-		private long bidirectionalEdgeCount;
-		private long tripletCount;
-		private long maximumDegree;
-		private long maximumOutDegree;
-		private long maximumInDegree;
-		private long maximumTriplets;
+        /**
+         * Get the number of edges.
+         *
+         * @return number of edges
+         */
+        public long getNumberOfEdges() {
+            return unidirectionalEdgeCount + 2 * bidirectionalEdgeCount;
+        }
 
-		public Result(long vertexCount, long unidirectionalEdgeCount, long bidirectionalEdgeCount, long tripletCount,
-				long maximumDegree, long maximumOutDegree, long maximumInDegree, long maximumTriplets) {
-			this.vertexCount = vertexCount;
-			this.unidirectionalEdgeCount = unidirectionalEdgeCount;
-			this.bidirectionalEdgeCount = bidirectionalEdgeCount;
-			this.tripletCount = tripletCount;
-			this.maximumDegree = maximumDegree;
-			this.maximumOutDegree = maximumOutDegree;
-			this.maximumInDegree = maximumInDegree;
-			this.maximumTriplets = maximumTriplets;
-		}
+        /**
+         * Get the number of unidirectional edges.
+         *
+         * @return number of unidirectional edges
+         */
+        public long getNumberOfDirectedEdges() {
+            return unidirectionalEdgeCount;
+        }
 
-		/**
-		 * Get the number of vertices.
-		 *
-		 * @return number of vertices
-		 */
-		public long getNumberOfVertices() {
-			return vertexCount;
-		}
+        /**
+         * Get the number of bidirectional edges.
+         *
+         * @return number of bidirectional edges
+         */
+        public long getNumberOfUndirectedEdges() {
+            return bidirectionalEdgeCount;
+        }
 
-		/**
-		 * Get the number of edges.
-		 *
-		 * @return number of edges
-		 */
-		public long getNumberOfEdges() {
-			return unidirectionalEdgeCount + 2 * bidirectionalEdgeCount;
-		}
+        /**
+         * Get the average degree, the average number of in- plus out-edges per vertex.
+         *
+         * <p>A result of {@code Float.NaN} is returned for an empty graph for which both the number
+         * of edges and number of vertices is zero.
+         *
+         * @return average degree
+         */
+        public double getAverageDegree() {
+            return vertexCount == 0 ? Double.NaN : getNumberOfEdges() / (double) vertexCount;
+        }
 
-		/**
-		 * Get the number of unidirectional edges.
-		 *
-		 * @return number of unidirectional edges
-		 */
-		public long getNumberOfDirectedEdges() {
-			return unidirectionalEdgeCount;
-		}
+        /**
+         * Get the density, the ratio of actual to potential edges between vertices.
+         *
+         * <p>A result of {@code Float.NaN} is returned for a graph with fewer than two vertices for
+         * which the number of edges is zero.
+         *
+         * @return density
+         */
+        public double getDensity() {
+            return vertexCount <= 1
+                    ? Double.NaN
+                    : getNumberOfEdges() / (double) (vertexCount * (vertexCount - 1));
+        }
 
-		/**
-		 * Get the number of bidirectional edges.
-		 *
-		 * @return number of bidirectional edges
-		 */
-		public long getNumberOfUndirectedEdges() {
-			return bidirectionalEdgeCount;
-		}
+        /**
+         * Get the number of triplets.
+         *
+         * @return number of triplets
+         */
+        public long getNumberOfTriplets() {
+            return tripletCount;
+        }
 
-		/**
-		 * Get the average degree.
-		 *
-		 * @return average degree
-		 */
-		public float getAverageDegree() {
-			return getNumberOfEdges() / (float)vertexCount;
-		}
+        /**
+         * Get the maximum degree.
+         *
+         * @return maximum degree
+         */
+        public long getMaximumDegree() {
+            return maximumDegree;
+        }
 
-		/**
-		 * Get the number of triplets.
-		 *
-		 * @return number of triplets
-		 */
-		public long getNumberOfTriplets() {
-			return tripletCount;
-		}
+        /**
+         * Get the maximum out degree.
+         *
+         * @return maximum out degree
+         */
+        public long getMaximumOutDegree() {
+            return maximumOutDegree;
+        }
 
-		/**
-		 * Get the maximum degree.
-		 *
-		 * @return maximum degree
-		 */
-		public long getMaximumDegree() {
-			return maximumDegree;
-		}
+        /**
+         * Get the maximum in degree.
+         *
+         * @return maximum in degree
+         */
+        public long getMaximumInDegree() {
+            return maximumInDegree;
+        }
 
-		/**
-		 * Get the maximum out degree.
-		 *
-		 * @return maximum out degree
-		 */
-		public long getMaximumOutDegree() {
-			return maximumOutDegree;
-		}
+        /**
+         * Get the maximum triplets.
+         *
+         * @return maximum triplets
+         */
+        public long getMaximumTriplets() {
+            return maximumTriplets;
+        }
 
-		/**
-		 * Get the maximum in degree.
-		 *
-		 * @return maximum in degree
-		 */
-		public long getMaximumInDegree() {
-			return maximumInDegree;
-		}
+        @Override
+        public String toString() {
+            return toPrintableString();
+        }
 
-		/**
-		 * Get the maximum triplets.
-		 *
-		 * @return maximum triplets
-		 */
-		public long getMaximumTriplets() {
-			return maximumTriplets;
-		}
+        @Override
+        public String toPrintableString() {
+            NumberFormat nf = NumberFormat.getInstance();
 
-		@Override
-		public String toString() {
-			NumberFormat nf = NumberFormat.getInstance();
+            // format for very small fractional numbers
+            NumberFormat ff = NumberFormat.getInstance();
+            ff.setMaximumFractionDigits(8);
 
-			return "vertex count: " + nf.format(vertexCount)
-				+ "; edge count: " + nf.format(getNumberOfEdges())
-				+ "; unidirectional edge count: " + nf.format(unidirectionalEdgeCount)
-				+ "; bidirectional edge count: " + nf.format(bidirectionalEdgeCount)
-				+ "; average degree: " + nf.format(getAverageDegree())
-				+ "; triplet count: " + nf.format(tripletCount)
-				+ "; maximum degree: " + nf.format(maximumDegree)
-				+ "; maximum out degree: " + nf.format(maximumOutDegree)
-				+ "; maximum in degree: " + nf.format(maximumInDegree)
-				+ "; maximum triplets: " + nf.format(maximumTriplets);
-		}
+            return "vertex count: "
+                    + nf.format(vertexCount)
+                    + "; edge count: "
+                    + nf.format(getNumberOfEdges())
+                    + "; unidirectional edge count: "
+                    + nf.format(unidirectionalEdgeCount)
+                    + "; bidirectional edge count: "
+                    + nf.format(bidirectionalEdgeCount)
+                    + "; average degree: "
+                    + nf.format(getAverageDegree())
+                    + "; density: "
+                    + ff.format(getDensity())
+                    + "; triplet count: "
+                    + nf.format(tripletCount)
+                    + "; maximum degree: "
+                    + nf.format(maximumDegree)
+                    + "; maximum out degree: "
+                    + nf.format(maximumOutDegree)
+                    + "; maximum in degree: "
+                    + nf.format(maximumInDegree)
+                    + "; maximum triplets: "
+                    + nf.format(maximumTriplets);
+        }
 
-		@Override
-		public int hashCode() {
-			return new HashCodeBuilder()
-				.append(vertexCount)
-				.append(unidirectionalEdgeCount)
-				.append(bidirectionalEdgeCount)
-				.append(tripletCount)
-				.append(maximumDegree)
-				.append(maximumOutDegree)
-				.append(maximumInDegree)
-				.append(maximumTriplets)
-				.hashCode();
-		}
+        @Override
+        public int hashCode() {
+            return new HashCodeBuilder()
+                    .append(vertexCount)
+                    .append(unidirectionalEdgeCount)
+                    .append(bidirectionalEdgeCount)
+                    .append(tripletCount)
+                    .append(maximumDegree)
+                    .append(maximumOutDegree)
+                    .append(maximumInDegree)
+                    .append(maximumTriplets)
+                    .hashCode();
+        }
 
-		@Override
-		public boolean equals(Object obj) {
-			if (obj == null) { return false; }
-			if (obj == this) { return true; }
-			if (obj.getClass() != getClass()) { return false; }
+        @Override
+        public boolean equals(Object obj) {
+            if (obj == null) {
+                return false;
+            }
 
-			Result rhs = (Result)obj;
+            if (obj == this) {
+                return true;
+            }
 
-			return new EqualsBuilder()
-				.append(vertexCount, rhs.vertexCount)
-				.append(unidirectionalEdgeCount, rhs.unidirectionalEdgeCount)
-				.append(bidirectionalEdgeCount, rhs.bidirectionalEdgeCount)
-				.append(tripletCount, rhs.tripletCount)
-				.append(maximumDegree, rhs.maximumDegree)
-				.append(maximumOutDegree, rhs.maximumOutDegree)
-				.append(maximumInDegree, rhs.maximumInDegree)
-				.append(maximumTriplets, rhs.maximumTriplets)
-				.isEquals();
-		}
-	}
+            if (obj.getClass() != getClass()) {
+                return false;
+            }
+
+            Result rhs = (Result) obj;
+
+            return new EqualsBuilder()
+                    .append(vertexCount, rhs.vertexCount)
+                    .append(unidirectionalEdgeCount, rhs.unidirectionalEdgeCount)
+                    .append(bidirectionalEdgeCount, rhs.bidirectionalEdgeCount)
+                    .append(tripletCount, rhs.tripletCount)
+                    .append(maximumDegree, rhs.maximumDegree)
+                    .append(maximumOutDegree, rhs.maximumOutDegree)
+                    .append(maximumInDegree, rhs.maximumInDegree)
+                    .append(maximumTriplets, rhs.maximumTriplets)
+                    .isEquals();
+        }
+    }
 }

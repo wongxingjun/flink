@@ -17,39 +17,58 @@
 
 package org.apache.flink.streaming.util;
 
-import java.io.Serializable;
-import java.util.Collection;
-
-import org.apache.commons.lang3.SerializationUtils;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
+import org.apache.flink.util.InstantiationUtil;
+import org.apache.flink.util.OutputTag;
 
+import java.io.IOException;
+import java.util.Collection;
+
+/** Mock {@link Output} for {@link StreamRecord}. */
 public class MockOutput<T> implements Output<StreamRecord<T>> {
-	private Collection<T> outputs;
+    private Collection<T> outputs;
 
-	public MockOutput(Collection<T> outputs) {
-		this.outputs = outputs;
-	}
+    public MockOutput(Collection<T> outputs) {
+        this.outputs = outputs;
+    }
 
-	@Override
-	public void collect(StreamRecord<T> record) {
-		T copied = SerializationUtils.deserialize(SerializationUtils.serialize((Serializable) record.getValue()));
-		outputs.add(copied);
-	}
+    @Override
+    public void collect(StreamRecord<T> record) {
+        try {
+            ClassLoader cl = record.getClass().getClassLoader();
+            T copied =
+                    InstantiationUtil.deserializeObject(
+                            InstantiationUtil.serializeObject(record.getValue()), cl);
+            outputs.add(copied);
+        } catch (IOException | ClassNotFoundException ex) {
+            throw new RuntimeException("Unable to deserialize record: " + record, ex);
+        }
+    }
 
-	@Override
-	public void emitWatermark(Watermark mark) {
-		throw new RuntimeException("THIS MUST BE IMPLEMENTED");
-	}
+    @Override
+    public <X> void collect(OutputTag<X> outputTag, StreamRecord<X> record) {
+        throw new UnsupportedOperationException("Side output not supported for MockOutput");
+    }
 
-	@Override
-	public void emitLatencyMarker(LatencyMarker latencyMarker) {
-		throw new RuntimeException();
-	}
+    @Override
+    public void emitWatermark(Watermark mark) {
+        throw new RuntimeException("THIS MUST BE IMPLEMENTED");
+    }
 
-	@Override
-	public void close() {
-	}
+    @Override
+    public void emitStreamStatus(StreamStatus streamStatus) {
+        throw new RuntimeException("THIS MUST BE IMPLEMENTED");
+    }
+
+    @Override
+    public void emitLatencyMarker(LatencyMarker latencyMarker) {
+        throw new RuntimeException();
+    }
+
+    @Override
+    public void close() {}
 }

@@ -15,235 +15,356 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.runtime.metrics.util;
 
-import org.apache.commons.lang3.text.WordUtils;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.time.Time;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.runtime.io.network.NetworkEnvironment;
+import org.apache.flink.runtime.clusterframework.types.AllocationID;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
+import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.runtime.metrics.MetricNames;
+import org.apache.flink.runtime.metrics.MetricRegistry;
+import org.apache.flink.runtime.metrics.groups.AbstractMetricGroup;
+import org.apache.flink.runtime.metrics.groups.ProcessMetricGroup;
+import org.apache.flink.runtime.metrics.groups.TaskManagerMetricGroup;
+import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.runtime.rpc.RpcSystem;
+import org.apache.flink.runtime.taskexecutor.slot.SlotNotFoundException;
+import org.apache.flink.runtime.taskexecutor.slot.TaskSlotTable;
+import org.apache.flink.util.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.lang.management.BufferPoolMXBean;
+import javax.management.AttributeNotFoundException;
+import javax.management.InstanceNotFoundException;
+import javax.management.MBeanException;
+import javax.management.MBeanServer;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+import javax.management.ReflectionException;
+
 import java.lang.management.ClassLoadingMXBean;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
-import java.lang.management.MemoryMXBean;
-import java.lang.management.OperatingSystemMXBean;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryUsage;
 import java.lang.management.ThreadMXBean;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
+import static org.apache.flink.runtime.metrics.util.SystemResourcesMetricsInitializer.instantiateSystemMetrics;
+import static org.apache.flink.util.Preconditions.checkNotNull;
+
+/** Utility class to register pre-defined metric sets. */
 public class MetricUtils {
-	private static final Logger LOG = LoggerFactory.getLogger(MetricUtils.class);
-	private static final String METRIC_GROUP_STATUS_NAME = "Status";
+    private static final Logger LOG = LoggerFactory.getLogger(MetricUtils.class);
+    private static final String METRIC_GROUP_STATUS_NAME = "Status";
+    private static final String METRICS_ACTOR_SYSTEM_NAME = "flink-metrics";
 
-	private MetricUtils() {
-	}
+    static final String METRIC_GROUP_HEAP_NAME = "Heap";
+    static final String METRIC_GROUP_NONHEAP_NAME = "NonHeap";
+    static final String METRIC_GROUP_METASPACE_NAME = "Metaspace";
 
-	public static void instantiateNetworkMetrics(
-		MetricGroup metrics,
-		final NetworkEnvironment network) {
-		MetricGroup status = metrics.addGroup(METRIC_GROUP_STATUS_NAME);
+    @VisibleForTesting static final String METRIC_GROUP_FLINK = "Flink";
 
-		MetricGroup networkGroup = status
-			.addGroup("Network");
+    @VisibleForTesting static final String METRIC_GROUP_MEMORY = "Memory";
 
-		networkGroup.gauge("TotalMemorySegments", new Gauge<Integer>() {
-			@Override
-			public Integer getValue() {
-				return network.getNetworkBufferPool().getTotalNumberOfMemorySegments();
-			}
-		});
-		networkGroup.gauge("AvailableMemorySegments", new Gauge<Integer>() {
-			@Override
-			public Integer getValue() {
-				return network.getNetworkBufferPool().getNumberOfAvailableMemorySegments();
-			}
-		});
-	}
+    @VisibleForTesting static final String METRIC_GROUP_MANAGED_MEMORY = "Managed";
 
-	public static void instantiateStatusMetrics(
-		MetricGroup metrics) {
-		MetricGroup status = metrics
-			.addGroup(METRIC_GROUP_STATUS_NAME);
+    private MetricUtils() {}
 
-		MetricGroup jvm = status
-			.addGroup("JVM");
+    public static ProcessMetricGroup instantiateProcessMetricGroup(
+            final MetricRegistry metricRegistry,
+            final String hostname,
+            final Optional<Time> systemResourceProbeInterval) {
+        final ProcessMetricGroup processMetricGroup =
+                ProcessMetricGroup.create(metricRegistry, hostname);
 
-		instantiateClassLoaderMetrics(jvm.addGroup("ClassLoader"));
-		instantiateGarbageCollectorMetrics(jvm.addGroup("GarbageCollector"));
-		instantiateMemoryMetrics(jvm.addGroup("Memory"));
-		instantiateThreadMetrics(jvm.addGroup("Threads"));
-		instantiateCPUMetrics(jvm.addGroup("CPU"));
-	}
+        createAndInitializeStatusMetricGroup(processMetricGroup);
 
-	private static void instantiateClassLoaderMetrics(MetricGroup metrics) {
-		final ClassLoadingMXBean mxBean = ManagementFactory.getClassLoadingMXBean();
+        systemResourceProbeInterval.ifPresent(
+                interval -> instantiateSystemMetrics(processMetricGroup, interval));
 
-		metrics.gauge("ClassesLoaded", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getTotalLoadedClassCount();
-			}
-		});
-		metrics.gauge("ClassesUnloaded", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getUnloadedClassCount();
-			}
-		});
-	}
+        return processMetricGroup;
+    }
 
-	private static void instantiateGarbageCollectorMetrics(MetricGroup metrics) {
-		List<GarbageCollectorMXBean> garbageCollectors = ManagementFactory.getGarbageCollectorMXBeans();
+    public static Tuple2<TaskManagerMetricGroup, MetricGroup> instantiateTaskManagerMetricGroup(
+            MetricRegistry metricRegistry,
+            String hostName,
+            ResourceID resourceID,
+            Optional<Time> systemResourceProbeInterval) {
+        final TaskManagerMetricGroup taskManagerMetricGroup =
+                TaskManagerMetricGroup.createTaskManagerMetricGroup(
+                        metricRegistry, hostName, resourceID);
 
-		for (final GarbageCollectorMXBean garbageCollector : garbageCollectors) {
-			MetricGroup gcGroup = metrics.addGroup(garbageCollector.getName());
-			gcGroup.gauge("Count", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					return garbageCollector.getCollectionCount();
-				}
-			});
-			gcGroup.gauge("Time", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					return garbageCollector.getCollectionTime();
-				}
-			});
-		}
-	}
+        MetricGroup statusGroup = createAndInitializeStatusMetricGroup(taskManagerMetricGroup);
 
-	private static void instantiateMemoryMetrics(MetricGroup metrics) {
-		final MemoryMXBean mxBean = ManagementFactory.getMemoryMXBean();
-		MetricGroup heap = metrics.addGroup("Heap");
-		heap.gauge("Used", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getHeapMemoryUsage().getUsed();
-			}
-		});
-		heap.gauge("Committed", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getHeapMemoryUsage().getCommitted();
-			}
-		});
-		heap.gauge("Max", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getHeapMemoryUsage().getMax();
-			}
-		});
+        if (systemResourceProbeInterval.isPresent()) {
+            instantiateSystemMetrics(taskManagerMetricGroup, systemResourceProbeInterval.get());
+        }
+        return Tuple2.of(taskManagerMetricGroup, statusGroup);
+    }
 
-		MetricGroup nonHeap = metrics.addGroup("NonHeap");
-		nonHeap.gauge("Used", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getNonHeapMemoryUsage().getUsed();
-			}
-		});
-		nonHeap.gauge("Committed", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getNonHeapMemoryUsage().getCommitted();
-			}
-		});
-		nonHeap.gauge("Max", new Gauge<Long>() {
-			@Override
-			public Long getValue() {
-				return mxBean.getNonHeapMemoryUsage().getMax();
-			}
-		});
+    private static MetricGroup createAndInitializeStatusMetricGroup(
+            AbstractMetricGroup<?> parentMetricGroup) {
+        MetricGroup statusGroup = parentMetricGroup.addGroup(METRIC_GROUP_STATUS_NAME);
 
-		List<BufferPoolMXBean> bufferMxBeans = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class);
+        instantiateStatusMetrics(statusGroup);
+        return statusGroup;
+    }
 
-		for (final BufferPoolMXBean bufferMxBean : bufferMxBeans) {
-			MetricGroup bufferGroup = metrics.addGroup(WordUtils.capitalize(bufferMxBean.getName()));
-			bufferGroup.gauge("Count", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					return bufferMxBean.getCount();
-				}
-			});
-			bufferGroup.gauge("MemoryUsed", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					return bufferMxBean.getMemoryUsed();
-				}
-			});
-			bufferGroup.gauge("TotalCapacity", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					return bufferMxBean.getTotalCapacity();
-				}
-			});
-		}
-	}
+    public static void instantiateStatusMetrics(MetricGroup metricGroup) {
+        MetricGroup jvm = metricGroup.addGroup("JVM");
 
-	private static void instantiateThreadMetrics(MetricGroup metrics) {
-		final ThreadMXBean mxBean = ManagementFactory.getThreadMXBean();
+        instantiateClassLoaderMetrics(jvm.addGroup("ClassLoader"));
+        instantiateGarbageCollectorMetrics(jvm.addGroup("GarbageCollector"));
+        instantiateMemoryMetrics(jvm.addGroup(METRIC_GROUP_MEMORY));
+        instantiateThreadMetrics(jvm.addGroup("Threads"));
+        instantiateCPUMetrics(jvm.addGroup("CPU"));
+    }
 
-		metrics.gauge("Count", new Gauge<Integer>() {
-			@Override
-			public Integer getValue() {
-				return mxBean.getThreadCount();
-			}
-		});
-	}
+    public static void instantiateFlinkMemoryMetricGroup(
+            MetricGroup parentMetricGroup,
+            TaskSlotTable<?> taskSlotTable,
+            Supplier<Long> managedMemoryTotalSupplier) {
+        checkNotNull(parentMetricGroup);
+        checkNotNull(taskSlotTable);
+        checkNotNull(managedMemoryTotalSupplier);
 
-	private static void instantiateCPUMetrics(MetricGroup metrics) {
-		try {
-			final OperatingSystemMXBean mxBean = ManagementFactory.getOperatingSystemMXBean();
+        MetricGroup flinkMemoryMetricGroup =
+                parentMetricGroup.addGroup(METRIC_GROUP_FLINK).addGroup(METRIC_GROUP_MEMORY);
 
-			final Method fetchCPULoadMethod = Class.forName("com.sun.management.OperatingSystemMXBean")
-				.getMethod("getProcessCpuLoad");
-			// verify that we can invoke the method
-			fetchCPULoadMethod.invoke(mxBean);
+        instantiateManagedMemoryMetrics(
+                flinkMemoryMetricGroup, taskSlotTable, managedMemoryTotalSupplier);
+    }
 
-			final Method fetchCPUTimeMethod = Class.forName("com.sun.management.OperatingSystemMXBean")
-				.getMethod("getProcessCpuTime");
-			// verify that we can invoke the method
-			fetchCPUTimeMethod.invoke(mxBean);
+    private static void instantiateManagedMemoryMetrics(
+            MetricGroup metricGroup,
+            TaskSlotTable<?> taskSlotTable,
+            Supplier<Long> managedMemoryTotalSupplier) {
+        MetricGroup managedMemoryMetricGroup = metricGroup.addGroup(METRIC_GROUP_MANAGED_MEMORY);
 
-			metrics.gauge("Load", new Gauge<Double>() {
-				@Override
-				public Double getValue() {
-					try {
-						return (Double) fetchCPULoadMethod.invoke(mxBean);
-					} catch (IllegalAccessException | InvocationTargetException | IllegalArgumentException ignored) {
-						return -1.0;
-					}
-				}
-			});
-			metrics.gauge("Time", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					try {
-						return (Long) fetchCPUTimeMethod.invoke(mxBean);
-					} catch (IllegalAccessException | InvocationTargetException | IllegalArgumentException ignored) {
-						return -1L;
-					}
-				}
-			});
-		} catch (ClassNotFoundException | InvocationTargetException | SecurityException | NoSuchMethodException | IllegalArgumentException | IllegalAccessException ignored) {
-			LOG.warn("Cannot access com.sun.management.OperatingSystemMXBean.getProcessCpuLoad()" +
-				" - CPU load metrics will not be available.");
-			// make sure that a metric still exists for the given name
-			metrics.gauge("Load", new Gauge<Double>() {
-				@Override
-				public Double getValue() {
-					return -1.0;
-				}
-			});
-			metrics.gauge("Time", new Gauge<Long>() {
-				@Override
-				public Long getValue() {
-					return -1L;
-				}
-			});
-		}
-	}
+        managedMemoryMetricGroup.gauge("Used", () -> getUsedManagedMemory(taskSlotTable));
+        managedMemoryMetricGroup.gauge("Total", managedMemoryTotalSupplier::get);
+    }
+
+    private static long getUsedManagedMemory(TaskSlotTable<?> taskSlotTable) {
+        Set<AllocationID> activeTaskAllocationIds = taskSlotTable.getActiveTaskSlotAllocationIds();
+
+        long usedMemory = 0L;
+        for (AllocationID allocationID : activeTaskAllocationIds) {
+            try {
+                MemoryManager taskSlotMemoryManager =
+                        taskSlotTable.getTaskMemoryManager(allocationID);
+                usedMemory +=
+                        taskSlotMemoryManager.getMemorySize()
+                                - taskSlotMemoryManager.availableMemory();
+            } catch (SlotNotFoundException e) {
+                LOG.debug(
+                        "The task slot {} is not present anymore and will be ignored in calculating the amount of used memory.",
+                        allocationID);
+            }
+        }
+
+        return usedMemory;
+    }
+
+    public static RpcService startRemoteMetricsRpcService(
+            Configuration configuration, String hostname, RpcSystem rpcSystem) throws Exception {
+        final String portRange = configuration.getString(MetricOptions.QUERY_SERVICE_PORT);
+
+        return startMetricRpcService(
+                configuration, rpcSystem.remoteServiceBuilder(configuration, hostname, portRange));
+    }
+
+    public static RpcService startLocalMetricsRpcService(
+            Configuration configuration, RpcSystem rpcSystem) throws Exception {
+        return startMetricRpcService(configuration, rpcSystem.localServiceBuilder(configuration));
+    }
+
+    private static RpcService startMetricRpcService(
+            Configuration configuration, RpcSystem.RpcServiceBuilder rpcServiceBuilder)
+            throws Exception {
+        final int threadPriority =
+                configuration.getInteger(MetricOptions.QUERY_SERVICE_THREAD_PRIORITY);
+
+        return rpcServiceBuilder
+                .withComponentName(METRICS_ACTOR_SYSTEM_NAME)
+                .withExecutorConfiguration(
+                        new RpcSystem.FixedThreadPoolExecutorConfiguration(1, 1, threadPriority))
+                .createAndStart();
+    }
+
+    private static void instantiateClassLoaderMetrics(MetricGroup metrics) {
+        final ClassLoadingMXBean mxBean = ManagementFactory.getClassLoadingMXBean();
+        metrics.<Long, Gauge<Long>>gauge("ClassesLoaded", mxBean::getTotalLoadedClassCount);
+        metrics.<Long, Gauge<Long>>gauge("ClassesUnloaded", mxBean::getUnloadedClassCount);
+    }
+
+    private static void instantiateGarbageCollectorMetrics(MetricGroup metrics) {
+        List<GarbageCollectorMXBean> garbageCollectors =
+                ManagementFactory.getGarbageCollectorMXBeans();
+
+        for (final GarbageCollectorMXBean garbageCollector : garbageCollectors) {
+            MetricGroup gcGroup = metrics.addGroup(garbageCollector.getName());
+
+            gcGroup.<Long, Gauge<Long>>gauge("Count", garbageCollector::getCollectionCount);
+            gcGroup.<Long, Gauge<Long>>gauge("Time", garbageCollector::getCollectionTime);
+        }
+    }
+
+    private static void instantiateMemoryMetrics(MetricGroup metrics) {
+        instantiateHeapMemoryMetrics(metrics.addGroup(METRIC_GROUP_HEAP_NAME));
+        instantiateNonHeapMemoryMetrics(metrics.addGroup(METRIC_GROUP_NONHEAP_NAME));
+        instantiateMetaspaceMemoryMetrics(metrics);
+
+        final MBeanServer con = ManagementFactory.getPlatformMBeanServer();
+
+        final String directBufferPoolName = "java.nio:type=BufferPool,name=direct";
+
+        try {
+            final ObjectName directObjectName = new ObjectName(directBufferPoolName);
+
+            MetricGroup direct = metrics.addGroup("Direct");
+
+            direct.<Long, Gauge<Long>>gauge(
+                    "Count", new AttributeGauge<>(con, directObjectName, "Count", -1L));
+            direct.<Long, Gauge<Long>>gauge(
+                    "MemoryUsed", new AttributeGauge<>(con, directObjectName, "MemoryUsed", -1L));
+            direct.<Long, Gauge<Long>>gauge(
+                    "TotalCapacity",
+                    new AttributeGauge<>(con, directObjectName, "TotalCapacity", -1L));
+        } catch (MalformedObjectNameException e) {
+            LOG.warn("Could not create object name {}.", directBufferPoolName, e);
+        }
+
+        final String mappedBufferPoolName = "java.nio:type=BufferPool,name=mapped";
+
+        try {
+            final ObjectName mappedObjectName = new ObjectName(mappedBufferPoolName);
+
+            MetricGroup mapped = metrics.addGroup("Mapped");
+
+            mapped.<Long, Gauge<Long>>gauge(
+                    "Count", new AttributeGauge<>(con, mappedObjectName, "Count", -1L));
+            mapped.<Long, Gauge<Long>>gauge(
+                    "MemoryUsed", new AttributeGauge<>(con, mappedObjectName, "MemoryUsed", -1L));
+            mapped.<Long, Gauge<Long>>gauge(
+                    "TotalCapacity",
+                    new AttributeGauge<>(con, mappedObjectName, "TotalCapacity", -1L));
+        } catch (MalformedObjectNameException e) {
+            LOG.warn("Could not create object name {}.", mappedBufferPoolName, e);
+        }
+    }
+
+    @VisibleForTesting
+    static void instantiateHeapMemoryMetrics(final MetricGroup metricGroup) {
+        instantiateMemoryUsageMetrics(
+                metricGroup, () -> ManagementFactory.getMemoryMXBean().getHeapMemoryUsage());
+    }
+
+    @VisibleForTesting
+    static void instantiateNonHeapMemoryMetrics(final MetricGroup metricGroup) {
+        instantiateMemoryUsageMetrics(
+                metricGroup, () -> ManagementFactory.getMemoryMXBean().getNonHeapMemoryUsage());
+    }
+
+    @VisibleForTesting
+    static void instantiateMetaspaceMemoryMetrics(final MetricGroup parentMetricGroup) {
+        final List<MemoryPoolMXBean> memoryPoolMXBeans =
+                ManagementFactory.getMemoryPoolMXBeans().stream()
+                        .filter(bean -> "Metaspace".equals(bean.getName()))
+                        .collect(Collectors.toList());
+
+        if (memoryPoolMXBeans.isEmpty()) {
+            LOG.info(
+                    "The '{}' metrics will not be exposed because no pool named 'Metaspace' could be found. This might be caused by the used JVM.",
+                    METRIC_GROUP_METASPACE_NAME);
+            return;
+        }
+
+        final MetricGroup metricGroup = parentMetricGroup.addGroup(METRIC_GROUP_METASPACE_NAME);
+        final Iterator<MemoryPoolMXBean> beanIterator = memoryPoolMXBeans.iterator();
+
+        final MemoryPoolMXBean firstPool = beanIterator.next();
+        instantiateMemoryUsageMetrics(metricGroup, firstPool::getUsage);
+
+        if (beanIterator.hasNext()) {
+            LOG.debug(
+                    "More than one memory pool named 'Metaspace' is present. Only the first pool was used for instantiating the '{}' metrics.",
+                    METRIC_GROUP_METASPACE_NAME);
+        }
+    }
+
+    private static void instantiateMemoryUsageMetrics(
+            final MetricGroup metricGroup, final Supplier<MemoryUsage> memoryUsageSupplier) {
+        metricGroup.<Long, Gauge<Long>>gauge(
+                MetricNames.MEMORY_USED, () -> memoryUsageSupplier.get().getUsed());
+        metricGroup.<Long, Gauge<Long>>gauge(
+                MetricNames.MEMORY_COMMITTED, () -> memoryUsageSupplier.get().getCommitted());
+        metricGroup.<Long, Gauge<Long>>gauge(
+                MetricNames.MEMORY_MAX, () -> memoryUsageSupplier.get().getMax());
+    }
+
+    private static void instantiateThreadMetrics(MetricGroup metrics) {
+        final ThreadMXBean mxBean = ManagementFactory.getThreadMXBean();
+
+        metrics.<Integer, Gauge<Integer>>gauge("Count", mxBean::getThreadCount);
+    }
+
+    private static void instantiateCPUMetrics(MetricGroup metrics) {
+        try {
+            final com.sun.management.OperatingSystemMXBean mxBean =
+                    (com.sun.management.OperatingSystemMXBean)
+                            ManagementFactory.getOperatingSystemMXBean();
+
+            metrics.<Double, Gauge<Double>>gauge("Load", mxBean::getProcessCpuLoad);
+            metrics.<Long, Gauge<Long>>gauge("Time", mxBean::getProcessCpuTime);
+        } catch (Exception e) {
+            LOG.warn(
+                    "Cannot access com.sun.management.OperatingSystemMXBean.getProcessCpuLoad()"
+                            + " - CPU load metrics will not be available.",
+                    e);
+        }
+    }
+
+    private static final class AttributeGauge<T> implements Gauge<T> {
+        private final MBeanServer server;
+        private final ObjectName objectName;
+        private final String attributeName;
+        private final T errorValue;
+
+        private AttributeGauge(
+                MBeanServer server, ObjectName objectName, String attributeName, T errorValue) {
+            this.server = Preconditions.checkNotNull(server);
+            this.objectName = Preconditions.checkNotNull(objectName);
+            this.attributeName = Preconditions.checkNotNull(attributeName);
+            this.errorValue = errorValue;
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public T getValue() {
+            try {
+                return (T) server.getAttribute(objectName, attributeName);
+            } catch (MBeanException
+                    | AttributeNotFoundException
+                    | InstanceNotFoundException
+                    | ReflectionException e) {
+                LOG.warn("Could not read attribute {}.", attributeName, e);
+                return errorValue;
+            }
+        }
+    }
 }

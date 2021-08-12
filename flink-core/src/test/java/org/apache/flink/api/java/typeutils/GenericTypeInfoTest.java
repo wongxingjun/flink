@@ -18,30 +18,19 @@
 
 package org.apache.flink.api.java.typeutils;
 
-import org.apache.flink.util.TestLogger;
-import org.junit.Test;
-import static org.junit.Assert.*;
+import org.apache.flink.api.common.typeutils.TypeInformationTestBase;
 
-public class GenericTypeInfoTest extends TestLogger {
+/** Test for {@link GenericTypeInfo}. */
+public class GenericTypeInfoTest extends TypeInformationTestBase<GenericTypeInfo<?>> {
 
-	static class TestClass {}
-	static class AlternativeClass {}
+    @Override
+    protected GenericTypeInfo<?>[] getTestData() {
+        return new GenericTypeInfo<?>[] {
+            new GenericTypeInfo<>(TestClass.class), new GenericTypeInfo<>(AlternativeClass.class)
+        };
+    }
 
-	@Test
-	public void testGenericTypeInfoEquality() {
-		GenericTypeInfo<TestClass> tpeInfo1 = new GenericTypeInfo<>(TestClass.class);
-		GenericTypeInfo<TestClass> tpeInfo2 = new GenericTypeInfo<>(TestClass.class);
+    static class TestClass {}
 
-		assertEquals(tpeInfo1, tpeInfo2);
-		assertEquals(tpeInfo1.hashCode(), tpeInfo2.hashCode());
-	}
-
-	@Test
-	public void testGenericTypeInfoInequality() {
-		GenericTypeInfo<TestClass> tpeInfo1 = new GenericTypeInfo<>(TestClass.class);
-		GenericTypeInfo<AlternativeClass> tpeInfo2 = new GenericTypeInfo<>(AlternativeClass.class);
-
-		assertNotEquals(tpeInfo1, tpeInfo2);
-	}
-
+    static class AlternativeClass {}
 }

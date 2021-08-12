@@ -25,12 +25,12 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.3-SNAPSHOT</version>
+		<version>1.14-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
-	<artifactId>flink-runtime_2.10</artifactId>
-	<name>flink-runtime</name>
+	<artifactId>flink-runtime</artifactId>
+	<name>Flink : Runtime</name>
 
 	<packaging>jar</packaging>
 
@@ -46,14 +46,79 @@ under the License.
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-rpc-core</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-rpc-akka-loader</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-java</artifactId>
 			<version>${project.version}</version>
 		</dependency>
-		
+
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-shaded-hadoop2</artifactId>
+			<artifactId>flink-queryable-state-client-java</artifactId>
 			<version>${project.version}</version>
+		</dependency>
+
+		<!-- The Hadoop FS support has only an optional dependency on Hadoop and
+			gracefully handles absence of Hadoop classes -->
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-hadoop-fs</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
+		<!-- optional dependency on Hadoop, so that Hadoop classes are not always pulled in -->
+
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-common</artifactId>
+			<optional>true</optional>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-hdfs</artifactId>
+			<optional>true</optional>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.hadoop</groupId>
+			<artifactId>hadoop-mapreduce-client-core</artifactId>
+			<optional>true</optional>
+		</dependency>
+
+		<dependency>
+			<groupId>commons-io</groupId>
+			<artifactId>commons-io</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-netty</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-guava</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-jackson</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-zookeeper-3</artifactId>
 		</dependency>
 
 		<dependency>
@@ -66,12 +131,6 @@ under the License.
 			<artifactId>commons-cli</artifactId>
 		</dependency>
 
-		<dependency>
-			<groupId>io.netty</groupId>
-			<artifactId>netty-all</artifactId>
-			<!-- Version is set in root POM -->
-		</dependency>
-
 		<!-- See: https://groups.google.com/forum/#!msg/netty/-aAPDBNUnDg/SkGOXL2Ma2QJ -->
 		<dependency>
 			<groupId>org.javassist</groupId>
@@ -80,107 +139,42 @@ under the License.
 		</dependency>
 
 		<dependency>
-			<groupId>com.google.guava</groupId>
-			<artifactId>guava</artifactId>
-			<version>${guava.version}</version>
+			<groupId>org.xerial.snappy</groupId>
+			<artifactId>snappy-java</artifactId>
 		</dependency>
 
+		<!-- Lz4 compression library -->
 		<dependency>
-			<groupId>org.ow2.asm</groupId>
-			<artifactId>asm-all</artifactId>
-			<version>${asm.version}</version>
-		</dependency>
-		
-		<dependency>
-			<groupId>org.scala-lang</groupId>
-			<artifactId>scala-library</artifactId>
+			<groupId>org.lz4</groupId>
+			<artifactId>lz4-java</artifactId>
 		</dependency>
 
-		<dependency>
-			<groupId>com.data-artisans</groupId>
-			<artifactId>flakka-actor_${scala.binary.version}</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>com.data-artisans</groupId>
-			<artifactId>flakka-remote_${scala.binary.version}</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>com.data-artisans</groupId>
-			<artifactId>flakka-slf4j_${scala.binary.version}</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>org.clapper</groupId>
-			<artifactId>grizzled-slf4j_${scala.binary.version}</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>com.github.scopt</groupId>
-			<artifactId>scopt_${scala.binary.version}</artifactId>
-			<exclusions>
-				<exclusion>
-					<groupId>org.scala-lang</groupId>
-					<artifactId>scala-library</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-
-		<dependency>
-			<groupId>com.fasterxml.jackson.core</groupId>
-			<artifactId>jackson-core</artifactId>
-			<version>${jackson.version}</version>
-		</dependency>
-
-		<dependency>
-			<groupId>com.fasterxml.jackson.core</groupId>
-			<artifactId>jackson-databind</artifactId>
-			<version>${jackson.version}</version>
-		</dependency>
-
-		<dependency>
-			<groupId>org.apache.zookeeper</groupId>
-			<artifactId>zookeeper</artifactId>
-		</dependency>
-
-		<!--
-		The KryoSerializer dynamically loads Kryo instances via Chill and requires that Chill
-		is in the classpath. Because we do not want to have transitive Scala dependencies
-		in Flink's API modules (such as flink-java) due to Chill, Chill is added to flink-runtime
-		to ensure that Chill is always present in the classpath.
-		-->
-		<dependency>
-			<groupId>com.twitter</groupId>
-			<artifactId>chill_${scala.binary.version}</artifactId>
-			<version>${chill.version}</version>
-			<exclusions>
-				<!-- Exclude Kryo dependency from Chill -->
-				<exclusion>
-					<groupId>com.esotericsoftware</groupId>
-					<artifactId>kryo-shaded</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
-
-		<!-- Include our own version of Kryo -->
-		<dependency>
-			<groupId>com.esotericsoftware.kryo</groupId>
-			<artifactId>kryo</artifactId>
-		</dependency>
-
-		<dependency>
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-shaded-curator-recipes</artifactId>
-			<version>${project.version}</version>
-		</dependency>
-
-		<!-- core dependencies -->
+		<!-- test dependencies -->
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-test-utils-junit</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-metrics-core</artifactId>
 			<version>${project.version}</version>
+			<scope>test</scope>
+			<type>test-jar</type>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-core</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+			<type>test-jar</type>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-netty-tcnative-dynamic</artifactId>
 			<scope>test</scope>
 		</dependency>
 
@@ -192,170 +186,91 @@ under the License.
 		</dependency>
 
 		<dependency>
-			<groupId>org.scalatest</groupId>
-			<artifactId>scalatest_${scala.binary.version}</artifactId>
+			<groupId>com.squareup.okhttp3</groupId>
+			<artifactId>okhttp</artifactId>
+			<version>3.7.0</version>
 			<scope>test</scope>
 		</dependency>
 
+		<!-- Used only for additional logging. Optional because of unclear EPL 1.0 license compatibility. -->
 		<dependency>
-			<groupId>com.data-artisans</groupId>
-			<artifactId>flakka-testkit_${scala.binary.version}</artifactId>
+			<groupId>com.github.oshi</groupId>
+			<artifactId>oshi-core</artifactId>
+			<optional>true</optional>
 		</dependency>
-
-		<dependency>
-			<groupId>org.reflections</groupId>
-			<artifactId>reflections</artifactId>
-		</dependency>
-
 	</dependencies>
 
 	<build>
-		<plugins>
-			<!-- Scala Compiler -->
-			<plugin>
-				<groupId>net.alchim31.maven</groupId>
-				<artifactId>scala-maven-plugin</artifactId>
-				<version>3.1.4</version>
-				<executions>
-					<!-- Run scala compiler in the process-resources phase, so that dependencies on
-						scala classes can be resolved later in the (Java) compile phase -->
-					<execution>
-						<id>scala-compile-first</id>
-						<phase>process-resources</phase>
-						<goals>
-							<goal>compile</goal>
-						</goals>
-					</execution>
 
-					<!-- Run scala compiler in the process-test-resources phase, so that dependencies on
-						 scala classes can be resolved later in the (Java) test-compile phase -->
+		<resources>
+			<resource>
+				<directory>src/main/resources</directory>
+				<filtering>false</filtering>
+			</resource>
+			<resource>
+				<directory>src/main/resources-filtered</directory>
+				<filtering>true</filtering>
+			</resource>
+		</resources>
+
+		<plugins>
+			<plugin>
+				<!-- Description: https://github.com/git-commit-id/git-commit-id-maven-plugin
+					Used to show the git ref when starting the jobManager. -->
+				<groupId>pl.project13.maven</groupId>
+				<artifactId>git-commit-id-plugin</artifactId>
+				<version>4.0.2</version>
+				<executions>
 					<execution>
-						<id>scala-test-compile</id>
-						<phase>process-test-resources</phase>
+						<id>get-the-git-infos</id>
+						<phase>validate</phase>
 						<goals>
-							<goal>testCompile</goal>
+							<goal>revision</goal>
 						</goals>
 					</execution>
 				</executions>
 				<configuration>
-					<jvmArgs>
-						<jvmArg>-Xms128m</jvmArg>
-						<jvmArg>-Xmx512m</jvmArg>
-					</jvmArgs>
+					<skipPoms>false</skipPoms>
+					<failOnNoGitDirectory>false</failOnNoGitDirectory>
+					<failOnUnableToExtractRepoInfo>false</failOnUnableToExtractRepoInfo>
+					<gitDescribe>
+						<!-- Don't generate the describe property -->
+						<!-- It is useless due to the way Flink does branches and tags -->
+						<skip>true</skip>
+					</gitDescribe>
 				</configuration>
 			</plugin>
 
-			<!-- Eclipse Integration -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-eclipse-plugin</artifactId>
-				<version>2.8</version>
-				<configuration>
-					<downloadSources>true</downloadSources>
-					<projectnatures>
-						<projectnature>org.scala-ide.sdt.core.scalanature</projectnature>
-						<projectnature>org.eclipse.jdt.core.javanature</projectnature>
-					</projectnatures>
-					<buildcommands>
-						<buildcommand>org.scala-ide.sdt.core.scalabuilder</buildcommand>
-					</buildcommands>
-					<classpathContainers>
-						<classpathContainer>org.scala-ide.sdt.launching.SCALA_CONTAINER</classpathContainer>
-						<classpathContainer>org.eclipse.jdt.launching.JRE_CONTAINER</classpathContainer>
-					</classpathContainers>
-					<excludes>
-						<exclude>org.scala-lang:scala-library</exclude>
-						<exclude>org.scala-lang:scala-compiler</exclude>
-					</excludes>
-					<sourceIncludes>
-						<sourceInclude>**/*.scala</sourceInclude>
-						<sourceInclude>**/*.java</sourceInclude>
-					</sourceIncludes>
-				</configuration>
-			</plugin>
-
-			<!-- Adding scala source directories to build path -->
-			<plugin>
-				<groupId>org.codehaus.mojo</groupId>
-				<artifactId>build-helper-maven-plugin</artifactId>
-				<version>1.7</version>
+				<artifactId>maven-enforcer-plugin</artifactId>
 				<executions>
-					<!-- Add src/main/scala to eclipse build path -->
 					<execution>
-						<id>add-source</id>
-						<phase>generate-sources</phase>
+						<id>dependency-convergence</id>
 						<goals>
-							<goal>add-source</goal>
+							<goal>enforce</goal>
 						</goals>
 						<configuration>
-							<sources>
-								<source>src/main/scala</source>
-							</sources>
-						</configuration>
-					</execution>
-					<!-- Add src/test/scala to eclipse build path -->
-					<execution>
-						<id>add-test-source</id>
-						<phase>generate-test-sources</phase>
-						<goals>
-							<goal>add-test-source</goal>
-						</goals>
-						<configuration>
-							<sources>
-								<source>src/test/scala</source>
-							</sources>
+							<skip>true</skip>
 						</configuration>
 					</execution>
 				</executions>
 			</plugin>
-
-			<!-- Scala Code Style, most of the configuration done via plugin management -->
 			<plugin>
-				<groupId>org.scalastyle</groupId>
-				<artifactId>scalastyle-maven-plugin</artifactId>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-checkstyle-plugin</artifactId>
+
 				<configuration>
-					<configLocation>${project.basedir}/../tools/maven/scalastyle-config.xml</configLocation>
+					<suppressionsLocation combine.self="override">/tools/maven/suppressions-runtime.xml</suppressionsLocation>
 				</configuration>
 			</plugin>
 
+			<!-- to increase build stability here, do not reuse unit test JVM forks -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-surefire-plugin</artifactId>
 				<configuration>
 					<reuseForks>false</reuseForks>
-					<!-- <workingDirectory>${project.build.testOutputDirectory}</workingDirectory> -->
-					<excludes>
-						<exclude>**/TestData.java</exclude>
-						<exclude>**/TestInstanceListener.java</exclude>
-					</excludes>
-					<systemPropertyVariables>
-						<log.level>WARN</log.level>
-					</systemPropertyVariables>
-				</configuration>
-			</plugin>
-			<plugin>
-				<!-- Description: https://github.com/ktoso/maven-git-commit-id-plugin
-					Used to show the git ref when starting the jobManager. -->
-				<groupId>pl.project13.maven</groupId>
-				<artifactId>git-commit-id-plugin</artifactId>
-				<version>2.1.5</version>
-				<executions>
-					<execution>
-						<goals>
-							<goal>revision</goal>
-						 </goals>
-					</execution>
-				</executions>
-				<configuration>
-					<dotGitDirectory>${project.basedir}/../.git</dotGitDirectory>
-					<generateGitPropertiesFile>true</generateGitPropertiesFile>
-					<skipPoms>false</skipPoms>
-					<failOnNoGitDirectory>false</failOnNoGitDirectory>
-					<generateGitPropertiesFilename>src/main/resources/.version.properties</generateGitPropertiesFilename>
-					<gitDescribe>
-						<!-- don't generate the describe property -->
-						<skip>true</skip>
-					</gitDescribe>
 				</configuration>
 			</plugin>
 			<!-- Add version to jar http://stackoverflow.com/questions/2712970/how-to-get-maven-artifact-version-at-runtime
@@ -383,27 +298,26 @@ under the License.
 
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-shade-plugin</artifactId>
+				<artifactId>maven-dependency-plugin</artifactId>
 				<executions>
 					<execution>
-						<id>shade-flink</id>
-						<phase>package</phase>
+						<id>copy-rpc-akka-jars</id>
+						<phase>process-resources</phase>
 						<goals>
-							<goal>shade</goal>
+							<goal>copy</goal>
 						</goals>
 						<configuration>
-						
-							<artifactSet>
-								<includes combine.children="append">
-									<include>org.apache.flink:flink-shaded-curator-recipes</include>
-								</includes>
-							</artifactSet>
-							<relocations combine.children="append">
-								<relocation>
-									<pattern>org.apache.curator</pattern>
-									<shadedPattern>org.apache.flink.shaded.org.apache.curator</shadedPattern>
-								</relocation>
-							</relocations>
+							<artifactItems>
+								<artifactItem>
+									<groupId>org.apache.flink</groupId>
+									<artifactId>flink-rpc-akka</artifactId>
+									<version>${project.version}</version>
+									<type>jar</type>
+									<overWrite>true</overWrite>
+									<destFileName>flink-rpc-akka.jar</destFileName>
+								</artifactItem>
+							</artifactItems>
+							<outputDirectory>${project.build.directory}/classes</outputDirectory>
 						</configuration>
 					</execution>
 				</executions>

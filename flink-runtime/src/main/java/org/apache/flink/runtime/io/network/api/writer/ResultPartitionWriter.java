@@ -19,86 +19,109 @@
 package org.apache.flink.runtime.io.network.api.writer;
 
 import org.apache.flink.runtime.event.AbstractEvent;
-import org.apache.flink.runtime.event.TaskEvent;
-import org.apache.flink.runtime.io.network.api.EndOfSuperstepEvent;
-import org.apache.flink.runtime.io.network.api.TaskEventHandler;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
-import org.apache.flink.runtime.io.network.buffer.Buffer;
-import org.apache.flink.runtime.io.network.buffer.BufferProvider;
-import org.apache.flink.runtime.io.network.partition.ResultPartition;
+import org.apache.flink.runtime.io.AvailabilityProvider;
+import org.apache.flink.runtime.io.network.partition.BufferAvailabilityListener;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
-import org.apache.flink.runtime.util.event.EventListener;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
+import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.concurrent.CompletableFuture;
 
 /**
- * A buffer-oriented runtime result writer.
- * <p>
- * The {@link ResultPartitionWriter} is the runtime API for producing results. It
- * supports two kinds of data to be sent: buffers and events.
+ * A record-oriented runtime result writer API for producing results.
+ *
+ * <p>If {@link ResultPartitionWriter#close()} is called before {@link
+ * ResultPartitionWriter#fail(Throwable)} or {@link ResultPartitionWriter#finish()}, it abruptly
+ * triggers failure and cancellation of production. In this case {@link
+ * ResultPartitionWriter#fail(Throwable)} still needs to be called afterwards to fully release all
+ * resources associated the the partition and propagate failure cause to the consumer if possible.
  */
-public class ResultPartitionWriter implements EventListener<TaskEvent> {
+public interface ResultPartitionWriter extends AutoCloseable, AvailabilityProvider {
 
-	private final ResultPartition partition;
+    /** Setup partition, potentially heavy-weight, blocking operation comparing to just creation. */
+    void setup() throws IOException;
 
-	private final TaskEventHandler taskEventHandler = new TaskEventHandler();
+    ResultPartitionID getPartitionId();
 
-	public ResultPartitionWriter(ResultPartition partition) {
-		this.partition = partition;
-	}
+    int getNumberOfSubpartitions();
 
-	// ------------------------------------------------------------------------
-	// Attributes
-	// ------------------------------------------------------------------------
+    int getNumTargetKeyGroups();
 
-	public ResultPartitionID getPartitionId() {
-		return partition.getPartitionId();
-	}
+    /** Writes the given serialized record to the target subpartition. */
+    void emitRecord(ByteBuffer record, int targetSubpartition) throws IOException;
 
-	public BufferProvider getBufferProvider() {
-		return partition.getBufferProvider();
-	}
+    /**
+     * Writes the given serialized record to all subpartitions. One can also achieve the same effect
+     * by emitting the same record to all subpartitions one by one, however, this method can have
+     * better performance for the underlying implementation can do some optimizations, for example
+     * coping the given serialized record only once to a shared channel which can be consumed by all
+     * subpartitions.
+     */
+    void broadcastRecord(ByteBuffer record) throws IOException;
 
-	public int getNumberOfOutputChannels() {
-		return partition.getNumberOfSubpartitions();
-	}
+    /** Writes the given {@link AbstractEvent} to all channels. */
+    void broadcastEvent(AbstractEvent event, boolean isPriorityEvent) throws IOException;
 
-	// ------------------------------------------------------------------------
-	// Data processing
-	// ------------------------------------------------------------------------
+    /**
+     * Notifies the downstream tasks that this {@code ResultPartitionWriter} have emitted all the
+     * user records.
+     */
+    void notifyEndOfData() throws IOException;
 
-	public void writeBuffer(Buffer buffer, int targetChannel) throws IOException {
-		partition.add(buffer, targetChannel);
-	}
+    /**
+     * Gets the future indicating whether all the records has been processed by the downstream
+     * tasks.
+     */
+    CompletableFuture<Void> getAllDataProcessedFuture();
 
-	public void writeEvent(AbstractEvent event, int targetChannel) throws IOException {
-		partition.add(EventSerializer.toBuffer(event), targetChannel);
-	}
+    /** Sets the metric group for the {@link ResultPartitionWriter}. */
+    void setMetricGroup(TaskIOMetricGroup metrics);
 
-	public void writeEventToAllChannels(AbstractEvent event) throws IOException {
-		for (int i = 0; i < partition.getNumberOfSubpartitions(); i++) {
-			Buffer buffer = EventSerializer.toBuffer(event);
-			partition.add(buffer, i);
-		}
-	}
+    /** Returns a reader for the subpartition with the given index. */
+    ResultSubpartitionView createSubpartitionView(
+            int index, BufferAvailabilityListener availabilityListener) throws IOException;
 
-	public void writeEndOfSuperstep() throws IOException {
-		for (int i = 0; i < partition.getNumberOfSubpartitions(); i++) {
-			Buffer buffer = EventSerializer.toBuffer(EndOfSuperstepEvent.INSTANCE);
-			partition.add(buffer, i);
-		}
-	}
+    /** Manually trigger the consumption of data from all subpartitions. */
+    void flushAll();
 
-	// ------------------------------------------------------------------------
-	// Event handling
-	// ------------------------------------------------------------------------
+    /** Manually trigger the consumption of data from the given subpartitions. */
+    void flush(int subpartitionIndex);
 
-	public void subscribeToEvent(EventListener<TaskEvent> eventListener, Class<? extends TaskEvent> eventType) {
-		taskEventHandler.subscribe(eventListener, eventType);
-	}
+    /**
+     * Fail the production of the partition.
+     *
+     * <p>This method propagates non-{@code null} failure causes to consumers on a best-effort
+     * basis. This call also leads to the release of all resources associated with the partition.
+     * Closing of the partition is still needed afterwards if it has not been done before.
+     *
+     * @param throwable failure cause
+     */
+    void fail(@Nullable Throwable throwable);
 
-	@Override
-	public void onEvent(TaskEvent event) {
-		taskEventHandler.publish(event);
-	}
+    /**
+     * Successfully finish the production of the partition.
+     *
+     * <p>Closing of partition is still needed afterwards.
+     */
+    void finish() throws IOException;
+
+    boolean isFinished();
+
+    /**
+     * Releases the partition writer which releases the produced data and no reader can consume the
+     * partition any more.
+     */
+    void release(Throwable cause);
+
+    boolean isReleased();
+
+    /**
+     * Closes the partition writer which releases the allocated resource, for example the buffer
+     * pool.
+     */
+    void close() throws Exception;
 }

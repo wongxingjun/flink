@@ -18,79 +18,85 @@
 
 package org.apache.flink.runtime.io.network.util;
 
-import org.apache.flink.core.memory.HeapMemorySegment;
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferRecycler;
-import org.apache.flink.runtime.testutils.DiscardingRecycler;
+import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
+import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 
-import java.util.concurrent.atomic.AtomicInteger;
+import javax.annotation.concurrent.ThreadSafe;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
+@ThreadSafe
 public class TestBufferFactory {
 
-	public static final int BUFFER_SIZE = 32 * 1024;
+    public static final int BUFFER_SIZE = 32 * 1024;
 
-	private static final BufferRecycler RECYCLER = new DiscardingRecycler();
+    private static final BufferRecycler RECYCLER = FreeingBufferRecycler.INSTANCE;
 
-	private static final Buffer MOCK_BUFFER = createBuffer();
+    private final int bufferSize;
 
-	private final int bufferSize;
+    private final BufferRecycler bufferRecycler;
 
-	private final BufferRecycler bufferRecycler;
+    private final int poolSize;
 
-	private AtomicInteger numberOfCreatedBuffers = new AtomicInteger();
+    private int numberOfCreatedBuffers = 0;
 
-	public TestBufferFactory() {
-		this(BUFFER_SIZE, RECYCLER);
-	}
+    public TestBufferFactory(int poolSize, int bufferSize, BufferRecycler bufferRecycler) {
+        checkArgument(bufferSize > 0);
+        this.poolSize = poolSize;
+        this.bufferSize = bufferSize;
+        this.bufferRecycler = checkNotNull(bufferRecycler);
+    }
 
-	public TestBufferFactory(int bufferSize) {
-		this(bufferSize, RECYCLER);
-	}
+    public synchronized MemorySegment createMemorySegment() {
+        if (numberOfCreatedBuffers >= poolSize) {
+            return null;
+        }
 
-	public TestBufferFactory(int bufferSize, BufferRecycler bufferRecycler) {
-		checkArgument(bufferSize > 0);
-		this.bufferSize = bufferSize;
-		this.bufferRecycler = checkNotNull(bufferRecycler);
-	}
+        numberOfCreatedBuffers++;
+        return MemorySegmentFactory.allocateUnpooledSegment(bufferSize);
+    }
 
-	public Buffer create() {
-		numberOfCreatedBuffers.incrementAndGet();
+    public synchronized Buffer create() {
+        MemorySegment memorySegment = createMemorySegment();
+        return memorySegment == null ? null : new NetworkBuffer(memorySegment, bufferRecycler);
+    }
 
-		return new Buffer(MemorySegmentFactory.allocateUnpooledSegment(bufferSize), bufferRecycler);
-	}
+    public synchronized int getNumberOfCreatedBuffers() {
+        return numberOfCreatedBuffers;
+    }
 
-	public Buffer createFrom(MemorySegment segment) {
-		return new Buffer(segment, bufferRecycler);
-	}
+    // ------------------------------------------------------------------------
+    // Static test helpers
+    // ------------------------------------------------------------------------
 
-	public int getNumberOfCreatedBuffers() {
-		return numberOfCreatedBuffers.get();
-	}
+    /**
+     * Creates a (network) buffer with default size, i.e. {@link #BUFFER_SIZE}, and unspecified data
+     * of the given size.
+     *
+     * @param dataSize size of the data in the buffer, i.e. the new writer index
+     * @return a new buffer instance
+     */
+    public static Buffer createBuffer(int dataSize) {
+        return createBuffer(BUFFER_SIZE, dataSize);
+    }
 
-	public int getBufferSize() {
-		return bufferSize;
-	}
-
-	// ------------------------------------------------------------------------
-	// Static test helpers
-	// ------------------------------------------------------------------------
-
-	public static Buffer createBuffer() {
-		return createBuffer(BUFFER_SIZE);
-	}
-
-	public static Buffer createBuffer(int bufferSize) {
-		checkArgument(bufferSize > 0);
-
-		return new Buffer(MemorySegmentFactory.allocateUnpooledSegment(bufferSize), RECYCLER);
-	}
-
-	public static Buffer getMockBuffer() {
-		return MOCK_BUFFER;
-	}
+    /**
+     * Creates a (network) buffer with unspecified data of the given size.
+     *
+     * @param bufferSize size of the buffer
+     * @param dataSize size of the data in the buffer, i.e. the new writer index
+     * @return a new buffer instance
+     */
+    public static Buffer createBuffer(int bufferSize, int dataSize) {
+        return new NetworkBuffer(
+                MemorySegmentFactory.allocateUnpooledSegment(bufferSize),
+                RECYCLER,
+                Buffer.DataType.DATA_BUFFER,
+                dataSize);
+    }
 }

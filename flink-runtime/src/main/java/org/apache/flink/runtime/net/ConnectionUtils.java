@@ -18,6 +18,13 @@
 
 package org.apache.flink.runtime.net;
 
+import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalException;
+import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalListener;
+import org.apache.flink.runtime.rpc.RpcSystemUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -25,470 +32,508 @@ import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.UnknownHostException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
-
-import org.apache.flink.runtime.akka.AkkaUtils;
-import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalException;
-import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalListener;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import scala.concurrent.duration.FiniteDuration;
-
 
 /**
  * Utilities to determine the network interface and address that should be used to bind the
  * TaskManager communication to.
+ *
+ * <p>Implementation note: This class uses {@code System.nanoTime()} to measure elapsed time,
+ * because that is not susceptible to clock changes.
  */
 public class ConnectionUtils {
-	
-	private static final Logger LOG = LoggerFactory.getLogger(ConnectionUtils.class);
 
-	private static final long MIN_SLEEP_TIME = 50;
-	private static final long MAX_SLEEP_TIME = 20000;
+    private static final Logger LOG = LoggerFactory.getLogger(ConnectionUtils.class);
 
-	/**
-	 * The states of address detection mechanism.
-	 * There is only a state transition if the current state failed to determine the address.
-	 */
-	private enum AddressDetectionState {
-		/** Connect from interface returned by InetAddress.getLocalHost() **/
-		LOCAL_HOST(200),
-		/** Detect own IP address based on the target IP address. Look for common prefix */
-		ADDRESS(50),
-		/** Try to connect on all Interfaces and all their addresses with a low timeout */
-		FAST_CONNECT(50),
-		/** Try to connect on all Interfaces and all their addresses with a long timeout */
-		SLOW_CONNECT(1000),
-		/** Choose any non-loopback address */
-		HEURISTIC(0);
+    private static final long MIN_SLEEP_TIME = 50;
+    private static final long MAX_SLEEP_TIME = 20000;
 
-		private final int timeout;
+    /**
+     * The states of address detection mechanism. There is only a state transition if the current
+     * state failed to determine the address.
+     */
+    private enum AddressDetectionState {
+        /** Connect from interface returned by InetAddress.getLocalHost(). * */
+        LOCAL_HOST(200),
+        /** Detect own IP address based on the target IP address. Look for common prefix */
+        ADDRESS(50),
+        /** Try to connect on all Interfaces and all their addresses with a low timeout. */
+        FAST_CONNECT(50),
+        /** Try to connect on all Interfaces and all their addresses with a long timeout. */
+        SLOW_CONNECT(1000),
+        /** Choose any non-loopback address. */
+        HEURISTIC(0);
 
-		AddressDetectionState(int timeout) {
-			this.timeout = timeout;
-		}
+        private final int timeout;
 
-		public int getTimeout() {
-			return timeout;
-		}
-	}
+        AddressDetectionState(int timeout) {
+            this.timeout = timeout;
+        }
 
+        public int getTimeout() {
+            return timeout;
+        }
+    }
 
-	/**
-	 * Finds the local network address from which this machine can connect to the target
-	 * address. This method tries to establish a proper network connection to the
-	 * given target, so it only succeeds if the target socket address actually accepts
-	 * connections. The method tries various strategies multiple times and uses an exponential
-	 * backoff timer between tries.
-	 * <p>
-	 * If no connection attempt was successful after the given maximum time, the method
-	 * will choose some address based on heuristics (excluding link-local and loopback addresses.)
-	 * <p>
-	 * This method will initially not log on info level (to not flood the log while the
-	 * backoff time is still very low). It will start logging after a certain time
-	 * has passes.
-	 *
-	 * @param targetAddress The address that the method tries to connect to.
-	 * @param maxWaitMillis The maximum time that this method tries to connect, before falling
-	 *                       back to the heuristics.
-	 * @param startLoggingAfter The time after which the method will log on INFO level.
-	 */
-	public static InetAddress findConnectingAddress(InetSocketAddress targetAddress,
-							long maxWaitMillis, long startLoggingAfter) throws IOException
-	{
-		if (targetAddress == null) {
-			throw new NullPointerException("targetAddress must not be null");
-		}
-		if (maxWaitMillis <= 0) {
-			throw new IllegalArgumentException("Max wait time must be positive");
-		}
+    /**
+     * Finds the local network address from which this machine can connect to the target address.
+     * This method tries to establish a proper network connection to the given target, so it only
+     * succeeds if the target socket address actually accepts connections. The method tries various
+     * strategies multiple times and uses an exponential backoff timer between tries.
+     *
+     * <p>If no connection attempt was successful after the given maximum time, the method will
+     * choose some address based on heuristics (excluding link-local and loopback addresses.)
+     *
+     * <p>This method will initially not log on info level (to not flood the log while the backoff
+     * time is still very low). It will start logging after a certain time has passes.
+     *
+     * @param targetAddress The address that the method tries to connect to.
+     * @param maxWaitMillis The maximum time that this method tries to connect, before falling back
+     *     to the heuristics.
+     * @param startLoggingAfter The time after which the method will log on INFO level.
+     */
+    public static InetAddress findConnectingAddress(
+            InetSocketAddress targetAddress, long maxWaitMillis, long startLoggingAfter)
+            throws IOException {
+        if (targetAddress == null) {
+            throw new NullPointerException("targetAddress must not be null");
+        }
+        if (maxWaitMillis <= 0) {
+            throw new IllegalArgumentException("Max wait time must be positive");
+        }
 
-		final long startTime = System.currentTimeMillis();
+        final long startTimeNanos = System.nanoTime();
 
-		long currentSleepTime = MIN_SLEEP_TIME;
-		long elapsedTime = 0;
+        long currentSleepTime = MIN_SLEEP_TIME;
+        long elapsedTimeMillis = 0;
 
-		final List<AddressDetectionState> strategies = Collections.unmodifiableList(
-			Arrays.asList(
-				AddressDetectionState.LOCAL_HOST,
-				AddressDetectionState.ADDRESS,
-				AddressDetectionState.FAST_CONNECT,
-				AddressDetectionState.SLOW_CONNECT));
+        final List<AddressDetectionState> strategies =
+                Collections.unmodifiableList(
+                        Arrays.asList(
+                                AddressDetectionState.LOCAL_HOST,
+                                AddressDetectionState.ADDRESS,
+                                AddressDetectionState.FAST_CONNECT,
+                                AddressDetectionState.SLOW_CONNECT));
 
-		// loop while there is time left
-		while (elapsedTime < maxWaitMillis) {
-			boolean logging = elapsedTime >= startLoggingAfter;
-			if (logging) {
-				LOG.info("Trying to connect to " + targetAddress);
-			}
+        // loop while there is time left
+        while (elapsedTimeMillis < maxWaitMillis) {
+            boolean logging = elapsedTimeMillis >= startLoggingAfter;
+            if (logging) {
+                LOG.info("Trying to connect to " + targetAddress);
+            }
 
-			// Try each strategy in order
-			for (AddressDetectionState strategy : strategies) {
-				InetAddress address = findAddressUsingStrategy(strategy, targetAddress, logging);
-				if (address != null) {
-					return address;
-				}
-			}
+            // Try each strategy in order
+            for (AddressDetectionState strategy : strategies) {
+                InetAddress address = findAddressUsingStrategy(strategy, targetAddress, logging);
+                if (address != null) {
+                    return address;
+                }
+            }
 
-			// we have made a pass with all strategies over all interfaces
-			// sleep for a while before we make the next pass
-			elapsedTime = System.currentTimeMillis() - startTime;
+            // we have made a pass with all strategies over all interfaces
+            // sleep for a while before we make the next pass
+            elapsedTimeMillis = (System.nanoTime() - startTimeNanos) / 1_000_000;
 
-			long toWait = Math.min(maxWaitMillis - elapsedTime, currentSleepTime);
-			if (toWait > 0) {
-				if (logging) {
-					LOG.info("Could not connect. Waiting for {} msecs before next attempt", toWait);
-				} else {
-					LOG.debug("Could not connect. Waiting for {} msecs before next attempt", toWait);
-				}
+            long toWait = Math.min(maxWaitMillis - elapsedTimeMillis, currentSleepTime);
+            if (toWait > 0) {
+                if (logging) {
+                    LOG.info("Could not connect. Waiting for {} msecs before next attempt", toWait);
+                } else {
+                    LOG.debug(
+                            "Could not connect. Waiting for {} msecs before next attempt", toWait);
+                }
 
-				try {
-					Thread.sleep(toWait);
-				}
-				catch (InterruptedException e) {
-					throw new IOException("Connection attempts have been interrupted.");
-				}
-			}
+                try {
+                    Thread.sleep(toWait);
+                } catch (InterruptedException e) {
+                    throw new IOException("Connection attempts have been interrupted.");
+                }
+            }
 
-			// increase the exponential backoff timer
-			currentSleepTime = Math.min(2 * currentSleepTime, MAX_SLEEP_TIME);
-		}
+            // increase the exponential backoff timer
+            currentSleepTime = Math.min(2 * currentSleepTime, MAX_SLEEP_TIME);
+        }
 
-		// our attempts timed out. use the heuristic fallback
-		LOG.warn("Could not connect to {}. Selecting a local address using heuristics.", targetAddress);
-		InetAddress heuristic = findAddressUsingStrategy(AddressDetectionState.HEURISTIC, targetAddress, true);
-		if (heuristic != null) {
-			return heuristic;
-		}
-		else {
-			LOG.warn("Could not find any IPv4 address that is not loopback or link-local. Using localhost address.");
-			return InetAddress.getLocalHost();
-		}
-	}
+        // our attempts timed out. use the heuristic fallback
+        LOG.warn(
+                "Could not connect to {}. Selecting a local address using heuristics.",
+                targetAddress);
+        InetAddress heuristic =
+                findAddressUsingStrategy(AddressDetectionState.HEURISTIC, targetAddress, true);
+        if (heuristic != null) {
+            return heuristic;
+        } else {
+            LOG.warn(
+                    "Could not find any IPv4 address that is not loopback or link-local. Using localhost address.");
+            return InetAddress.getLocalHost();
+        }
+    }
 
-	/**
-	 * This utility method tries to connect to the JobManager using the InetAddress returned by
-	 * InetAddress.getLocalHost(). The purpose of the utility is to have a final try connecting to
-	 * the target address using the LocalHost before using the address returned.
-	 * We do a second try because the JM might have been unavailable during the first check.
-	 *
-	 * @param preliminaryResult The address detected by the heuristic
-	 * @return either the preliminaryResult or the address returned by InetAddress.getLocalHost() (if
-	 * 			we are able to connect to targetAddress from there)
-	 */
-	private static InetAddress tryLocalHostBeforeReturning(
-				InetAddress preliminaryResult, SocketAddress targetAddress, boolean logging) throws IOException {
-		
-		InetAddress localhostName = InetAddress.getLocalHost();
-		
-		if (preliminaryResult.equals(localhostName)) {
-			// preliminary result is equal to the local host name 
-			return preliminaryResult;
-		}
-		else if (tryToConnect(localhostName, targetAddress, AddressDetectionState.SLOW_CONNECT.getTimeout(), logging)) {
-			// success, we were able to use local host to connect
-			LOG.debug("Preferring {} (InetAddress.getLocalHost()) for local bind point over previous candidate {}",
-					localhostName, preliminaryResult);
-			return localhostName;
-		}
-		else {
-			// we have to make the preliminary result the final result
-			return preliminaryResult;
-		}
-	}
+    /**
+     * This utility method tries to connect to the JobManager using the InetAddress returned by
+     * InetAddress.getLocalHost(). The purpose of the utility is to have a final try connecting to
+     * the target address using the LocalHost before using the address returned. We do a second try
+     * because the JM might have been unavailable during the first check.
+     *
+     * @param preliminaryResult The address detected by the heuristic
+     * @return either the preliminaryResult or the address returned by InetAddress.getLocalHost()
+     *     (if we are able to connect to targetAddress from there)
+     */
+    private static InetAddress tryLocalHostBeforeReturning(
+            InetAddress preliminaryResult, SocketAddress targetAddress, boolean logging)
+            throws IOException {
 
-	/**
-	 * Try to find a local address which allows as to connect to the targetAddress using the given
-	 * strategy
-	 *
-	 * @param strategy Depending on the strategy, the method will enumerate all interfaces, trying to connect
-	 *                 to the target address
-	 * @param targetAddress The address we try to connect to
-	 * @param logging Boolean indicating the logging verbosity
-	 * @return null if we could not find an address using this strategy, otherwise, the local address.
-	 * @throws IOException
-	 */
-	private static InetAddress findAddressUsingStrategy(AddressDetectionState strategy,
-														InetSocketAddress targetAddress,
-														boolean logging) throws IOException
-	{
-		// try LOCAL_HOST strategy independent of the network interfaces
-		if (strategy == AddressDetectionState.LOCAL_HOST) {
-			InetAddress localhostName;
-			try {
-				localhostName = InetAddress.getLocalHost();
-			} catch (UnknownHostException uhe) {
-				LOG.warn("Could not resolve local hostname to an IP address: {}", uhe.getMessage());
-				return null;
-			}
+        InetAddress localhostName = InetAddress.getLocalHost();
 
-			if (tryToConnect(localhostName, targetAddress, strategy.getTimeout(), logging)) {
-				LOG.debug("Using InetAddress.getLocalHost() immediately for the connecting address");
-				// Here, we are not calling tryLocalHostBeforeReturning() because it is the LOCAL_HOST strategy
-				return localhostName;
-			} else {
-				return null;
-			}
-		}
+        if (preliminaryResult.equals(localhostName)) {
+            // preliminary result is equal to the local host name
+            return preliminaryResult;
+        } else if (tryToConnect(
+                localhostName,
+                targetAddress,
+                AddressDetectionState.SLOW_CONNECT.getTimeout(),
+                logging)) {
+            // success, we were able to use local host to connect
+            LOG.debug(
+                    "Preferring {} (InetAddress.getLocalHost()) for local bind point over previous candidate {}",
+                    localhostName,
+                    preliminaryResult);
+            return localhostName;
+        } else {
+            // we have to make the preliminary result the final result
+            return preliminaryResult;
+        }
+    }
 
-		final InetAddress address = targetAddress.getAddress();
-		if (address == null) {
-			return null;
-		}
-		final byte[] targetAddressBytes = address.getAddress();
+    /**
+     * Try to find a local address which allows as to connect to the targetAddress using the given
+     * strategy.
+     *
+     * @param strategy Depending on the strategy, the method will enumerate all interfaces, trying
+     *     to connect to the target address
+     * @param targetAddress The address we try to connect to
+     * @param logging Boolean indicating the logging verbosity
+     * @return null if we could not find an address using this strategy, otherwise, the local
+     *     address.
+     * @throws IOException
+     */
+    private static InetAddress findAddressUsingStrategy(
+            AddressDetectionState strategy, InetSocketAddress targetAddress, boolean logging)
+            throws IOException {
+        // try LOCAL_HOST strategy independent of the network interfaces
+        if (strategy == AddressDetectionState.LOCAL_HOST) {
+            InetAddress localhostName;
+            try {
+                localhostName = InetAddress.getLocalHost();
+            } catch (UnknownHostException uhe) {
+                LOG.warn("Could not resolve local hostname to an IP address: {}", uhe.getMessage());
+                return null;
+            }
 
-		// for each network interface
-		Enumeration<NetworkInterface> e = NetworkInterface.getNetworkInterfaces();
-		while (e.hasMoreElements()) {
+            if (tryToConnect(localhostName, targetAddress, strategy.getTimeout(), logging)) {
+                LOG.debug(
+                        "Using InetAddress.getLocalHost() immediately for the connecting address");
+                // Here, we are not calling tryLocalHostBeforeReturning() because it is the
+                // LOCAL_HOST strategy
+                return localhostName;
+            } else {
+                return null;
+            }
+        }
 
-			NetworkInterface netInterface = e.nextElement();
+        final InetAddress address = targetAddress.getAddress();
+        if (address == null) {
+            return null;
+        }
+        final byte[] targetAddressBytes = address.getAddress();
 
-			// for each address of the network interface
-			Enumeration<InetAddress> ee = netInterface.getInetAddresses();
-			while (ee.hasMoreElements()) {
-				InetAddress interfaceAddress = ee.nextElement();
+        // for each network interface
+        Enumeration<NetworkInterface> e = NetworkInterface.getNetworkInterfaces();
+        while (e.hasMoreElements()) {
 
-				switch (strategy) {
-					case ADDRESS:
-						if (hasCommonPrefix(targetAddressBytes, interfaceAddress.getAddress())) {
-							LOG.debug("Target address {} and local address {} share prefix - trying to connect.",
-										targetAddress, interfaceAddress);
+            NetworkInterface netInterface = e.nextElement();
 
-							if (tryToConnect(interfaceAddress, targetAddress, strategy.getTimeout(), logging)) {
-								return tryLocalHostBeforeReturning(interfaceAddress, targetAddress, logging);
-							}
-						}
-						break;
+            // for each address of the network interface
+            Enumeration<InetAddress> ee = netInterface.getInetAddresses();
+            while (ee.hasMoreElements()) {
+                InetAddress interfaceAddress = ee.nextElement();
 
-					case FAST_CONNECT:
-					case SLOW_CONNECT:
-						LOG.debug("Trying to connect to {} from local address {} with timeout {}",
-								targetAddress, interfaceAddress, strategy.getTimeout());
+                switch (strategy) {
+                    case ADDRESS:
+                        if (hasCommonPrefix(targetAddressBytes, interfaceAddress.getAddress())) {
+                            LOG.debug(
+                                    "Target address {} and local address {} share prefix - trying to connect.",
+                                    targetAddress,
+                                    interfaceAddress);
 
-						if (tryToConnect(interfaceAddress, targetAddress, strategy.getTimeout(), logging)) {
-							return tryLocalHostBeforeReturning(interfaceAddress, targetAddress, logging);
-						}
-						break;
+                            if (tryToConnect(
+                                    interfaceAddress,
+                                    targetAddress,
+                                    strategy.getTimeout(),
+                                    logging)) {
+                                return tryLocalHostBeforeReturning(
+                                        interfaceAddress, targetAddress, logging);
+                            }
+                        }
+                        break;
 
-					case HEURISTIC:
-						if (LOG.isDebugEnabled()) {
-							LOG.debug("Choosing InetAddress.getLocalHost() address as a heuristic.");
-						}
+                    case FAST_CONNECT:
+                    case SLOW_CONNECT:
+                        LOG.debug(
+                                "Trying to connect to {} from local address {} with timeout {}",
+                                targetAddress,
+                                interfaceAddress,
+                                strategy.getTimeout());
 
-						return InetAddress.getLocalHost();
+                        if (tryToConnect(
+                                interfaceAddress, targetAddress, strategy.getTimeout(), logging)) {
+                            return tryLocalHostBeforeReturning(
+                                    interfaceAddress, targetAddress, logging);
+                        }
+                        break;
 
-					default:
-						throw new RuntimeException("Unsupported strategy: " + strategy);
-				}
-			} // end for each address of the interface
-		} // end for each interface
+                    case HEURISTIC:
+                        if (LOG.isDebugEnabled()) {
+                            LOG.debug(
+                                    "Choosing InetAddress.getLocalHost() address as a heuristic.");
+                        }
 
-		return null;
-	}
+                        return InetAddress.getLocalHost();
 
-	/**
-	 * Checks if two addresses have a common prefix (first 2 bytes).
-	 * Example: 192.168.???.???
-	 * Works also with ipv6, but accepts probably too many addresses
-	 */
-	private static boolean hasCommonPrefix(byte[] address, byte[] address2) {
-		return address[0] == address2[0] && address[1] == address2[1];
-	}
+                    default:
+                        throw new RuntimeException("Unsupported strategy: " + strategy);
+                }
+            } // end for each address of the interface
+        } // end for each interface
 
-	/**
-	 *
-	 * @param fromAddress The address to connect from.
-	 * @param toSocket The socket address to connect to.
-	 * @param timeout The timeout fr the connection.
-	 * @param logFailed Flag to indicate whether to log failed attempts on info level
-	 *                  (failed attempts are always logged on DEBUG level).
-	 * @return True, if the connection was successful, false otherwise.
-	 * @throws IOException Thrown if the socket cleanup fails.
-	 */
-	private static boolean tryToConnect(InetAddress fromAddress, SocketAddress toSocket,
-										int timeout, boolean logFailed) throws IOException
-	{
-		if (LOG.isDebugEnabled()) {
-			LOG.debug("Trying to connect to (" + toSocket + ") from local address " + fromAddress
-					+ " with timeout " + timeout);
-		}
-		try (Socket socket = new Socket()) {
-			// port 0 = let the OS choose the port
-			SocketAddress bindP = new InetSocketAddress(fromAddress, 0);
-			// machine
-			socket.bind(bindP);
-			socket.connect(toSocket, timeout);
-			return true;
-		}
-		catch (Exception ex) {
-			String message = "Failed to connect from address '" + fromAddress + "': " + ex.getMessage();
-			if (LOG.isDebugEnabled()) {
-				LOG.debug(message, ex);
-			} else if (logFailed) {
-				LOG.info(message);
-			}
-			return false;
-		}
-	}
+        return null;
+    }
 
-	public static class LeaderConnectingAddressListener implements LeaderRetrievalListener {
+    /**
+     * Checks if two addresses have a common prefix (first 2 bytes). Example: 192.168.???.??? Works
+     * also with ipv6, but accepts probably too many addresses
+     */
+    private static boolean hasCommonPrefix(byte[] address, byte[] address2) {
+        return address[0] == address2[0] && address[1] == address2[1];
+    }
 
-		private static final FiniteDuration defaultLoggingDelay = new FiniteDuration(400, TimeUnit.MILLISECONDS);
+    /**
+     * @param fromAddress The address to connect from.
+     * @param toSocket The socket address to connect to.
+     * @param timeout The timeout fr the connection.
+     * @param logFailed Flag to indicate whether to log failed attempts on info level (failed
+     *     attempts are always logged on DEBUG level).
+     * @return True, if the connection was successful, false otherwise.
+     * @throws IOException Thrown if the socket cleanup fails.
+     */
+    private static boolean tryToConnect(
+            InetAddress fromAddress, SocketAddress toSocket, int timeout, boolean logFailed)
+            throws IOException {
+        String detailedMessage =
+                String.format(
+                        "connect to [%s] from local address [%s] with timeout [%s]",
+                        toSocket, fromAddress, timeout);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("Trying to " + detailedMessage);
+        }
+        try (Socket socket = new Socket()) {
+            // port 0 = let the OS choose the port
+            SocketAddress bindP = new InetSocketAddress(fromAddress, 0);
+            // machine
+            socket.bind(bindP);
+            socket.connect(toSocket, timeout);
+            return true;
+        } catch (Exception ex) {
+            String message = "Failed to " + detailedMessage + " due to: " + ex.getMessage();
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(message, ex);
+            } else if (logFailed) {
+                LOG.info(message);
+            }
+            return false;
+        }
+    }
 
-		private enum LeaderRetrievalState {
-			NOT_RETRIEVED,
-			RETRIEVED,
-			NEWLY_RETRIEVED
-		}
+    /**
+     * A {@link LeaderRetrievalListener} that allows retrieving an {@link InetAddress} for the
+     * current leader.
+     */
+    public static class LeaderConnectingAddressListener implements LeaderRetrievalListener {
 
-		final private Object retrievalLock = new Object();
+        private static final Duration defaultLoggingDelay = Duration.ofMillis(400);
 
-		private String akkaURL;
-		private LeaderRetrievalState retrievalState = LeaderRetrievalState.NOT_RETRIEVED;
-		private Exception exception;
+        private final RpcSystemUtils rpcSystemUtils;
 
-		public InetAddress findConnectingAddress(
-				FiniteDuration timeout) throws LeaderRetrievalException {
-			return findConnectingAddress(timeout, defaultLoggingDelay);
-		}
+        public LeaderConnectingAddressListener(RpcSystemUtils rpcSystemUtils) {
+            this.rpcSystemUtils = rpcSystemUtils;
+        }
 
-		public InetAddress findConnectingAddress(
-				FiniteDuration timeout,
-				FiniteDuration startLoggingAfter)
-			throws LeaderRetrievalException {
-			long startTime = System.currentTimeMillis();
-			long currentSleepTime = MIN_SLEEP_TIME;
-			long elapsedTime = 0;
-			InetSocketAddress targetAddress = null;
+        private enum LeaderRetrievalState {
+            NOT_RETRIEVED,
+            RETRIEVED,
+            NEWLY_RETRIEVED
+        }
 
-			try {
-				while (elapsedTime < timeout.toMillis()) {
+        private final Object retrievalLock = new Object();
 
-					long maxTimeout = timeout.toMillis() - elapsedTime;
+        private String akkaURL;
+        private LeaderRetrievalState retrievalState = LeaderRetrievalState.NOT_RETRIEVED;
+        private Exception exception;
 
-					synchronized (retrievalLock) {
-						if (exception != null) {
-							throw exception;
-						}
+        public InetAddress findConnectingAddress(Duration timeout) throws LeaderRetrievalException {
+            return findConnectingAddress(timeout, defaultLoggingDelay);
+        }
 
-						if (retrievalState == LeaderRetrievalState.NOT_RETRIEVED) {
-							try {
-								retrievalLock.wait(maxTimeout);
-							} catch (InterruptedException e) {
-								throw new Exception("Finding connecting address was interrupted" +
-										"while waiting for the leader retrieval.");
-							}
-						} else if (retrievalState == LeaderRetrievalState.NEWLY_RETRIEVED) {
-							targetAddress = AkkaUtils.getInetSockeAddressFromAkkaURL(akkaURL);
+        public InetAddress findConnectingAddress(Duration timeout, Duration startLoggingAfter)
+                throws LeaderRetrievalException {
 
-							LOG.info("Retrieved new target address {}.", targetAddress);
+            final long startTimeNanos = System.nanoTime();
+            long currentSleepTime = MIN_SLEEP_TIME;
+            long elapsedTimeMillis = 0;
+            InetSocketAddress targetAddress = null;
 
-							retrievalState = LeaderRetrievalState.RETRIEVED;
+            try {
+                while (elapsedTimeMillis < timeout.toMillis()) {
 
-							currentSleepTime = MIN_SLEEP_TIME;
-						} else {
-							currentSleepTime = Math.min(2 * currentSleepTime, MAX_SLEEP_TIME);
-						}
-					}
+                    long maxTimeout = timeout.toMillis() - elapsedTimeMillis;
 
-					if (targetAddress != null) {
-						AddressDetectionState strategy = AddressDetectionState.LOCAL_HOST;
+                    synchronized (retrievalLock) {
+                        if (exception != null) {
+                            throw exception;
+                        }
 
-						boolean logging = elapsedTime >= startLoggingAfter.toMillis();
-						if (logging) {
-							LOG.info("Trying to connect to address {}", targetAddress);
-						}
+                        if (retrievalState == LeaderRetrievalState.NOT_RETRIEVED) {
+                            try {
+                                retrievalLock.wait(maxTimeout);
+                            } catch (InterruptedException e) {
+                                throw new Exception(
+                                        "Finding connecting address was interrupted"
+                                                + "while waiting for the leader retrieval.");
+                            }
+                        } else if (retrievalState == LeaderRetrievalState.NEWLY_RETRIEVED) {
+                            targetAddress = rpcSystemUtils.getInetSocketAddressFromRpcUrl(akkaURL);
 
-						do {
-							InetAddress address = ConnectionUtils.findAddressUsingStrategy(strategy, targetAddress, logging);
-							if (address != null) {
-								return address;
-							}
+                            LOG.debug(
+                                    "Retrieved new target address {} for akka URL {}.",
+                                    targetAddress,
+                                    akkaURL);
 
-							// pick the next strategy
-							switch (strategy) {
-								case LOCAL_HOST:
-									strategy = AddressDetectionState.ADDRESS;
-									break;
-								case ADDRESS:
-									strategy = AddressDetectionState.FAST_CONNECT;
-									break;
-								case FAST_CONNECT:
-									strategy = AddressDetectionState.SLOW_CONNECT;
-									break;
-								case SLOW_CONNECT:
-									strategy = null;
-									break;
-								default:
-									throw new RuntimeException("Unsupported strategy: " + strategy);
-							}
-						}
-						while (strategy != null);
-					}
+                            retrievalState = LeaderRetrievalState.RETRIEVED;
 
-					elapsedTime = System.currentTimeMillis() - startTime;
+                            currentSleepTime = MIN_SLEEP_TIME;
+                        } else {
+                            currentSleepTime = Math.min(2 * currentSleepTime, MAX_SLEEP_TIME);
+                        }
+                    }
 
-					long timeToWait = Math.min(
-							Math.max(timeout.toMillis() - elapsedTime, 0),
-							currentSleepTime);
+                    if (targetAddress != null) {
+                        AddressDetectionState strategy = AddressDetectionState.LOCAL_HOST;
 
-					if (timeToWait > 0) {
-						synchronized (retrievalLock) {
-							try {
-								retrievalLock.wait(timeToWait);
-							} catch (InterruptedException e) {
-								throw new Exception("Finding connecting address was interrupted while pausing.");
-							}
-						}
+                        boolean logging = elapsedTimeMillis >= startLoggingAfter.toMillis();
+                        if (logging) {
+                            LOG.info("Trying to connect to address {}", targetAddress);
+                        }
 
-						elapsedTime = System.currentTimeMillis() - startTime;
-					}
-				}
+                        do {
+                            InetAddress address =
+                                    ConnectionUtils.findAddressUsingStrategy(
+                                            strategy, targetAddress, logging);
+                            if (address != null) {
+                                return address;
+                            }
 
-				InetAddress heuristic = null;
+                            // pick the next strategy
+                            switch (strategy) {
+                                case LOCAL_HOST:
+                                    strategy = AddressDetectionState.ADDRESS;
+                                    break;
+                                case ADDRESS:
+                                    strategy = AddressDetectionState.FAST_CONNECT;
+                                    break;
+                                case FAST_CONNECT:
+                                    strategy = AddressDetectionState.SLOW_CONNECT;
+                                    break;
+                                case SLOW_CONNECT:
+                                    strategy = null;
+                                    break;
+                                default:
+                                    throw new RuntimeException("Unsupported strategy: " + strategy);
+                            }
+                        } while (strategy != null);
+                    }
 
-				if (targetAddress != null) {
-					LOG.warn("Could not connect to {}. Selecting a local address using heuristics.", targetAddress);
-					heuristic = findAddressUsingStrategy(AddressDetectionState.HEURISTIC, targetAddress, true);
-				}
+                    elapsedTimeMillis = (System.nanoTime() - startTimeNanos) / 1_000_000;
 
-				if (heuristic != null) {
-					return heuristic;
-				} else {
-					LOG.warn("Could not find any IPv4 address that is not loopback or link-local. Using localhost address.");
-					return InetAddress.getLocalHost();
-				}
-			} catch (Exception e) {
-				throw new LeaderRetrievalException("Could not retrieve the connecting address to the " +
-						"current leader with the akka URL " + akkaURL + ".", e);
-			}
-		}
+                    long timeToWait =
+                            Math.min(
+                                    Math.max(timeout.toMillis() - elapsedTimeMillis, 0),
+                                    currentSleepTime);
 
-		@Override
-		public void notifyLeaderAddress(String leaderAddress, UUID leaderSessionID) {
-			if (leaderAddress != null && !leaderAddress.equals("")) {
-				synchronized (retrievalLock) {
-					akkaURL = leaderAddress;
-					retrievalState = LeaderRetrievalState.NEWLY_RETRIEVED;
+                    if (timeToWait > 0) {
+                        synchronized (retrievalLock) {
+                            try {
+                                retrievalLock.wait(timeToWait);
+                            } catch (InterruptedException e) {
+                                throw new Exception(
+                                        "Finding connecting address was interrupted while pausing.");
+                            }
+                        }
 
-					retrievalLock.notifyAll();
-				}
-			}
-		}
+                        elapsedTimeMillis = (System.nanoTime() - startTimeNanos) / 1_000_000;
+                    }
+                }
 
-		@Override
-		public void handleError(Exception exception) {
-			synchronized (retrievalLock) {
-				this.exception = exception;
-				retrievalLock.notifyAll();
-			}
-		}
-	}
+                InetAddress heuristic = null;
+
+                if (targetAddress != null) {
+                    LOG.warn(
+                            "Could not connect to {}. Selecting a local address using heuristics.",
+                            targetAddress);
+                    heuristic =
+                            findAddressUsingStrategy(
+                                    AddressDetectionState.HEURISTIC, targetAddress, true);
+                }
+
+                if (heuristic != null) {
+                    return heuristic;
+                } else {
+                    LOG.warn(
+                            "Could not find any IPv4 address that is not loopback or link-local. Using localhost address.");
+                    return InetAddress.getLocalHost();
+                }
+            } catch (Exception e) {
+                throw new LeaderRetrievalException(
+                        "Could not retrieve the connecting address to the "
+                                + "current leader with the akka URL "
+                                + akkaURL
+                                + ".",
+                        e);
+            }
+        }
+
+        @Override
+        public void notifyLeaderAddress(String leaderAddress, UUID leaderSessionID) {
+            if (leaderAddress != null && !leaderAddress.isEmpty()) {
+                synchronized (retrievalLock) {
+                    akkaURL = leaderAddress;
+                    retrievalState = LeaderRetrievalState.NEWLY_RETRIEVED;
+
+                    retrievalLock.notifyAll();
+                }
+            }
+        }
+
+        @Override
+        public void handleError(Exception exception) {
+            synchronized (retrievalLock) {
+                this.exception = exception;
+                retrievalLock.notifyAll();
+            }
+        }
+    }
 }

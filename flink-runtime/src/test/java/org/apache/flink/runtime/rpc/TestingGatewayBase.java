@@ -18,84 +18,84 @@
 
 package org.apache.flink.runtime.rpc;
 
-import org.apache.flink.runtime.concurrent.CompletableFuture;
-import org.apache.flink.runtime.concurrent.Future;
-import org.apache.flink.runtime.concurrent.impl.FlinkCompletableFuture;
-
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-/**
- * Utility base class for testing gateways
- */
+/** Utility base class for testing gateways. */
 public abstract class TestingGatewayBase implements RpcGateway {
 
-	private final ScheduledExecutorService executor;
+    private final ScheduledExecutorService executor;
 
-	private final String address;
+    private final String address;
 
-	protected TestingGatewayBase(final String address) {
-		this.executor = Executors.newSingleThreadScheduledExecutor();
-		this.address = address;
-	}
+    protected TestingGatewayBase(final String address) {
+        this.executor = Executors.newSingleThreadScheduledExecutor();
+        this.address = address;
+    }
 
-	protected TestingGatewayBase() {
-		this("localhost");
-	}
+    protected TestingGatewayBase() {
+        this("localhost");
+    }
 
-	// ------------------------------------------------------------------------
-	//  shutdown
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    //  shutdown
+    // ------------------------------------------------------------------------
 
-	public void stop() {
-		executor.shutdownNow();
-	}
+    public void stop() {
+        executor.shutdownNow();
+    }
 
-	@Override
-	protected void finalize() throws Throwable {
-		super.finalize();
-		executor.shutdownNow();
-	}
+    @Override
+    protected void finalize() throws Throwable {
+        super.finalize();
+        executor.shutdownNow();
+    }
 
-	// ------------------------------------------------------------------------
-	//  Base class methods
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    //  Base class methods
+    // ------------------------------------------------------------------------
 
-	@Override
-	public String getAddress() {
-		return address;
-	}
+    @Override
+    public String getAddress() {
+        return address;
+    }
 
-	// ------------------------------------------------------------------------
-	//  utilities
-	// ------------------------------------------------------------------------
+    @Override
+    public String getHostname() {
+        return address;
+    }
 
-	public <T> Future<T> futureWithTimeout(long timeoutMillis) {
-		FlinkCompletableFuture<T> future = new FlinkCompletableFuture<>();
-		executor.schedule(new FutureTimeout(future), timeoutMillis, TimeUnit.MILLISECONDS);
-		return future;
-	}
+    // ------------------------------------------------------------------------
+    //  utilities
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
-	
-	private static final class FutureTimeout implements Runnable {
+    public <T> CompletableFuture<T> futureWithTimeout(long timeoutMillis) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        executor.schedule(new FutureTimeout(future), timeoutMillis, TimeUnit.MILLISECONDS);
+        return future;
+    }
 
-		private final CompletableFuture<?> promise;
+    // ------------------------------------------------------------------------
 
-		private FutureTimeout(CompletableFuture<?> promise) {
-			this.promise = promise;
-		}
+    private static final class FutureTimeout implements Runnable {
 
-		@Override
-		public void run() {
-			try {
-				promise.completeExceptionally(new TimeoutException());
-			} catch (Throwable t) {
-				System.err.println("CAUGHT AN ERROR IN THE TEST: " + t.getMessage());
-				t.printStackTrace();
-			}
-		}
-	}
+        private final CompletableFuture<?> promise;
+
+        private FutureTimeout(CompletableFuture<?> promise) {
+            this.promise = promise;
+        }
+
+        @Override
+        public void run() {
+            try {
+                promise.completeExceptionally(new TimeoutException());
+            } catch (Throwable t) {
+                System.err.println("CAUGHT AN ERROR IN THE TEST: " + t.getMessage());
+                t.printStackTrace();
+            }
+        }
+    }
 }

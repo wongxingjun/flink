@@ -18,71 +18,69 @@
 
 package org.apache.flink.test.iterative;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-
 import org.apache.flink.api.common.functions.RichGroupReduceFunction;
+import org.apache.flink.api.java.DataSet;
+import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.api.java.io.LocalCollectionOutputFormat;
+import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.test.util.JavaProgramTestBase;
 import org.apache.flink.util.Collector;
 
 import org.junit.Assert;
 
-import org.apache.flink.api.java.DataSet;
-import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.api.java.operators.IterativeDataSet;
-import org.apache.flink.api.java.io.LocalCollectionOutputFormat;
+import java.util.ArrayList;
+import java.util.List;
 
-
+/** Integration test for a bulk iteration with an all reduce. */
 @SuppressWarnings("serial")
 public class BulkIterationWithAllReducerITCase extends JavaProgramTestBase {
 
-	@Override
-	protected void testProgram() throws Exception {
-		
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
-		
-		DataSet<Integer> data = env.fromElements(1, 2, 3, 4, 5, 6, 7, 8);
-		
-		IterativeDataSet<Integer> iteration = data.iterate(10);
-		
-		DataSet<Integer> result = data.reduceGroup(new PickOneAllReduce()).withBroadcastSet(iteration, "bc");
-		
-		final List<Integer> resultList = new ArrayList<Integer>();
-		iteration.closeWith(result).output(new LocalCollectionOutputFormat<Integer>(resultList));
-		
-		env.execute();
-		
-		Assert.assertEquals(8, resultList.get(0).intValue());
-	}
+    @Override
+    protected void testProgram() throws Exception {
 
-	
-	public static class PickOneAllReduce extends RichGroupReduceFunction<Integer, Integer> {
-		
-		private Integer bcValue;
-		
-		@Override
-		public void open(Configuration parameters) {
-			List<Integer> bc = getRuntimeContext().getBroadcastVariable("bc");
-			this.bcValue = bc.isEmpty() ? null : bc.get(0);
-		}
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		@Override
-		public void reduce(Iterable<Integer> records, Collector<Integer> out) {
-			if (bcValue == null) {
-				return;
-			}
-			final int x = bcValue;
-			
-			for (Integer y : records) { 
-				if (y > x) {
-					out.collect(y);
-					return;
-				}
-			}
+        DataSet<Integer> data = env.fromElements(1, 2, 3, 4, 5, 6, 7, 8);
 
-			out.collect(bcValue);
-		}
-	}
+        IterativeDataSet<Integer> iteration = data.iterate(10);
+
+        DataSet<Integer> result =
+                data.reduceGroup(new PickOneAllReduce()).withBroadcastSet(iteration, "bc");
+
+        final List<Integer> resultList = new ArrayList<Integer>();
+        iteration.closeWith(result).output(new LocalCollectionOutputFormat<Integer>(resultList));
+
+        env.execute();
+
+        Assert.assertEquals(8, resultList.get(0).intValue());
+    }
+
+    private static class PickOneAllReduce extends RichGroupReduceFunction<Integer, Integer> {
+
+        private Integer bcValue;
+
+        @Override
+        public void open(Configuration parameters) {
+            List<Integer> bc = getRuntimeContext().getBroadcastVariable("bc");
+            this.bcValue = bc.isEmpty() ? null : bc.get(0);
+        }
+
+        @Override
+        public void reduce(Iterable<Integer> records, Collector<Integer> out) {
+            if (bcValue == null) {
+                return;
+            }
+            final int x = bcValue;
+
+            for (Integer y : records) {
+                if (y > x) {
+                    out.collect(y);
+                    return;
+                }
+            }
+
+            out.collect(bcValue);
+        }
+    }
 }

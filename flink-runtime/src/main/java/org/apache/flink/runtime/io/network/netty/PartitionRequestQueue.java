@@ -18,265 +18,377 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import com.google.common.collect.Sets;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
-import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.runtime.io.network.NetworkSequenceViewReader;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.netty.NettyMessage.ErrorResponse;
 import org.apache.flink.runtime.io.network.partition.ProducerFailedException;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel.BufferAndAvailability;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannelID;
+
+import org.apache.flink.shaded.netty4.io.netty.channel.Channel;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelFuture;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelFutureListener;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelHandlerContext;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInboundHandlerAdapter;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayDeque;
-import java.util.Queue;
-import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.function.Consumer;
 
 import static org.apache.flink.runtime.io.network.netty.NettyMessage.BufferResponse;
+import static org.apache.flink.util.Preconditions.checkArgument;
 
 /**
- * A nonEmptyReader of partition queues, which listens for channel writability changed
- * events before writing and flushing {@link Buffer} instances.
+ * A nonEmptyReader of partition queues, which listens for channel writability changed events before
+ * writing and flushing {@link Buffer} instances.
  */
 class PartitionRequestQueue extends ChannelInboundHandlerAdapter {
 
-	private final Logger LOG = LoggerFactory.getLogger(PartitionRequestQueue.class);
+    private static final Logger LOG = LoggerFactory.getLogger(PartitionRequestQueue.class);
 
-	private final ChannelFutureListener writeListener = new WriteAndFlushNextMessageIfPossibleListener();
+    private final ChannelFutureListener writeListener =
+            new WriteAndFlushNextMessageIfPossibleListener();
 
-	private final Queue<SequenceNumberingViewReader> nonEmptyReader = new ArrayDeque<>();
+    /** The readers which are already enqueued available for transferring data. */
+    private final ArrayDeque<NetworkSequenceViewReader> availableReaders = new ArrayDeque<>();
 
-	private final Set<InputChannelID> released = Sets.newHashSet();
+    /** All the readers created for the consumers' partition requests. */
+    private final ConcurrentMap<InputChannelID, NetworkSequenceViewReader> allReaders =
+            new ConcurrentHashMap<>();
 
-	private boolean fatalError;
+    private boolean fatalError;
 
-	private ChannelHandlerContext ctx;
+    private ChannelHandlerContext ctx;
 
-	@Override
-	public void channelRegistered(final ChannelHandlerContext ctx) throws Exception {
-		if (this.ctx == null) {
-			this.ctx = ctx;
-		}
+    @Override
+    public void channelRegistered(final ChannelHandlerContext ctx) throws Exception {
+        if (this.ctx == null) {
+            this.ctx = ctx;
+        }
 
-		super.channelRegistered(ctx);
-	}
+        super.channelRegistered(ctx);
+    }
 
-	void notifyReaderNonEmpty(final SequenceNumberingViewReader reader) {
-		// The notification might come from the same thread. For the initial writes this
-		// might happen before the reader has set its reference to the view, because
-		// creating the queue and the initial notification happen in the same method call.
-		// This can be resolved by separating the creation of the view and allowing
-		// notifications.
+    void notifyReaderNonEmpty(final NetworkSequenceViewReader reader) {
+        // The notification might come from the same thread. For the initial writes this
+        // might happen before the reader has set its reference to the view, because
+        // creating the queue and the initial notification happen in the same method call.
+        // This can be resolved by separating the creation of the view and allowing
+        // notifications.
 
-		// TODO This could potentially have a bad performance impact as in the
-		// worst case (network consumes faster than the producer) each buffer
-		// will trigger a separate event loop task being scheduled.
-		ctx.executor().execute(new Runnable() {
-			@Override
-			public void run() {
-				ctx.pipeline().fireUserEventTriggered(reader);
-			}
-		});
-	}
+        // TODO This could potentially have a bad performance impact as in the
+        // worst case (network consumes faster than the producer) each buffer
+        // will trigger a separate event loop task being scheduled.
+        ctx.executor().execute(() -> ctx.pipeline().fireUserEventTriggered(reader));
+    }
 
-	public void cancel(InputChannelID receiverId) {
-		ctx.pipeline().fireUserEventTriggered(receiverId);
-	}
+    /**
+     * Try to enqueue the reader once receiving credit notification from the consumer or receiving
+     * non-empty reader notification from the producer.
+     *
+     * <p>NOTE: Only one thread would trigger the actual enqueue after checking the reader's
+     * availability, so there is no race condition here.
+     */
+    private void enqueueAvailableReader(final NetworkSequenceViewReader reader) throws Exception {
+        if (reader.isRegisteredAsAvailable()) {
+            return;
+        }
 
-	public void close() {
-		if (ctx != null) {
-			ctx.channel().close();
-		}
-	}
+        ResultSubpartitionView.AvailabilityWithBacklog availabilityWithBacklog =
+                reader.getAvailabilityAndBacklog();
+        if (!availabilityWithBacklog.isAvailable()) {
+            int backlog = availabilityWithBacklog.getBacklog();
+            if (backlog > 0 && reader.needAnnounceBacklog()) {
+                announceBacklog(reader, backlog);
+            }
+            return;
+        }
 
-	@Override
-	public void userEventTriggered(ChannelHandlerContext ctx, Object msg) throws Exception {
-		// The user event triggered event loop callback is used for thread-safe
-		// hand over of reader queues and cancelled producers.
+        // Queue an available reader for consumption. If the queue is empty,
+        // we try trigger the actual write. Otherwise this will be handled by
+        // the writeAndFlushNextMessageIfPossible calls.
+        boolean triggerWrite = availableReaders.isEmpty();
+        registerAvailableReader(reader);
 
-		if (msg.getClass() == SequenceNumberingViewReader.class) {
-			// Queue a non-empty reader for consumption. If the queue
-			// is empty, we try trigger the actual write. Otherwise this
-			// will be handled by the writeAndFlushIfPossible calls.
-			boolean triggerWrite = nonEmptyReader.isEmpty();
-			nonEmptyReader.add((SequenceNumberingViewReader) msg);
-			if (triggerWrite) {
-				writeAndFlushNextMessageIfPossible(ctx.channel());
-			}
-		} else if (msg.getClass() == InputChannelID.class) {
-			// Release partition view that get a cancel request.
-			InputChannelID toCancel = (InputChannelID) msg;
-			if (released.contains(toCancel)) {
-				return;
-			}
+        if (triggerWrite) {
+            writeAndFlushNextMessageIfPossible(ctx.channel());
+        }
+    }
 
-			// Cancel the request for the input channel
-			int size = nonEmptyReader.size();
-			for (int i = 0; i < size; i++) {
-				SequenceNumberingViewReader reader = nonEmptyReader.poll();
-				if (reader.getReceiverId().equals(toCancel)) {
-					reader.releaseAllResources();
-					markAsReleased(reader.getReceiverId());
-				} else {
-					nonEmptyReader.add(reader);
-				}
-			}
-		} else {
-			ctx.fireUserEventTriggered(msg);
-		}
-	}
+    /**
+     * Accesses internal state to verify reader registration in the unit tests.
+     *
+     * <p><strong>Do not use anywhere else!</strong>
+     *
+     * @return readers which are enqueued available for transferring data
+     */
+    @VisibleForTesting
+    ArrayDeque<NetworkSequenceViewReader> getAvailableReaders() {
+        return availableReaders;
+    }
 
-	@Override
-	public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-		writeAndFlushNextMessageIfPossible(ctx.channel());
-	}
+    public void notifyReaderCreated(final NetworkSequenceViewReader reader) {
+        allReaders.put(reader.getReceiverId(), reader);
+    }
 
-	private void writeAndFlushNextMessageIfPossible(final Channel channel) throws IOException {
-		if (fatalError) {
-			return;
-		}
+    public void cancel(InputChannelID receiverId) {
+        ctx.pipeline().fireUserEventTriggered(receiverId);
+    }
 
-		// The logic here is very similar to the combined input gate and local
-		// input channel logic. You can think of this class acting as the input
-		// gate and the consumed views as the local input channels.
+    public void close() throws IOException {
+        if (ctx != null) {
+            ctx.channel().close();
+        }
 
-		BufferAndAvailability next = null;
-		try {
-			if (channel.isWritable()) {
-				while (true) {
-					SequenceNumberingViewReader reader = nonEmptyReader.poll();
+        releaseAllResources();
+    }
 
-					// No queue with available data. We allow this here, because
-					// of the write callbacks that are executed after each write.
-					if (reader == null) {
-						return;
-					}
+    /**
+     * Adds unannounced credits from the consumer or resumes data consumption after an exactly-once
+     * checkpoint and enqueues the corresponding reader for this consumer (if not enqueued yet).
+     *
+     * @param receiverId The input channel id to identify the consumer.
+     * @param operation The operation to be performed (add credit or resume data consumption).
+     */
+    void addCreditOrResumeConsumption(
+            InputChannelID receiverId, Consumer<NetworkSequenceViewReader> operation)
+            throws Exception {
+        if (fatalError) {
+            return;
+        }
 
-					next = reader.getNextBuffer();
+        NetworkSequenceViewReader reader = obtainReader(receiverId);
 
-					if (next == null) {
-						if (reader.isReleased()) {
-							markAsReleased(reader.getReceiverId());
-							Throwable cause = reader.getFailureCause();
+        operation.accept(reader);
+        enqueueAvailableReader(reader);
+    }
 
-							if (cause != null) {
-								ErrorResponse msg = new ErrorResponse(
-									new ProducerFailedException(cause),
-									reader.getReceiverId());
+    void acknowledgeAllRecordsProcessed(InputChannelID receiverId) {
+        if (fatalError) {
+            return;
+        }
 
-								ctx.writeAndFlush(msg);
-							}
-						} else {
-							IllegalStateException err = new IllegalStateException(
-								"Bug in Netty consumer logic: reader queue got notified by partition " +
-									"about available data, but none was available.");
-							handleException(ctx.channel(), err);
-							return;
-						}
-					} else {
-						// this channel was now removed from the non-empty reader queue
-						// we re-add it in case it has more data, because in that case no
-						// "non-empty" notification will come for that reader from the queue.
-						if (next.moreAvailable()) {
-							nonEmptyReader.add(reader);
-						}
+        obtainReader(receiverId).acknowledgeAllRecordsProcessed();
+    }
 
-						BufferResponse msg = new BufferResponse(
-							next.buffer(),
-							reader.getSequenceNumber(),
-							reader.getReceiverId());
+    void notifyNewBufferSize(InputChannelID receiverId, int newBufferSize) {
+        if (fatalError) {
+            return;
+        }
 
-						if (isEndOfPartitionEvent(next.buffer())) {
-							reader.notifySubpartitionConsumed();
-							reader.releaseAllResources();
+        obtainReader(receiverId).notifyNewBufferSize(newBufferSize);
+    }
 
-							markAsReleased(reader.getReceiverId());
-						}
+    NetworkSequenceViewReader obtainReader(InputChannelID receiverId) {
+        NetworkSequenceViewReader reader = allReaders.get(receiverId);
+        if (reader == null) {
+            throw new IllegalStateException(
+                    "No reader for receiverId = " + receiverId + " exists.");
+        }
 
-						// Write and flush and wait until this is done before
-						// trying to continue with the next buffer.
-						channel.writeAndFlush(msg).addListener(writeListener);
+        return reader;
+    }
 
-						return;
-					}
-				}
-			}
-		} catch (Throwable t) {
-			if (next != null) {
-				next.buffer().recycle();
-			}
+    /**
+     * Announces remaining backlog to the consumer after the available data notification or data
+     * consumption resumption.
+     */
+    private void announceBacklog(NetworkSequenceViewReader reader, int backlog) {
+        checkArgument(backlog > 0, "Backlog must be positive.");
 
-			throw new IOException(t.getMessage(), t);
-		}
-	}
+        NettyMessage.BacklogAnnouncement announcement =
+                new NettyMessage.BacklogAnnouncement(backlog, reader.getReceiverId());
+        ctx.channel()
+                .writeAndFlush(announcement)
+                .addListener(
+                        (ChannelFutureListener)
+                                future -> {
+                                    if (!future.isSuccess()) {
+                                        onChannelFutureFailure(future);
+                                    }
+                                });
+    }
 
-	private boolean isEndOfPartitionEvent(Buffer buffer) throws IOException {
-		return !buffer.isBuffer() && EventSerializer.fromBuffer(buffer, getClass().getClassLoader()).getClass() == EndOfPartitionEvent.class;
-	}
+    @Override
+    public void userEventTriggered(ChannelHandlerContext ctx, Object msg) throws Exception {
+        // The user event triggered event loop callback is used for thread-safe
+        // hand over of reader queues and cancelled producers.
 
-	@Override
-	public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-		releaseAllResources();
+        if (msg instanceof NetworkSequenceViewReader) {
+            enqueueAvailableReader((NetworkSequenceViewReader) msg);
+        } else if (msg.getClass() == InputChannelID.class) {
+            // Release partition view that get a cancel request.
+            InputChannelID toCancel = (InputChannelID) msg;
 
-		ctx.fireChannelInactive();
-	}
+            // remove reader from queue of available readers
+            availableReaders.removeIf(reader -> reader.getReceiverId().equals(toCancel));
 
-	@Override
-	public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
-		handleException(ctx.channel(), cause);
-	}
+            // remove reader from queue of all readers and release its resource
+            final NetworkSequenceViewReader toRelease = allReaders.remove(toCancel);
+            if (toRelease != null) {
+                releaseViewReader(toRelease);
+            }
+        } else {
+            ctx.fireUserEventTriggered(msg);
+        }
+    }
 
-	private void handleException(Channel channel, Throwable cause) throws IOException {
-		LOG.debug("Encountered error while consuming partitions", cause);
+    @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        writeAndFlushNextMessageIfPossible(ctx.channel());
+    }
 
-		fatalError = true;
-		releaseAllResources();
+    private void writeAndFlushNextMessageIfPossible(final Channel channel) throws IOException {
+        if (fatalError || !channel.isWritable()) {
+            return;
+        }
 
-		if (channel.isActive()) {
-			channel.writeAndFlush(new ErrorResponse(cause)).addListener(ChannelFutureListener.CLOSE);
-		}
-	}
+        // The logic here is very similar to the combined input gate and local
+        // input channel logic. You can think of this class acting as the input
+        // gate and the consumed views as the local input channels.
 
-	private void releaseAllResources() throws IOException {
-		SequenceNumberingViewReader reader;
-		while ((reader = nonEmptyReader.poll()) != null) {
-			reader.releaseAllResources();
-			markAsReleased(reader.getReceiverId());
-		}
-	}
+        BufferAndAvailability next = null;
+        try {
+            while (true) {
+                NetworkSequenceViewReader reader = pollAvailableReader();
 
-	/**
-	 * Marks a receiver as released.
-	 */
-	private void markAsReleased(InputChannelID receiverId) {
-		released.add(receiverId);
-	}
+                // No queue with available data. We allow this here, because
+                // of the write callbacks that are executed after each write.
+                if (reader == null) {
+                    return;
+                }
 
-	// This listener is called after an element of the current nonEmptyReader has been
-	// flushed. If successful, the listener triggers further processing of the
-	// queues.
-	private class WriteAndFlushNextMessageIfPossibleListener implements ChannelFutureListener {
+                next = reader.getNextBuffer();
+                if (next == null) {
+                    if (!reader.isReleased()) {
+                        continue;
+                    }
 
-		@Override
-		public void operationComplete(ChannelFuture future) throws Exception {
-			try {
-				if (future.isSuccess()) {
-					writeAndFlushNextMessageIfPossible(future.channel());
-				} else if (future.cause() != null) {
-					handleException(future.channel(), future.cause());
-				} else {
-					handleException(future.channel(), new IllegalStateException("Sending cancelled by user."));
-				}
-			} catch (Throwable t) {
-				handleException(future.channel(), t);
-			}
-		}
-	}
+                    Throwable cause = reader.getFailureCause();
+                    if (cause != null) {
+                        ErrorResponse msg =
+                                new ErrorResponse(
+                                        new ProducerFailedException(cause), reader.getReceiverId());
+
+                        ctx.writeAndFlush(msg);
+                    }
+                } else {
+                    // This channel was now removed from the available reader queue.
+                    // We re-add it into the queue if it is still available
+                    if (next.moreAvailable()) {
+                        registerAvailableReader(reader);
+                    }
+
+                    BufferResponse msg =
+                            new BufferResponse(
+                                    next.buffer(),
+                                    next.getSequenceNumber(),
+                                    reader.getReceiverId(),
+                                    next.buffersInBacklog());
+
+                    // Write and flush and wait until this is done before
+                    // trying to continue with the next buffer.
+                    channel.writeAndFlush(msg).addListener(writeListener);
+
+                    return;
+                }
+            }
+        } catch (Throwable t) {
+            if (next != null) {
+                next.buffer().recycleBuffer();
+            }
+
+            throw new IOException(t.getMessage(), t);
+        }
+    }
+
+    private void registerAvailableReader(NetworkSequenceViewReader reader) {
+        availableReaders.add(reader);
+        reader.setRegisteredAsAvailable(true);
+    }
+
+    @Nullable
+    private NetworkSequenceViewReader pollAvailableReader() {
+        NetworkSequenceViewReader reader = availableReaders.poll();
+        if (reader != null) {
+            reader.setRegisteredAsAvailable(false);
+        }
+        return reader;
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        releaseAllResources();
+
+        ctx.fireChannelInactive();
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        handleException(ctx.channel(), cause);
+    }
+
+    private void handleException(Channel channel, Throwable cause) throws IOException {
+        LOG.error("Encountered error while consuming partitions", cause);
+
+        fatalError = true;
+        releaseAllResources();
+
+        if (channel.isActive()) {
+            channel.writeAndFlush(new ErrorResponse(cause))
+                    .addListener(ChannelFutureListener.CLOSE);
+        }
+    }
+
+    private void releaseAllResources() throws IOException {
+        // note: this is only ever executed by one thread: the Netty IO thread!
+        for (NetworkSequenceViewReader reader : allReaders.values()) {
+            releaseViewReader(reader);
+        }
+
+        availableReaders.clear();
+        allReaders.clear();
+    }
+
+    private void releaseViewReader(NetworkSequenceViewReader reader) throws IOException {
+        reader.setRegisteredAsAvailable(false);
+        reader.releaseAllResources();
+    }
+
+    private void onChannelFutureFailure(ChannelFuture future) throws Exception {
+        if (future.cause() != null) {
+            handleException(future.channel(), future.cause());
+        } else {
+            handleException(
+                    future.channel(), new IllegalStateException("Sending cancelled by user."));
+        }
+    }
+
+    // This listener is called after an element of the current nonEmptyReader has been
+    // flushed. If successful, the listener triggers further processing of the
+    // queues.
+    private class WriteAndFlushNextMessageIfPossibleListener implements ChannelFutureListener {
+
+        @Override
+        public void operationComplete(ChannelFuture future) throws Exception {
+            try {
+                if (future.isSuccess()) {
+                    writeAndFlushNextMessageIfPossible(future.channel());
+                } else {
+                    onChannelFutureFailure(future);
+                }
+            } catch (Throwable t) {
+                handleException(future.channel(), t);
+            }
+        }
+    }
 }

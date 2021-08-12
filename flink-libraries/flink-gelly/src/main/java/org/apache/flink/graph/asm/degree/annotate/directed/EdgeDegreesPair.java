@@ -28,77 +28,36 @@ import org.apache.flink.graph.Vertex;
 import org.apache.flink.graph.asm.degree.annotate.DegreeAnnotationFunctions.JoinEdgeDegreeWithVertexDegree;
 import org.apache.flink.graph.asm.degree.annotate.directed.VertexDegrees.Degrees;
 import org.apache.flink.graph.utils.proxy.GraphAlgorithmWrappingDataSet;
-import org.apache.flink.util.Preconditions;
-
-import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
 
 /**
- * Annotates edges of a directed graph with the degree, out-degree, and
- * in-degree of both the source and target vertices.
+ * Annotates edges of a directed graph with the degree, out-degree, and in-degree of both the source
+ * and target vertices.
  *
  * @param <K> ID type
  * @param <VV> vertex value type
  * @param <EV> edge value type
  */
 public class EdgeDegreesPair<K, VV, EV>
-extends GraphAlgorithmWrappingDataSet<K, VV, EV, Edge<K, Tuple3<EV, Degrees, Degrees>>> {
+        extends GraphAlgorithmWrappingDataSet<K, VV, EV, Edge<K, Tuple3<EV, Degrees, Degrees>>> {
 
-	// Optional configuration
-	private int parallelism = PARALLELISM_DEFAULT;
+    @Override
+    public DataSet<Edge<K, Tuple3<EV, Degrees, Degrees>>> runInternal(Graph<K, VV, EV> input)
+            throws Exception {
+        // s, t, d(s)
+        DataSet<Edge<K, Tuple2<EV, Degrees>>> edgeSourceDegrees =
+                input.run(new EdgeSourceDegrees<K, VV, EV>().setParallelism(parallelism));
 
-	/**
-	 * Override the operator parallelism.
-	 *
-	 * @param parallelism operator parallelism
-	 * @return this
-	 */
-	public EdgeDegreesPair<K, VV, EV> setParallelism(int parallelism) {
-		this.parallelism = parallelism;
+        // t, d(t)
+        DataSet<Vertex<K, Degrees>> vertexDegrees =
+                input.run(new VertexDegrees<K, VV, EV>().setParallelism(parallelism));
 
-		return this;
-	}
-
-	@Override
-	protected String getAlgorithmName() {
-		return EdgeDegreesPair.class.getName();
-	}
-
-	@Override
-	protected boolean mergeConfiguration(GraphAlgorithmWrappingDataSet other) {
-		Preconditions.checkNotNull(other);
-
-		if (! EdgeDegreesPair.class.isAssignableFrom(other.getClass())) {
-			return false;
-		}
-
-		EdgeDegreesPair rhs = (EdgeDegreesPair) other;
-
-		parallelism = (parallelism == PARALLELISM_DEFAULT) ? rhs.parallelism :
-			((rhs.parallelism == PARALLELISM_DEFAULT) ? parallelism : Math.min(parallelism, rhs.parallelism));
-
-		return true;
-	}
-
-	@Override
-	public DataSet<Edge<K, Tuple3<EV, Degrees, Degrees>>> runInternal(Graph<K, VV, EV> input)
-			throws Exception {
-		// s, t, d(s)
-		DataSet<Edge<K, Tuple2<EV, Degrees>>> edgeSourceDegrees = input
-			.run(new EdgeSourceDegrees<K, VV, EV>()
-				.setParallelism(parallelism));
-
-		// t, d(t)
-		DataSet<Vertex<K, Degrees>> vertexDegrees = input
-			.run(new VertexDegrees<K, VV, EV>()
-				.setParallelism(parallelism));
-
-		// s, t, (d(s), d(t))
-		return edgeSourceDegrees
-			.join(vertexDegrees, JoinHint.REPARTITION_HASH_SECOND)
-			.where(1)
-			.equalTo(0)
-			.with(new JoinEdgeDegreeWithVertexDegree<K, EV, Degrees>())
-				.setParallelism(parallelism)
-				.name("Edge target degree");
-	}
+        // s, t, (d(s), d(t))
+        return edgeSourceDegrees
+                .join(vertexDegrees, JoinHint.REPARTITION_HASH_SECOND)
+                .where(1)
+                .equalTo(0)
+                .with(new JoinEdgeDegreeWithVertexDegree<>())
+                .setParallelism(parallelism)
+                .name("Edge target degree");
+    }
 }

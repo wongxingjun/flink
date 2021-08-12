@@ -27,29 +27,36 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.functions.FunctionAnnotation.ForwardedFields;
 import org.apache.flink.util.Collector;
 
+/**
+ * @see FilterOperatorBase
+ * @param <T>
+ */
 @Internal
 @ForwardedFields("*")
 public class PlanFilterOperator<T> extends FilterOperatorBase<T, FlatMapFunction<T, T>> {
-	
-	public PlanFilterOperator(FilterFunction<T> udf, String name, TypeInformation<T> type) {
-		super(new FlatMapFilter<T>(udf), new UnaryOperatorInformation<T, T>(type, type), name);
-	}
 
-	public static final class FlatMapFilter<T> extends WrappingFunction<FilterFunction<T>>
-		implements FlatMapFunction<T, T>
-	{
+    public PlanFilterOperator(FilterFunction<T> udf, String name, TypeInformation<T> type) {
+        super(new FlatMapFilter<T>(udf), new UnaryOperatorInformation<T, T>(type, type), name);
+    }
 
-		private static final long serialVersionUID = 1L;
-		
-		private FlatMapFilter(FilterFunction<T> wrapped) {
-			super(wrapped);
-		}
+    /**
+     * @see FlatMapFunction
+     * @param <T>
+     */
+    public static final class FlatMapFilter<T> extends WrappingFunction<FilterFunction<T>>
+            implements FlatMapFunction<T, T> {
 
-		@Override
-		public final void flatMap(T value, Collector<T> out) throws Exception {
-			if (this.wrappedFunction.filter(value)) {
-				out.collect(value);
-			}
-		}
-	}
+        private static final long serialVersionUID = 1L;
+
+        private FlatMapFilter(FilterFunction<T> wrapped) {
+            super(wrapped);
+        }
+
+        @Override
+        public final void flatMap(T value, Collector<T> out) throws Exception {
+            if (this.wrappedFunction.filter(value)) {
+                out.collect(value);
+            }
+        }
+    }
 }

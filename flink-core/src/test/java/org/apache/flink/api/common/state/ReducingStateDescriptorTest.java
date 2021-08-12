@@ -19,87 +19,73 @@
 package org.apache.flink.api.common.state;
 
 import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
-import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.testutils.CommonTestUtils;
+import org.apache.flink.util.TestLogger;
 
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
 
-import static org.junit.Assert.fail;
-import static org.mockito.Mockito.mock;
+/** Tests for the {@link ReducingStateDescriptor}. */
+public class ReducingStateDescriptorTest extends TestLogger {
 
-public class ReducingStateDescriptorTest {
-	
-	@Test
-	public void testValueStateDescriptorEagerSerializer() throws Exception {
+    @Test
+    public void testReducingStateDescriptor() throws Exception {
 
-		@SuppressWarnings("unchecked")
-		ReduceFunction<String> reducer = mock(ReduceFunction.class); 
-		
-		TypeSerializer<String> serializer = new KryoSerializer<>(String.class, new ExecutionConfig());
-		
-		ReducingStateDescriptor<String> descr = 
-				new ReducingStateDescriptor<String>("testName", reducer, serializer);
-		
-		assertEquals("testName", descr.getName());
-		assertNotNull(descr.getSerializer());
-		assertEquals(serializer, descr.getSerializer());
+        ReduceFunction<String> reducer = (a, b) -> a;
 
-		ReducingStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
+        TypeSerializer<String> serializer =
+                new KryoSerializer<>(String.class, new ExecutionConfig());
 
-		assertEquals("testName", copy.getName());
-		assertNotNull(copy.getSerializer());
-		assertEquals(serializer, copy.getSerializer());
-	}
+        ReducingStateDescriptor<String> descr =
+                new ReducingStateDescriptor<>("testName", reducer, serializer);
 
-	@Test
-	public void testValueStateDescriptorLazySerializer() throws Exception {
+        assertEquals("testName", descr.getName());
+        assertNotNull(descr.getSerializer());
+        assertEquals(serializer, descr.getSerializer());
+        assertEquals(reducer, descr.getReduceFunction());
 
-		@SuppressWarnings("unchecked")
-		ReduceFunction<Path> reducer = mock(ReduceFunction.class);
-		
-		// some different registered value
-		ExecutionConfig cfg = new ExecutionConfig();
-		cfg.registerKryoType(TaskInfo.class);
+        ReducingStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
 
-		ReducingStateDescriptor<Path> descr =
-				new ReducingStateDescriptor<Path>("testName", reducer, Path.class);
+        assertEquals("testName", copy.getName());
+        assertNotNull(copy.getSerializer());
+        assertEquals(serializer, copy.getSerializer());
+    }
 
-		try {
-			descr.getSerializer();
-			fail("should cause an exception");
-		} catch (IllegalStateException ignored) {}
+    @Test
+    public void testHashCodeEquals() throws Exception {
+        final String name = "testName";
+        final ReduceFunction<String> reducer = (a, b) -> a;
 
-		descr.initializeSerializerUnlessSet(cfg);
-		
-		assertNotNull(descr.getSerializer());
-		assertTrue(descr.getSerializer() instanceof KryoSerializer);
+        ReducingStateDescriptor<String> original =
+                new ReducingStateDescriptor<>(name, reducer, String.class);
+        ReducingStateDescriptor<String> same =
+                new ReducingStateDescriptor<>(name, reducer, String.class);
+        ReducingStateDescriptor<String> sameBySerializer =
+                new ReducingStateDescriptor<>(name, reducer, StringSerializer.INSTANCE);
 
-		assertTrue(((KryoSerializer<?>) descr.getSerializer()).getKryo().getRegistration(TaskInfo.class).getId() > 0);
-	}
+        // test that hashCode() works on state descriptors with initialized and uninitialized
+        // serializers
+        assertEquals(original.hashCode(), same.hashCode());
+        assertEquals(original.hashCode(), sameBySerializer.hashCode());
 
-	@Test
-	public void testValueStateDescriptorAutoSerializer() throws Exception {
+        assertEquals(original, same);
+        assertEquals(original, sameBySerializer);
 
-		@SuppressWarnings("unchecked")
-		ReduceFunction<String> reducer = mock(ReduceFunction.class);
+        // equality with a clone
+        ReducingStateDescriptor<String> clone = CommonTestUtils.createCopySerializable(original);
+        assertEquals(original, clone);
 
-		ReducingStateDescriptor<String> descr =
-				new ReducingStateDescriptor<String>("testName", reducer, String.class);
+        // equality with an initialized
+        clone.initializeSerializerUnlessSet(new ExecutionConfig());
+        assertEquals(original, clone);
 
-		ReducingStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
-
-		assertEquals("testName", copy.getName());
-		assertNotNull(copy.getSerializer());
-		assertEquals(StringSerializer.INSTANCE, copy.getSerializer());
-	}
-	
+        original.initializeSerializerUnlessSet(new ExecutionConfig());
+        assertEquals(original, same);
+    }
 }

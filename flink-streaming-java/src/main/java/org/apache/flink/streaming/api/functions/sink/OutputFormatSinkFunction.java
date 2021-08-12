@@ -17,13 +17,12 @@
 
 package org.apache.flink.streaming.api.functions.sink;
 
-import java.io.IOException;
-
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.io.CleanupWhenUnsuccessful;
 import org.apache.flink.api.common.io.OutputFormat;
+import org.apache.flink.api.common.io.RichOutputFormat;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.InputTypeConfigurable;
 import org.apache.flink.configuration.Configuration;
@@ -31,72 +30,89 @@ import org.apache.flink.configuration.Configuration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+
 /**
- * Simple implementation of the SinkFunction writing tuples in the specified
- * OutputFormat format.
- * 
+ * Simple implementation of the SinkFunction writing tuples in the specified OutputFormat format.
+ *
  * @param <IN> Input type
+ * @deprecated Please use the {@link
+ *     org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink StreamingFileSink}
+ *     for writing to files from a streaming program.
  */
 @PublicEvolving
-public class OutputFormatSinkFunction<IN> extends RichSinkFunction<IN> implements InputTypeConfigurable {
-	
-	private static final long serialVersionUID = 1L;
-	
-	private static final Logger LOG = LoggerFactory.getLogger(OutputFormatSinkFunction.class);
-	
-	private OutputFormat<IN> format;
-	private boolean cleanupCalled = false;
+@Deprecated
+public class OutputFormatSinkFunction<IN> extends RichSinkFunction<IN>
+        implements InputTypeConfigurable {
 
-	public OutputFormatSinkFunction(OutputFormat<IN> format) {
-		this.format = format;
-	}
+    private static final long serialVersionUID = 1L;
 
-	@Override
-	public void open(Configuration parameters) throws Exception {
-		RuntimeContext context = getRuntimeContext();
-		format.configure(parameters);
-		int indexInSubtaskGroup = context.getIndexOfThisSubtask();
-		int currentNumberOfSubtasks = context.getNumberOfParallelSubtasks();
-		format.open(indexInSubtaskGroup, currentNumberOfSubtasks);
-	}
+    private static final Logger LOG = LoggerFactory.getLogger(OutputFormatSinkFunction.class);
 
-	@Override
-	public void setInputType(TypeInformation<?> type, ExecutionConfig executionConfig) {
-		if (format instanceof InputTypeConfigurable) {
-			InputTypeConfigurable itc = (InputTypeConfigurable) format;
-			itc.setInputType(type, executionConfig);
-		}
-	}
+    private OutputFormat<IN> format;
+    private boolean cleanupCalled = false;
 
-	@Override
-	public void invoke(IN record) throws Exception {
-		try {
-			format.writeRecord(record);
-		} catch (Exception ex) {
-			cleanup();
-			throw ex;
-		}
-	}
+    public OutputFormatSinkFunction(OutputFormat<IN> format) {
+        this.format = format;
+    }
 
-	@Override
-	public void close() throws IOException {
-		try {
-			format.close();
-		} catch (Exception ex) {
-			cleanup();
-			throw ex;
-		}
-	}
+    @Override
+    public void open(Configuration parameters) throws Exception {
+        RuntimeContext context = getRuntimeContext();
+        format.configure(parameters);
+        int indexInSubtaskGroup = context.getIndexOfThisSubtask();
+        int currentNumberOfSubtasks = context.getNumberOfParallelSubtasks();
+        format.open(indexInSubtaskGroup, currentNumberOfSubtasks);
+    }
 
-	private void cleanup() {
-		try {
-			if (!cleanupCalled && format instanceof CleanupWhenUnsuccessful) {
-				cleanupCalled = true;
-				((CleanupWhenUnsuccessful) format).tryCleanupOnError();
-			}
-		} catch (Throwable t) {
-			LOG.error("Cleanup on error failed.", t);
-		}
-	}
+    @Override
+    public void setRuntimeContext(RuntimeContext context) {
+        super.setRuntimeContext(context);
+        if (format instanceof RichOutputFormat) {
+            ((RichOutputFormat) format).setRuntimeContext(context);
+        }
+    }
 
+    @Override
+    public void setInputType(TypeInformation<?> type, ExecutionConfig executionConfig) {
+        if (format instanceof InputTypeConfigurable) {
+            InputTypeConfigurable itc = (InputTypeConfigurable) format;
+            itc.setInputType(type, executionConfig);
+        }
+    }
+
+    @Override
+    public void invoke(IN record) throws Exception {
+        try {
+            format.writeRecord(record);
+        } catch (Exception ex) {
+            cleanup();
+            throw ex;
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        try {
+            format.close();
+        } catch (Exception ex) {
+            cleanup();
+            throw ex;
+        }
+    }
+
+    private void cleanup() {
+        try {
+            if (!cleanupCalled && format instanceof CleanupWhenUnsuccessful) {
+                cleanupCalled = true;
+                ((CleanupWhenUnsuccessful) format).tryCleanupOnError();
+            }
+        } catch (Throwable t) {
+            LOG.error("Cleanup on error failed.", t);
+        }
+    }
+
+    public OutputFormat<IN> getFormat() {
+        return format;
+    }
 }

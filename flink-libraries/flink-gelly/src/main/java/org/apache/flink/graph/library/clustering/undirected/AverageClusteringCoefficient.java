@@ -18,177 +18,180 @@
 
 package org.apache.flink.graph.library.clustering.undirected;
 
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.flink.api.common.accumulators.DoubleCounter;
 import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.api.java.DataSet;
-import org.apache.flink.graph.AbstractGraphAnalytic;
-import org.apache.flink.graph.Graph;
 import org.apache.flink.graph.AnalyticHelper;
+import org.apache.flink.graph.Graph;
+import org.apache.flink.graph.GraphAnalyticBase;
+import org.apache.flink.graph.asm.result.PrintableResult;
 import org.apache.flink.graph.library.clustering.undirected.AverageClusteringCoefficient.Result;
 import org.apache.flink.types.CopyableValue;
 
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
+
 import java.io.IOException;
 
-import static org.apache.flink.api.common.ExecutionConfig.PARALLELISM_DEFAULT;
-
 /**
- * The average clustering coefficient measures the mean connectedness of a
- * graph. Scores range from 0.0 (no triangles) to 1.0 (complete graph).
+ * The average clustering coefficient measures the mean connectedness of a graph. Scores range from
+ * 0.0 (no triangles) to 1.0 (complete graph).
  *
  * @param <K> graph ID type
  * @param <VV> vertex value type
  * @param <EV> edge value type
  */
 public class AverageClusteringCoefficient<K extends Comparable<K> & CopyableValue<K>, VV, EV>
-extends AbstractGraphAnalytic<K, VV, EV, Result> {
+        extends GraphAnalyticBase<K, VV, EV, Result> {
 
-	private static final String VERTEX_COUNT = "vertexCount";
+    private static final String VERTEX_COUNT = "vertexCount";
 
-	private static final String SUM_OF_LOCAL_CLUSTERING_COEFFICIENT = "sumOfLocalClusteringCoefficient";
+    private static final String SUM_OF_LOCAL_CLUSTERING_COEFFICIENT =
+            "sumOfLocalClusteringCoefficient";
 
-	private AverageClusteringCoefficientHelper<K> averageClusteringCoefficientHelper;
+    private AverageClusteringCoefficientHelper<K> averageClusteringCoefficientHelper;
 
-	// Optional configuration
-	private int littleParallelism = PARALLELISM_DEFAULT;
+    /*
+     * Implementation notes:
+     *
+     * The requirement that "K extends CopyableValue<K>" can be removed when
+     *   removed from LocalClusteringCoefficient.
+     */
 
-	/**
-	 * Override the parallelism of operators processing small amounts of data.
-	 *
-	 * @param littleParallelism operator parallelism
-	 * @return this
-	 */
-	public AverageClusteringCoefficient<K, VV, EV> setLittleParallelism(int littleParallelism) {
-		this.littleParallelism = littleParallelism;
+    @Override
+    public AverageClusteringCoefficient<K, VV, EV> run(Graph<K, VV, EV> input) throws Exception {
+        super.run(input);
 
-		return this;
-	}
+        DataSet<LocalClusteringCoefficient.Result<K>> localClusteringCoefficient =
+                input.run(new LocalClusteringCoefficient<K, VV, EV>().setParallelism(parallelism));
 
-	/*
-	 * Implementation notes:
-	 *
-	 * The requirement that "K extends CopyableValue<K>" can be removed when
-	 *   removed from LocalClusteringCoefficient.
-	 */
+        averageClusteringCoefficientHelper = new AverageClusteringCoefficientHelper<>();
 
-	@Override
-	public AverageClusteringCoefficient<K, VV, EV> run(Graph<K, VV, EV> input)
-			throws Exception {
-		super.run(input);
+        localClusteringCoefficient
+                .output(averageClusteringCoefficientHelper)
+                .name("Average clustering coefficient");
 
-		DataSet<LocalClusteringCoefficient.Result<K>> localClusteringCoefficient = input
-			.run(new LocalClusteringCoefficient<K, VV, EV>()
-				.setLittleParallelism(littleParallelism));
+        return this;
+    }
 
-		averageClusteringCoefficientHelper = new AverageClusteringCoefficientHelper<>();
+    @Override
+    public Result getResult() {
+        long vertexCount = averageClusteringCoefficientHelper.getAccumulator(env, VERTEX_COUNT);
+        double sumOfLocalClusteringCoefficient =
+                averageClusteringCoefficientHelper.getAccumulator(
+                        env, SUM_OF_LOCAL_CLUSTERING_COEFFICIENT);
 
-		localClusteringCoefficient
-			.output(averageClusteringCoefficientHelper)
-				.name("Average clustering coefficient");
+        return new Result(vertexCount, sumOfLocalClusteringCoefficient);
+    }
 
-		return this;
-	}
+    /**
+     * Helper class to collect the average clustering coefficient.
+     *
+     * @param <T> ID type
+     */
+    private static class AverageClusteringCoefficientHelper<T>
+            extends AnalyticHelper<LocalClusteringCoefficient.Result<T>> {
+        private long vertexCount;
+        private double sumOfLocalClusteringCoefficient;
 
-	@Override
-	public Result getResult() {
-		long vertexCount = averageClusteringCoefficientHelper.getAccumulator(env, VERTEX_COUNT);
-		double sumOfLocalClusteringCoefficient = averageClusteringCoefficientHelper.getAccumulator(env, SUM_OF_LOCAL_CLUSTERING_COEFFICIENT);
+        @Override
+        public void writeRecord(LocalClusteringCoefficient.Result<T> record) throws IOException {
+            vertexCount++;
 
-		return new Result(vertexCount, sumOfLocalClusteringCoefficient);
-	}
+            // local clustering coefficient is only defined on vertices with
+            // at least two neighbors yielding at least one pair of neighbors
+            if (record.getDegree().getValue() > 1) {
+                sumOfLocalClusteringCoefficient += record.getLocalClusteringCoefficientScore();
+            }
+        }
 
-	/**
-	 * Helper class to collect the average clustering coefficient.
-	 *
-	 * @param <T> ID type
-	 */
-	private static class AverageClusteringCoefficientHelper<T>
-	extends AnalyticHelper<LocalClusteringCoefficient.Result<T>> {
-		private long vertexCount;
-		private double sumOfLocalClusteringCoefficient;
+        @Override
+        public void close() throws IOException {
+            addAccumulator(VERTEX_COUNT, new LongCounter(vertexCount));
+            addAccumulator(
+                    SUM_OF_LOCAL_CLUSTERING_COEFFICIENT,
+                    new DoubleCounter(sumOfLocalClusteringCoefficient));
+        }
+    }
 
-		@Override
-		public void writeRecord(LocalClusteringCoefficient.Result<T> record) throws IOException {
-			vertexCount++;
+    /** Wraps global clustering coefficient metrics. */
+    public static class Result implements PrintableResult {
+        private long vertexCount;
+        private double averageLocalClusteringCoefficient;
 
-			// local clustering coefficient is only defined on vertices with
-			// at least two neighbors yielding at least one pair of neighbors
-			if (record.getDegree().getValue() > 1) {
-				sumOfLocalClusteringCoefficient += record.getLocalClusteringCoefficientScore();
-			}
-		}
+        /**
+         * Instantiate an immutable result.
+         *
+         * @param vertexCount vertex count
+         * @param sumOfLocalClusteringCoefficient sum over the vertices' local clustering
+         *     coefficients
+         */
+        public Result(long vertexCount, double sumOfLocalClusteringCoefficient) {
+            this.vertexCount = vertexCount;
+            this.averageLocalClusteringCoefficient = sumOfLocalClusteringCoefficient / vertexCount;
+        }
 
-		@Override
-		public void close() throws IOException {
-			addAccumulator(VERTEX_COUNT, new LongCounter(vertexCount));
-			addAccumulator(SUM_OF_LOCAL_CLUSTERING_COEFFICIENT, new DoubleCounter(sumOfLocalClusteringCoefficient));
-		}
-	}
+        /**
+         * Get the number of vertices.
+         *
+         * @return number of vertices
+         */
+        public long getNumberOfVertices() {
+            return vertexCount;
+        }
 
-	/**
-	 * Wraps global clustering coefficient metrics.
-	 */
-	public static class Result {
-		private long vertexCount;
-		private double averageLocalClusteringCoefficient;
+        /**
+         * Get the average clustering coefficient.
+         *
+         * @return number of triangles
+         */
+        public double getAverageClusteringCoefficient() {
+            return averageLocalClusteringCoefficient;
+        }
 
-		/**
-		 * Instantiate an immutable result.
-		 *
-		 * @param vertexCount vertex count
-		 * @param sumOfLocalClusteringCoefficient sum over the vertices' local
-		 *                                        clustering coefficients
-		 */
-		public Result(long vertexCount, double sumOfLocalClusteringCoefficient) {
-			this.vertexCount = vertexCount;
-			this.averageLocalClusteringCoefficient = sumOfLocalClusteringCoefficient / vertexCount;
-		}
+        @Override
+        public String toString() {
+            return toPrintableString();
+        }
 
-		/**
-		 * Get the number of vertices.
-		 *
-		 * @return number of vertices
-		 */
-		public long getNumberOfVertices() {
-			return vertexCount;
-		}
+        @Override
+        public String toPrintableString() {
+            return "vertex count: "
+                    + vertexCount
+                    + ", average clustering coefficient: "
+                    + averageLocalClusteringCoefficient;
+        }
 
-		/**
-		 * Get the average clustering coefficient.
-		 *
-		 * @return number of triangles
-		 */
-		public double getAverageClusteringCoefficient() {
-			return averageLocalClusteringCoefficient;
-		}
+        @Override
+        public int hashCode() {
+            return new HashCodeBuilder()
+                    .append(vertexCount)
+                    .append(averageLocalClusteringCoefficient)
+                    .hashCode();
+        }
 
-		@Override
-		public String toString() {
-			return "vertex count: " + vertexCount
-				+ ", average clustering coefficient: " + averageLocalClusteringCoefficient;
-		}
+        @Override
+        public boolean equals(Object obj) {
+            if (obj == null) {
+                return false;
+            }
 
-		@Override
-		public int hashCode() {
-			return new HashCodeBuilder()
-				.append(vertexCount)
-				.append(averageLocalClusteringCoefficient)
-				.hashCode();
-		}
+            if (obj == this) {
+                return true;
+            }
 
-		@Override
-		public boolean equals(Object obj) {
-			if (obj == null) { return false; }
-			if (obj == this) { return true; }
-			if (obj.getClass() != getClass()) { return false; }
+            if (obj.getClass() != getClass()) {
+                return false;
+            }
 
-			Result rhs = (Result)obj;
+            Result rhs = (Result) obj;
 
-			return new EqualsBuilder()
-				.append(vertexCount, rhs.vertexCount)
-				.append(averageLocalClusteringCoefficient, rhs.averageLocalClusteringCoefficient)
-				.isEquals();
-		}
-	}
+            return new EqualsBuilder()
+                    .append(vertexCount, rhs.vertexCount)
+                    .append(
+                            averageLocalClusteringCoefficient,
+                            rhs.averageLocalClusteringCoefficient)
+                    .isEquals();
+        }
+    }
 }

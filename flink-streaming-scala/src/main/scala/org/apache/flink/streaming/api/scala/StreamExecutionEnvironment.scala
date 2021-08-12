@@ -18,24 +18,36 @@
 
 package org.apache.flink.streaming.api.scala
 
-import com.esotericsoftware.kryo.Serializer
-import org.apache.flink.annotation.{Internal, Public, PublicEvolving}
+import org.apache.flink.annotation.{Experimental, Internal, Public, PublicEvolving}
+import org.apache.flink.api.common.{ExecutionConfig, RuntimeExecutionMode}
+import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.io.{FileInputFormat, FilePathFilter, InputFormat}
+import org.apache.flink.api.common.operators.SlotSharingGroup
 import org.apache.flink.api.common.restartstrategy.RestartStrategies.RestartStrategyConfiguration
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.java.ExecutionEnvironment
+import org.apache.flink.api.connector.source.lib.NumberSequenceSource
+import org.apache.flink.api.connector.source.{Source, SourceSplit}
+import org.apache.flink.api.java.typeutils.ResultTypeQueryable
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer
 import org.apache.flink.api.scala.ClosureCleaner
-import org.apache.flink.configuration.Configuration
-import org.apache.flink.runtime.state.AbstractStateBackend
-import org.apache.flink.streaming.api.environment.{StreamExecutionEnvironment => JavaEnv}
-import org.apache.flink.streaming.api.functions.source._
+import org.apache.flink.configuration.{Configuration, ReadableConfig}
+import org.apache.flink.core.execution.{JobClient, JobListener}
+import org.apache.flink.core.fs.Path
+import org.apache.flink.runtime.state.StateBackend
+import org.apache.flink.streaming.api.environment.{CheckpointConfig, StreamExecutionEnvironment => JavaEnv}
 import org.apache.flink.streaming.api.functions.source.SourceFunction.SourceContext
+import org.apache.flink.streaming.api.functions.source._
+import org.apache.flink.streaming.api.graph.StreamGraph
 import org.apache.flink.streaming.api.{CheckpointingMode, TimeCharacteristic}
-import org.apache.flink.util.SplittableIterator
+import org.apache.flink.util.Preconditions.checkNotNull
+import org.apache.flink.util.{SplittableIterator, TernaryBoolean}
 
-import scala.collection.JavaConverters._
+import com.esotericsoftware.kryo.Serializer
+
+import java.net.URI
+
 import _root_.scala.language.implicitConversions
+import scala.collection.JavaConverters._
 
 @Public
 class StreamExecutionEnvironment(javaEnv: JavaEnv) {
@@ -51,6 +63,17 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   def getConfig = javaEnv.getConfig
 
   /**
+    * Gets cache files.
+    */
+  def getCachedFiles = javaEnv.getCachedFiles
+
+  /**
+    * Gets the config JobListeners.
+    */
+  @PublicEvolving
+  def getJobListeners = javaEnv.getJobListeners
+
+  /**
    * Sets the parallelism for operations executed through this environment.
    * Setting a parallelism of x here will cause all operators (such as join, map, reduce) to run
    * with x parallel instances. This value can be overridden by specific operations using
@@ -61,12 +84,47 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   }
 
   /**
+    * Sets the runtime execution mode for the application (see [[RuntimeExecutionMode]]).
+    * This is equivalent to setting the "execution.runtime-mode" in your application's
+    * configuration file.
+    *
+    * We recommend users to NOT use this method but set the "execution.runtime-mode"
+    * using the command-line when submitting the application. Keeping the application code
+    * configuration-free allows for more flexibility as the same application will be able to
+    * be executed in any execution mode.
+    *
+    * @param executionMode the desired execution mode.
+    * @return The execution environment of your application.
+    */
+  @PublicEvolving
+  def setRuntimeMode(executionMode: RuntimeExecutionMode): StreamExecutionEnvironment = {
+    javaEnv.setRuntimeMode(executionMode)
+    this
+  }
+
+  /**
     * Sets the maximum degree of parallelism defined for the program.
     * The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
     * defines the number of key groups used for partitioned state.
     **/
   def setMaxParallelism(maxParallelism: Int): Unit = {
     javaEnv.setMaxParallelism(maxParallelism)
+  }
+
+  /**
+   * Register a slot sharing group with its resource spec.
+   *
+   * <p>Note that a slot sharing group hints the scheduler that the grouped operators CAN be
+   * deployed into a shared slot. There's no guarantee that the scheduler always deploy the
+   * grouped operators together. In cases grouped operators are deployed into separate slots, the
+   * slot resources will be derived from the specified group requirements.
+   *
+   * @param slotSharingGroup which contains name and its resource spec.
+   */
+  @PublicEvolving
+  def registerSlotSharingGroup(slotSharingGroup: SlotSharingGroup): StreamExecutionEnvironment = {
+    javaEnv.registerSlotSharingGroup(slotSharingGroup)
+    this
   }
 
   /**
@@ -220,26 +278,32 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   def getCheckpointingMode = javaEnv.getCheckpointingMode()
 
   /**
-   * Sets the state backend that describes how to store and checkpoint operator state.
-   * It defines in what form the key/value state, accessible from operations on
-   * [[KeyedStream]] is maintained (heap, managed memory, externally), and where state
-   * snapshots/checkpoints are stored, both for the key/value state, and for checkpointed
-   * functions (implementing the interface 
-   * [[org.apache.flink.streaming.api.checkpoint.Checkpointed]].
+   * Sets the state backend that describes how to store operator. It defines the data structures
+   * that hold state during execution (for example hash tables, RocksDB, or other data stores).
    *
-   * <p>The [[org.apache.flink.runtime.state.memory.MemoryStateBackend]] for example
-   * maintains the state in heap memory, as objects. It is lightweight without extra 
-   * dependencies, but can checkpoint only small states (some counters).
+   * State managed by the state backend includes both keyed state that is accessible on
+   * [[org.apache.flink.streaming.api.scala.KeyedStream]], as well as state
+   * maintained directly by the user code that implements
+   * [[org.apache.flink.streaming.api.checkpoint.CheckpointedFunction]].
    *
-   * <p>In contrast, the [[org.apache.flink.runtime.state.filesystem.FsStateBackend]]
-   * stores checkpoints of the state (also maintained as heap objects) in files. When using
-   * a replicated file system (like HDFS, S3, MapR FS, Tachyon, etc) this will guarantee
-   * that state is not lost upon failures of individual nodes and that the entire streaming
-   * program can be executed highly available and strongly consistent (assuming that Flink
-   * is run in high-availability mode).
+   * The [[org.apache.flink.runtime.state.hashmap.HashMapStateBackend]] maintains state in
+   * heap memory, as objects. It is lightweight without extra dependencies, but is limited to JVM
+   * heap memory.
+   *
+   * In contrast, the '''EmbeddedRocksDBStateBackend''' stores its state in an embedded
+   * '''RocksDB''' instance. This state backend can store very large state that exceeds memory
+   * and spills to local disk. All key/value state (including windows) is stored in the key/value
+   * index of RocksDB.
+   *
+   * In both cases, fault tolerance is managed via the jobs
+   * [[org.apache.flink.runtime.state.CheckpointStorage]] which configures how and where state
+   * backends persist during a checkpoint.
+   *
+   * @return This StreamExecutionEnvironment itself, to allow chaining of function calls.
+   * @see #getStateBackend()
    */
   @PublicEvolving
-  def setStateBackend(backend: AbstractStateBackend): StreamExecutionEnvironment = {
+  def setStateBackend(backend: StateBackend): StreamExecutionEnvironment = {
     javaEnv.setStateBackend(backend)
     this
   }
@@ -248,7 +312,99 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
    * Returns the state backend that defines how to store and checkpoint state.
    */
   @PublicEvolving
-  def getStateBackend: AbstractStateBackend = javaEnv.getStateBackend()
+  def getStateBackend: StateBackend = javaEnv.getStateBackend()
+
+  /**
+   * Enable the change log for current state backend. This change log allows operators to persist
+   * state changes in a very fine-grained manner. Currently, the change log only applies to keyed
+   * state, so non-keyed operator state and channel state are persisted as usual. The 'state' here
+   * refers to 'keyed state'. Details are as follows:
+   *
+   * Stateful operators write the state changes to that log (logging the state), in addition to
+   * applying them to the state tables in RocksDB or the in-mem Hashtable.
+   *
+   * An operator can acknowledge a checkpoint as soon as the changes in the log have reached
+   * the durable checkpoint storage.
+   *
+   * The state tables are persisted periodically, independent of the checkpoints. We call this
+   * the materialization of the state on the checkpoint storage.
+   *
+   * Once the state is materialized on checkpoint storage, the state changelog can be truncated
+   * to the corresponding point.
+   *
+   * It establish a way to drastically reduce the checkpoint interval for streaming
+   * applications across state backends. For more details please check the FLIP-158.
+   *
+   * If this method is not called explicitly, it means no preference for enabling the change log.
+   * Configs for change log enabling will override in different config levels (job/local/cluster).
+   *
+   * @param enabled true if enable the change log for state backend explicitly, otherwise disable
+   *                the change log.
+   * @return This StreamExecutionEnvironment itself, to allow chaining of function calls.
+   * @see #isChangelogStateBackendEnabled()
+   */
+  @PublicEvolving
+  def enableChangelogStateBackend(enabled: Boolean): StreamExecutionEnvironment = {
+    javaEnv.enableChangelogStateBackend(enabled)
+    this
+  }
+
+  /**
+   * Gets the enable status of change log for state backend.
+   *
+   * @return a [[TernaryBoolean]] for the enable status of change log for state backend. Could
+   *         be [[TernaryBoolean#UNDEFINED]] if user never specify this by calling
+   *         [[enableChangelogStateBackend(boolean)]].
+   */
+  @PublicEvolving
+  def isChangelogStateBackendEnabled: TernaryBoolean = javaEnv.isChangelogStateBackendEnabled
+
+  /**
+   * Sets the default savepoint directory, where savepoints will be written to
+   * if no is explicitly provided when triggered.
+   *
+   * @return This StreamExecutionEnvironment itself, to allow chaining of function calls.
+   * @see #getDefaultSavepointDirectory()
+   */
+  @PublicEvolving
+  def setDefaultSavepointDirectory(savepointDirectory: String): StreamExecutionEnvironment = {
+    javaEnv.setDefaultSavepointDirectory(savepointDirectory)
+    this
+  }
+
+  /**
+   * Sets the default savepoint directory, where savepoints will be written to
+   * if no is explicitly provided when triggered.
+   *
+   * @return This StreamExecutionEnvironment itself, to allow chaining of function calls.
+   * @see #getDefaultSavepointDirectory()
+   */
+  @PublicEvolving
+  def setDefaultSavepointDirectory(savepointDirectory: URI): StreamExecutionEnvironment = {
+    javaEnv.setDefaultSavepointDirectory(savepointDirectory)
+    this
+  }
+
+  /**
+   * Sets the default savepoint directory, where savepoints will be written to
+   * if no is explicitly provided when triggered.
+   *
+   * @return This StreamExecutionEnvironment itself, to allow chaining of function calls.
+   * @see #getDefaultSavepointDirectory()
+   */
+  @PublicEvolving
+  def setDefaultSavepointDirectory(savepointDirectory: Path): StreamExecutionEnvironment = {
+    javaEnv.setDefaultSavepointDirectory(savepointDirectory)
+    this
+  }
+
+  /**
+   * Gets the default savepoint directory for this Job.
+   *
+   * @see #setDefaultSavepointDirectory(Path)
+   */
+  @PublicEvolving
+  def getDefaultSavepointDirectory: Path = javaEnv.getDefaultSavepointDirectory
 
   /**
     * Sets the restart strategy configuration. The configuration specifies which restart strategy
@@ -373,7 +529,18 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
    * [[org.apache.flink.api.common.ExecutionConfig#setAutoWatermarkInterval(long)]]
    *
    * @param characteristic The time characteristic.
+   * @deprecated In Flink 1.12 the default stream time characteristic has been changed to
+   *             [[TimeCharacteristic.EventTime]], thus you don't need to call this method for
+   *             enabling event-time support anymore. Explicitly using processing-time windows and
+   *             timers works in event-time mode. If you need to disable watermarks, please use
+   *             [[org.apache.flink.api.common.ExecutionConfig#setAutoWatermarkInterval(long]]. If
+   *             you are using [[TimeCharacteristic.IngestionTime]], please manually set an
+   *             appropriate [[WatermarkStrategy]]. If you are using generic "time window"
+   *             operations (for example [[KeyedStream.timeWindow()]] that change behaviour based
+   *             on the time characteristic, please use equivalent operations that explicitly
+   *             specify processing time or event time.
    */
+  @deprecated
   @PublicEvolving
   def setStreamTimeCharacteristic(characteristic: TimeCharacteristic) : Unit = {
     javaEnv.setStreamTimeCharacteristic(characteristic)
@@ -388,6 +555,43 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   @PublicEvolving
   def getStreamTimeCharacteristic = javaEnv.getStreamTimeCharacteristic()
 
+  /**
+   * Sets all relevant options contained in the [[ReadableConfig]] such as e.g.
+   * [[org.apache.flink.streaming.api.environment.StreamPipelineOptions#TIME_CHARACTERISTIC]].
+   * It will reconfigure [[StreamExecutionEnvironment]],
+   * [[org.apache.flink.api.common.ExecutionConfig]] and
+   * [[org.apache.flink.streaming.api.environment.CheckpointConfig]].
+   *
+   * It will change the value of a setting only if a corresponding option was set in the
+   * `configuration`. If a key is not present, the current value of a field will remain
+   * untouched.
+   *
+   * @param configuration a configuration to read the values from
+   * @param classLoader   a class loader to use when loading classes
+   */
+  @PublicEvolving
+  def configure(configuration: ReadableConfig, classLoader: ClassLoader): Unit = {
+    javaEnv.configure(configuration, classLoader)
+  }
+
+  /**
+   * Sets all relevant options contained in the [[ReadableConfig]] such as e.g.
+   * [[org.apache.flink.streaming.api.environment.StreamPipelineOptions#TIME_CHARACTERISTIC]].
+   * It will reconfigure [[StreamExecutionEnvironment]],
+   * [[org.apache.flink.api.common.ExecutionConfig]] and
+   * [[org.apache.flink.streaming.api.environment.CheckpointConfig]].
+   *
+   * It will change the value of a setting only if a corresponding option was set in the
+   * `configuration`. If a key is not present, the current value of a field will remain
+   * untouched.
+   *
+   * @param configuration a configuration to read the values from
+   */
+  @PublicEvolving
+  def configure(configuration: ReadableConfig): Unit = {
+    javaEnv.configure(configuration)
+  }
+
   // --------------------------------------------------------------------------------------------
   // Data stream creations
   // --------------------------------------------------------------------------------------------
@@ -395,9 +599,34 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Creates a new DataStream that contains a sequence of numbers. This source is a parallel source.
    * If you manually set the parallelism to `1` the emitted elements are in order.
+   *
+   * @deprecated Use [[fromSequence(long, long)]] instead to create a new data stream
+   *             that contains [[NumberSequenceSource]].
    */
+  @deprecated
   def generateSequence(from: Long, to: Long): DataStream[Long] = {
     new DataStream[java.lang.Long](javaEnv.generateSequence(from, to))
+      .asInstanceOf[DataStream[Long]]
+  }
+
+  /**
+   * Creates a new data stream that contains a sequence of numbers (longs) and is useful for
+   * testing and for cases that just need a stream of N events of any kind.
+   *
+   * The generated source splits the sequence into as many parallel sub-sequences as there are
+   * parallel source readers. Each sub-sequence will be produced in order. If the parallelism is
+   * limited to one, the source will produce one sequence in order.
+   *
+   * This source is always bounded. For very long sequences (for example over the entire domain
+   * of long integer values), you may consider executing the application in a streaming manner
+   * because of the end bound that is pretty far away.
+   *
+   * Use [[fromSource(Source,WatermarkStrategy, String)]] together with
+   * [[NumberSequenceSource]] if you required more control over the created sources. For
+   * example, if you want to set a [[WatermarkStrategy]].
+   */
+  def fromSequence(from: Long, to: Long): DataStream[Long] = {
+    new DataStream[java.lang.Long](javaEnv.fromSequence(from, to))
       .asInstanceOf[DataStream[Long]]
   }
 
@@ -579,7 +808,11 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
    */
   @PublicEvolving
   def createInput[T: TypeInformation](inputFormat: InputFormat[T, _]): DataStream[T] =
-    asScalaStream(javaEnv.createInput(inputFormat))
+    if (inputFormat.isInstanceOf[ResultTypeQueryable[_]]) {
+      asScalaStream(javaEnv.createInput(inputFormat))
+    } else {
+      asScalaStream(javaEnv.createInput(inputFormat, implicitly[TypeInformation[T]]))
+    }
 
   /**
    * Create a DataStream using a user defined source function for arbitrary
@@ -595,7 +828,7 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
     
     val cleanFun = scalaClean(function)
     val typeInfo = implicitly[TypeInformation[T]]
-    asScalaStream(javaEnv.addSource(cleanFun).returns(typeInfo))
+    asScalaStream(javaEnv.addSource(cleanFun, typeInfo))
   }
 
   /**
@@ -615,12 +848,27 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
   }
 
   /**
+    * Create a DataStream using a [[Source]].
+    */
+  @Experimental
+  def fromSource[T: TypeInformation](
+      source: Source[T, _ <: SourceSplit, _],
+      watermarkStrategy: WatermarkStrategy[T],
+      sourceName: String): DataStream[T] = {
+
+    val typeInfo = implicitly[TypeInformation[T]]
+    asScalaStream(javaEnv.fromSource(source, watermarkStrategy, sourceName, typeInfo))
+  }
+
+  /**
    * Triggers the program execution. The environment will execute all parts of
    * the program that have resulted in a "sink" operation. Sink operations are
    * for example printing results or forwarding them to a message queue.
    * 
    * The program execution will be logged and displayed with a generated
    * default name.
+   *
+   * @return The result of the job execution, containing elapsed time and accumulators.
    */
   def execute() = javaEnv.execute()
 
@@ -630,8 +878,63 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
    * for example printing results or forwarding them to a message queue.
    * 
    * The program execution will be logged and displayed with the provided name.
+   *
+   * @return The result of the job execution, containing elapsed time and accumulators.
    */
   def execute(jobName: String) = javaEnv.execute(jobName)
+
+  /**
+   * Register a [[JobListener]] in this environment. The [[JobListener]] will be
+   * notified on specific job status changed.
+   */
+  @PublicEvolving
+  def registerJobListener(jobListener: JobListener): Unit = {
+    javaEnv.registerJobListener(jobListener)
+  }
+
+  /**
+   * Clear all registered [[JobListener]]s.
+   */
+  @PublicEvolving def clearJobListeners(): Unit = {
+    javaEnv.clearJobListeners()
+  }
+
+  /**
+   * Triggers the program execution asynchronously. The environment will execute all parts of
+   * the program that have resulted in a "sink" operation. Sink operations are
+   * for example printing results or forwarding them to a message queue.
+   *
+   * The program execution will be logged and displayed with a generated
+   * default name.
+   *
+   * <b>ATTENTION:</b> The caller of this method is responsible for managing the lifecycle
+   * of the returned [[JobClient]]. This means calling [[JobClient#close()]] at the end of
+   * its usage. In other case, there may be resource leaks depending on the JobClient
+   * implementation.
+   *
+   * @return A [[JobClient]] that can be used to communicate with the submitted job,
+   *         completed on submission succeeded.
+   */
+  @PublicEvolving
+  def executeAsync(): JobClient = javaEnv.executeAsync()
+
+  /**
+   * Triggers the program execution asynchronously. The environment will execute all parts of
+   * the program that have resulted in a "sink" operation. Sink operations are
+   * for example printing results or forwarding them to a message queue.
+   *
+   * The program execution will be logged and displayed with the provided name.
+   *
+   * <b>ATTENTION:</b> The caller of this method is responsible for managing the lifecycle
+   * of the returned [[JobClient]]. This means calling [[JobClient#close()]] at the end of
+   * its usage. In other case, there may be resource leaks depending on the JobClient
+   * implementation.
+   *
+   * @return A [[JobClient]] that can be used to communicate with the submitted job,
+   *         completed on submission succeeded.
+   */
+  @PublicEvolving
+  def executeAsync(jobName: String): JobClient = javaEnv.executeAsync(jobName)
 
   /**
    * Creates the plan with which the system will execute the program, and
@@ -643,15 +946,44 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
 
   /**
    * Getter of the [[org.apache.flink.streaming.api.graph.StreamGraph]] of the streaming job.
+   * This call clears previously registered
+   * [[org.apache.flink.api.dag.Transformation transformations]].
    *
    * @return The StreamGraph representing the transformations
    */
   @Internal
-  def getStreamGraph = javaEnv.getStreamGraph
+  def getStreamGraph: StreamGraph = javaEnv.getStreamGraph
+
+  /**
+   * Getter of the [[org.apache.flink.streaming.api.graph.StreamGraph]] of the streaming job
+   * with the option to clear previously registered
+   * [[org.apache.flink.api.dag.Transformation transformations]]. Clearing the transformations
+   * allows, for example, to not re-execute the same operations when calling
+   * [[execute()]] multiple times.
+   *
+   * @param clearTransformations Whether or not to clear previously registered transformations
+   * @return The StreamGraph representing the transformations
+   */
+  @Internal
+  def getStreamGraph(clearTransformations: Boolean): StreamGraph = {
+    javaEnv.getStreamGraph(clearTransformations)
+  }
+
+  /**
+   * Gives read-only access to the underlying configuration of this environment.
+   *
+   * Note that the returned configuration might not be complete. It only contains options that
+   * have initialized the environment or options that are not represented in dedicated configuration
+   * classes such as [[ExecutionConfig]] or [[CheckpointConfig]].
+   *
+   * Use [[configure]] to set options that are specific to this environment.
+   */
+  @Internal
+  def getConfiguration: ReadableConfig = javaEnv.getConfiguration
 
   /**
    * Getter of the wrapped [[org.apache.flink.streaming.api.environment.StreamExecutionEnvironment]]
- *
+   *
    * @return The encased ExecutionEnvironment
    */
   @Internal
@@ -663,12 +995,61 @@ class StreamExecutionEnvironment(javaEnv: JavaEnv) {
    */
   private[flink] def scalaClean[F <: AnyRef](f: F): F = {
     if (getConfig.isClosureCleanerEnabled) {
-      ClosureCleaner.clean(f, true)
+      ClosureCleaner.clean(f, true, getConfig.getClosureCleanerLevel)
     } else {
       ClosureCleaner.ensureSerializable(f)
     }
     f
   }
+
+  /**
+    * Registers a file at the distributed cache under the given name. The file will be accessible
+    * from any user-defined function in the (distributed) runtime under a local path. Files
+    * may be local files (which will be distributed via BlobServer), or files in a distributed file
+    * system. The runtime will copy the files temporarily to a local cache, if needed.
+    *
+    * The [[org.apache.flink.api.common.functions.RuntimeContext]] can be obtained inside UDFs
+    * via [[org.apache.flink.api.common.functions.RichFunction#getRuntimeContext()]] and
+    * provides access [[org.apache.flink.api.common.cache.DistributedCache]] via
+    * [[org.apache.flink.api.common.functions.RuntimeContext#getDistributedCache()]].
+    *
+    * @param filePath The path of the file, as a URI (e.g. "file:///some/path" or
+    *                 "hdfs://host:port/and/path")
+    * @param name     The name under which the file is registered.
+    */
+  def registerCachedFile(filePath: String, name: String): Unit = {
+    javaEnv.registerCachedFile(filePath, name)
+  }
+
+  /**
+    * Registers a file at the distributed cache under the given name. The file will be accessible
+    * from any user-defined function in the (distributed) runtime under a local path. Files
+    * may be local files (which will be distributed via BlobServer), or files in a distributed file
+    * system. The runtime will copy the files temporarily to a local cache, if needed.
+    *
+    * The [[org.apache.flink.api.common.functions.RuntimeContext]] can be obtained inside UDFs
+    * via [[org.apache.flink.api.common.functions.RichFunction#getRuntimeContext()]] and
+    * provides access [[org.apache.flink.api.common.cache.DistributedCache]] via
+    * [[org.apache.flink.api.common.functions.RuntimeContext#getDistributedCache()]].
+    *
+    * @param filePath   The path of the file, as a URI (e.g. "file:///some/path" or
+    *                   "hdfs://host:port/and/path")
+    * @param name       The name under which the file is registered.
+    * @param executable flag indicating whether the file should be executable
+    */
+  def registerCachedFile(filePath: String, name: String, executable: Boolean): Unit = {
+    javaEnv.registerCachedFile(filePath, name, executable)
+  }
+
+  /**
+   * Returns whether Unaligned Checkpoints are enabled.
+   */
+  def isUnalignedCheckpointsEnabled: Boolean = javaEnv.isUnalignedCheckpointsEnabled
+
+  /**
+   * Returns whether Unaligned Checkpoints are force-enabled.
+   */
+  def isForceUnalignedCheckpoints: Boolean = javaEnv.isForceUnalignedCheckpoints
 }
 
 object StreamExecutionEnvironment {
@@ -721,6 +1102,18 @@ object StreamExecutionEnvironment {
   }
 
   /**
+   * Creates a local execution environment. The local execution environment will run the
+   * program in a multi-threaded fashion in the same JVM as the environment was created in.
+   *
+   * @param parallelism   The parallelism for the local environment.
+   * @param configuration Pass a custom configuration into the cluster.
+   */
+  def createLocalEnvironment(parallelism: Int, configuration: Configuration):
+  StreamExecutionEnvironment = {
+    new StreamExecutionEnvironment(JavaEnv.createLocalEnvironment(parallelism, configuration))
+  }
+
+  /**
    * Creates a [[StreamExecutionEnvironment]] for local program execution that also starts the
    * web monitoring UI.
    *
@@ -728,7 +1121,7 @@ object StreamExecutionEnvironment {
    * the same JVM as the environment was created in. It will use the parallelism specified in the
    * parameter.
    *
-   * If the configuration key 'jobmanager.web.port' was set in the configuration, that particular
+   * If the configuration key 'rest.port' was set in the configuration, that particular
    * port will be used for the web UI. Otherwise, the default port (8081) will be used.
    *
    * @param config optional config for the local execution

@@ -18,22 +18,26 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import io.netty.channel.Channel;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferProvider;
-import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
 import org.apache.flink.runtime.io.network.netty.NettyTestUtil.NettyServerAndClient;
 import org.apache.flink.runtime.io.network.partition.BufferAvailabilityListener;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartition.BufferAndBacklog;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannelID;
 import org.apache.flink.runtime.io.network.util.TestPooledBufferProvider;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.runtime.testutils.TestingUtils;
+
+import org.apache.flink.shaded.netty4.io.netty.channel.Channel;
+
 import org.junit.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
@@ -56,160 +60,198 @@ import static org.mockito.Mockito.when;
 
 public class CancelPartitionRequestTest {
 
-	/**
-	 * Verifies that requests for non-existing (failed/cancelled) input channels are properly
-	 * cancelled. The receiver receives data, but there is no input channel to receive the data.
-	 * This should cancel the request.
-	 */
-	@Test
-	public void testCancelPartitionRequest() throws Exception {
+    /**
+     * Verifies that requests for non-existing (failed/cancelled) input channels are properly
+     * cancelled. The receiver receives data, but there is no input channel to receive the data.
+     * This should cancel the request.
+     */
+    @Test
+    public void testCancelPartitionRequest() throws Exception {
 
-		NettyServerAndClient serverAndClient = null;
+        NettyServerAndClient serverAndClient = null;
 
-		try {
-			TestPooledBufferProvider outboundBuffers = new TestPooledBufferProvider(16);
+        try {
+            TestPooledBufferProvider outboundBuffers = new TestPooledBufferProvider(16);
 
-			ResultPartitionManager partitions = mock(ResultPartitionManager.class);
+            ResultPartitionManager partitions = mock(ResultPartitionManager.class);
 
-			ResultPartitionID pid = new ResultPartitionID();
+            ResultPartitionID pid = new ResultPartitionID();
 
-			CountDownLatch sync = new CountDownLatch(1);
+            CountDownLatch sync = new CountDownLatch(1);
 
-			final ResultSubpartitionView view = spy(new InfiniteSubpartitionView(outboundBuffers, sync));
+            final ResultSubpartitionView view =
+                    spy(new InfiniteSubpartitionView(outboundBuffers, sync));
 
-			// Return infinite subpartition
-			when(partitions.createSubpartitionView(eq(pid), eq(0), any(BufferProvider.class), any(BufferAvailabilityListener.class)))
-				.thenAnswer(new Answer<ResultSubpartitionView>() {
-					@Override
-					public ResultSubpartitionView answer(InvocationOnMock invocationOnMock) throws Throwable {
-						BufferAvailabilityListener listener = (BufferAvailabilityListener) invocationOnMock.getArguments()[3];
-						listener.notifyBuffersAvailable(Long.MAX_VALUE);
-						return view;
-					}
-				});
+            // Return infinite subpartition
+            when(partitions.createSubpartitionView(
+                            eq(pid), eq(0), any(BufferAvailabilityListener.class)))
+                    .thenAnswer(
+                            new Answer<ResultSubpartitionView>() {
+                                @Override
+                                public ResultSubpartitionView answer(
+                                        InvocationOnMock invocationOnMock) throws Throwable {
+                                    BufferAvailabilityListener listener =
+                                            (BufferAvailabilityListener)
+                                                    invocationOnMock.getArguments()[2];
+                                    listener.notifyDataAvailable();
+                                    return view;
+                                }
+                            });
 
-			PartitionRequestProtocol protocol = new PartitionRequestProtocol(
-					partitions, mock(TaskEventDispatcher.class), mock(NetworkBufferPool.class));
+            NettyProtocol protocol = new NettyProtocol(partitions, mock(TaskEventDispatcher.class));
 
-			serverAndClient = initServerAndClient(protocol);
+            serverAndClient = initServerAndClient(protocol);
 
-			Channel ch = connect(serverAndClient);
+            Channel ch = connect(serverAndClient);
 
-			// Request for non-existing input channel => results in cancel request
-			ch.writeAndFlush(new PartitionRequest(pid, 0, new InputChannelID())).await();
+            // Request for non-existing input channel => results in cancel request
+            ch.writeAndFlush(new PartitionRequest(pid, 0, new InputChannelID(), Integer.MAX_VALUE))
+                    .await();
 
-			// Wait for the notification
-			if (!sync.await(TestingUtils.TESTING_DURATION().toMillis(), TimeUnit.MILLISECONDS)) {
-				fail("Timed out after waiting for " + TestingUtils.TESTING_DURATION().toMillis() +
-						" ms to be notified about cancelled partition.");
-			}
+            // Wait for the notification
+            if (!sync.await(TestingUtils.TESTING_DURATION.toMillis(), TimeUnit.MILLISECONDS)) {
+                fail(
+                        "Timed out after waiting for "
+                                + TestingUtils.TESTING_DURATION.toMillis()
+                                + " ms to be notified about cancelled partition.");
+            }
 
-			verify(view, times(1)).releaseAllResources();
-			verify(view, times(0)).notifySubpartitionConsumed();
-		}
-		finally {
-			shutdown(serverAndClient);
-		}
-	}
+            verify(view, times(1)).releaseAllResources();
+        } finally {
+            shutdown(serverAndClient);
+        }
+    }
 
-	@Test
-	public void testDuplicateCancel() throws Exception {
+    @Test
+    public void testDuplicateCancel() throws Exception {
 
-		NettyServerAndClient serverAndClient = null;
+        NettyServerAndClient serverAndClient = null;
 
-		try {
-			final TestPooledBufferProvider outboundBuffers = new TestPooledBufferProvider(16);
+        try {
+            final TestPooledBufferProvider outboundBuffers = new TestPooledBufferProvider(16);
 
-			ResultPartitionManager partitions = mock(ResultPartitionManager.class);
+            ResultPartitionManager partitions = mock(ResultPartitionManager.class);
 
-			ResultPartitionID pid = new ResultPartitionID();
+            ResultPartitionID pid = new ResultPartitionID();
 
-			final CountDownLatch sync = new CountDownLatch(1);
+            final CountDownLatch sync = new CountDownLatch(1);
 
-			final ResultSubpartitionView view = spy(new InfiniteSubpartitionView(outboundBuffers, sync));
+            final ResultSubpartitionView view =
+                    spy(new InfiniteSubpartitionView(outboundBuffers, sync));
 
-			// Return infinite subpartition
-			when(partitions.createSubpartitionView(eq(pid), eq(0), any(BufferProvider.class), any(BufferAvailabilityListener.class)))
-					.thenAnswer(new Answer<ResultSubpartitionView>() {
-						@Override
-						public ResultSubpartitionView answer(InvocationOnMock invocationOnMock) throws Throwable {
-							BufferAvailabilityListener listener = (BufferAvailabilityListener) invocationOnMock.getArguments()[3];
-							listener.notifyBuffersAvailable(Long.MAX_VALUE);
-							return view;
-						}
-					});
+            // Return infinite subpartition
+            when(partitions.createSubpartitionView(
+                            eq(pid), eq(0), any(BufferAvailabilityListener.class)))
+                    .thenAnswer(
+                            new Answer<ResultSubpartitionView>() {
+                                @Override
+                                public ResultSubpartitionView answer(
+                                        InvocationOnMock invocationOnMock) throws Throwable {
+                                    BufferAvailabilityListener listener =
+                                            (BufferAvailabilityListener)
+                                                    invocationOnMock.getArguments()[2];
+                                    listener.notifyDataAvailable();
+                                    return view;
+                                }
+                            });
 
-			PartitionRequestProtocol protocol = new PartitionRequestProtocol(
-					partitions, mock(TaskEventDispatcher.class), mock(NetworkBufferPool.class));
+            NettyProtocol protocol = new NettyProtocol(partitions, mock(TaskEventDispatcher.class));
 
-			serverAndClient = initServerAndClient(protocol);
+            serverAndClient = initServerAndClient(protocol);
 
-			Channel ch = connect(serverAndClient);
+            Channel ch = connect(serverAndClient);
 
-			// Request for non-existing input channel => results in cancel request
-			InputChannelID inputChannelId = new InputChannelID();
+            // Request for non-existing input channel => results in cancel request
+            InputChannelID inputChannelId = new InputChannelID();
 
-			ch.writeAndFlush(new PartitionRequest(pid, 0, inputChannelId)).await();
+            ch.writeAndFlush(new PartitionRequest(pid, 0, inputChannelId, Integer.MAX_VALUE))
+                    .await();
 
-			// Wait for the notification
-			if (!sync.await(TestingUtils.TESTING_DURATION().toMillis(), TimeUnit.MILLISECONDS)) {
-				fail("Timed out after waiting for " + TestingUtils.TESTING_DURATION().toMillis() +
-						" ms to be notified about cancelled partition.");
-			}
+            // Wait for the notification
+            if (!sync.await(TestingUtils.TESTING_DURATION.toMillis(), TimeUnit.MILLISECONDS)) {
+                fail(
+                        "Timed out after waiting for "
+                                + TestingUtils.TESTING_DURATION.toMillis()
+                                + " ms to be notified about cancelled partition.");
+            }
 
-			ch.writeAndFlush(new CancelPartitionRequest(inputChannelId)).await();
+            ch.writeAndFlush(new CancelPartitionRequest(inputChannelId)).await();
 
-			ch.close();
+            ch.close();
 
-			NettyTestUtil.awaitClose(ch);
+            NettyTestUtil.awaitClose(ch);
 
-			verify(view, times(1)).releaseAllResources();
-			verify(view, times(0)).notifySubpartitionConsumed();
-		}
-		finally {
-			shutdown(serverAndClient);
-		}
-	}
+            verify(view, times(1)).releaseAllResources();
+        } finally {
+            shutdown(serverAndClient);
+        }
+    }
 
-	// ---------------------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------------------
 
-	static class InfiniteSubpartitionView implements ResultSubpartitionView {
+    static class InfiniteSubpartitionView implements ResultSubpartitionView {
 
-		private final BufferProvider bufferProvider;
+        private final BufferProvider bufferProvider;
 
-		private final CountDownLatch sync;
+        private final CountDownLatch sync;
 
-		public InfiniteSubpartitionView(BufferProvider bufferProvider, CountDownLatch sync) {
-			this.bufferProvider = checkNotNull(bufferProvider);
-			this.sync = checkNotNull(sync);
-		}
+        public InfiniteSubpartitionView(BufferProvider bufferProvider, CountDownLatch sync) {
+            this.bufferProvider = checkNotNull(bufferProvider);
+            this.sync = checkNotNull(sync);
+        }
 
-		@Override
-		public Buffer getNextBuffer() throws IOException, InterruptedException {
-			return bufferProvider.requestBufferBlocking();
-		}
+        @Nullable
+        @Override
+        public BufferAndBacklog getNextBuffer() throws IOException {
+            Buffer buffer = bufferProvider.requestBuffer();
+            if (buffer != null) {
+                buffer.setSize(buffer.getMaxCapacity()); // fake some data
+                return new BufferAndBacklog(buffer, 0, Buffer.DataType.DATA_BUFFER, 0);
+            } else {
+                return null;
+            }
+        }
 
-		@Override
-		public void notifyBuffersAvailable(long buffers) throws IOException {
-		}
+        @Override
+        public void notifyDataAvailable() {}
 
-		@Override
-		public void releaseAllResources() throws IOException {
-			sync.countDown();
-		}
+        @Override
+        public void releaseAllResources() throws IOException {
+            sync.countDown();
+        }
 
-		@Override
-		public void notifySubpartitionConsumed() throws IOException {
-		}
+        @Override
+        public boolean isReleased() {
+            return false;
+        }
 
-		@Override
-		public boolean isReleased() {
-			return false;
-		}
+        @Override
+        public void resumeConsumption() {}
 
-		@Override
-		public Throwable getFailureCause() {
-			return null;
-		}
-	}
+        @Override
+        public void acknowledgeAllDataProcessed() {}
+
+        @Override
+        public AvailabilityWithBacklog getAvailabilityAndBacklog(int numCreditsAvailable) {
+            return new AvailabilityWithBacklog(true, 0);
+        }
+
+        @Override
+        public int unsynchronizedGetNumberOfQueuedBuffers() {
+            return 0;
+        }
+
+        @Override
+        public int getNumberOfQueuedBuffers() {
+            return 0;
+        }
+
+        @Override
+        public void notifyNewBufferSize(int newBufferSize) {}
+
+        @Override
+        public Throwable getFailureCause() {
+            return null;
+        }
+    }
 }

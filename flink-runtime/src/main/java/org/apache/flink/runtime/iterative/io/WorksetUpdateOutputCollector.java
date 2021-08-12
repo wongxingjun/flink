@@ -16,67 +16,67 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.iterative.io;
-
-import java.io.IOException;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.util.Collector;
 
+import java.io.IOException;
+
 /**
  * A {@link Collector} to update the iteration workset (partial solution for bulk iterations).
- * <p>
- * The records are written to a {@link DataOutputView} to allow in-memory data exchange.
+ *
+ * <p>The records are written to a {@link DataOutputView} to allow in-memory data exchange.
  */
 public class WorksetUpdateOutputCollector<T> implements Collector<T> {
 
-	private final TypeSerializer<T> serializer;
+    private final TypeSerializer<T> serializer;
 
-	private final DataOutputView outputView;
+    private final DataOutputView outputView;
 
-	private long elementsCollected;
+    private long elementsCollected;
 
-	private Collector<T> delegate;
+    private Collector<T> delegate;
 
-	public WorksetUpdateOutputCollector(DataOutputView outputView, TypeSerializer<T> serializer) {
-		this(outputView, serializer, null);
-	}
+    public WorksetUpdateOutputCollector(DataOutputView outputView, TypeSerializer<T> serializer) {
+        this(outputView, serializer, null);
+    }
 
-	public WorksetUpdateOutputCollector(DataOutputView outputView, TypeSerializer<T> serializer, Collector<T> delegate) {
-		this.outputView = outputView;
-		this.serializer = serializer;
-		this.delegate = delegate;
+    public WorksetUpdateOutputCollector(
+            DataOutputView outputView, TypeSerializer<T> serializer, Collector<T> delegate) {
+        this.outputView = outputView;
+        this.serializer = serializer;
+        this.delegate = delegate;
 
-		this.elementsCollected = 0;
-	}
+        this.elementsCollected = 0;
+    }
 
-	@Override
-	public void collect(T record) {
-		try {
-			this.serializer.serialize(record, this.outputView);
+    @Override
+    public void collect(T record) {
+        try {
+            this.serializer.serialize(record, this.outputView);
 
-			if (delegate != null) {
-				delegate.collect(record);
-			}
+            if (delegate != null) {
+                delegate.collect(record);
+            }
 
-			this.elementsCollected++;
-		} catch (IOException e) {
-			throw new RuntimeException("Unable to serialize the record", e);
-		}
-	}
+            this.elementsCollected++;
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to serialize the record", e);
+        }
+    }
 
-	public long getElementsCollectedAndReset() {
-		long elementsCollectedToReturn = elementsCollected;
-		elementsCollected = 0;
-		return elementsCollectedToReturn;
-	}
+    public long getElementsCollectedAndReset() {
+        long elementsCollectedToReturn = elementsCollected;
+        elementsCollected = 0;
+        return elementsCollectedToReturn;
+    }
 
-	@Override
-	public void close() {
-		if (delegate != null) {
-			delegate.close();
-		}
-	}
+    @Override
+    public void close() {
+        if (delegate != null) {
+            delegate.close();
+        }
+    }
 }

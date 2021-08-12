@@ -22,160 +22,182 @@ import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.MessageDigest;
+import java.util.Arrays;
 
+import static org.apache.flink.runtime.blob.BlobServerProtocol.RETURN_ERROR;
+import static org.apache.flink.runtime.blob.BlobServerProtocol.RETURN_OKAY;
 import static org.apache.flink.runtime.blob.BlobUtils.readLength;
 
 /**
- * The BLOB input stream is a special implementation of an {@link InputStream} to read the results of a GET operation
- * from the BLOB server.
+ * The BLOB input stream is a special implementation of an {@link InputStream} to read the results
+ * of a GET operation from the BLOB server.
  */
 final class BlobInputStream extends InputStream {
 
-	/**
-	 * The wrapped input stream from the underlying TCP connection.
-	 */
-	private final InputStream wrappedInputStream;
+    /** The wrapped input stream from the underlying TCP connection. */
+    private final InputStream wrappedInputStream;
 
-	/**
-	 * The BLOB key if the GET operation has been performed on a content-addressable BLOB, otherwise <code>null<code>.
-	 */
-	private final BlobKey blobKey;
+    /**
+     * The wrapped output stream from the underlying TCP connection.
+     *
+     * <p>This is used to signal the success or failure of the read operation after receiving the
+     * whole BLOB and verifying the checksum.
+     */
+    private final OutputStream wrappedOutputStream;
 
-	/**
-	 * The number of bytes to read from the underlying input stream before indicating an end-of-stream.
-	 */
-	private final int bytesToReceive;
+    /**
+     * The BLOB key if the GET operation has been performed on a content-addressable BLOB, otherwise
+     * <code>null</code>.
+     */
+    private final BlobKey blobKey;
 
-	/**
-	 * The message digest to verify the integrity of the retrieved content-addressable BLOB. If the BLOB is
-	 * non-content-addressable, this is <code>null</code>.
-	 */
-	private final MessageDigest md;
+    /**
+     * The number of bytes to read from the underlying input stream before indicating an
+     * end-of-stream.
+     */
+    private final int bytesToReceive;
 
-	/**
-	 * The number of bytes already read from the underlying input stream.
-	 */
-	private int bytesReceived;
+    /**
+     * The message digest to verify the integrity of the retrieved content-addressable BLOB. If the
+     * BLOB is non-content-addressable, this is <code>null</code>.
+     */
+    private final MessageDigest md;
 
-	/**
-	 * Constructs a new BLOB input stream.
-	 * 
-	 * @param wrappedInputStream
-	 *        the underlying input stream to read from
-	 * @param blobKey
-	 *        the expected BLOB key for content-addressable BLOBs, <code>null</code> for non-content-addressable BLOBs.
-	 * @throws IOException
-	 *         throws if an I/O error occurs while reading the BLOB data from the BLOB server
-	 */
-	BlobInputStream(final InputStream wrappedInputStream, final BlobKey blobKey) throws IOException {
-		this.wrappedInputStream = wrappedInputStream;
-		this.blobKey = blobKey;
-		this.bytesToReceive = readLength(wrappedInputStream);
-		if (this.bytesToReceive < 0) {
-			throw new FileNotFoundException();
-		}
+    /** The number of bytes already read from the underlying input stream. */
+    private int bytesReceived;
 
-		this.md = (blobKey != null) ? BlobUtils.createMessageDigest() : null;
-	}
+    /**
+     * Constructs a new BLOB input stream.
+     *
+     * @param wrappedInputStream the underlying input stream to read from
+     * @param blobKey the expected BLOB key for content-addressable BLOBs, <code>null</code> for
+     *     non-content-addressable BLOBs.
+     * @param wrappedOutputStream the underlying output stream to write the result to
+     * @throws IOException throws if an I/O error occurs while reading the BLOB data from the BLOB
+     *     server
+     */
+    BlobInputStream(
+            final InputStream wrappedInputStream,
+            final BlobKey blobKey,
+            OutputStream wrappedOutputStream)
+            throws IOException {
+        this.wrappedInputStream = wrappedInputStream;
+        this.blobKey = blobKey;
+        this.wrappedOutputStream = wrappedOutputStream;
+        this.bytesToReceive = readLength(wrappedInputStream);
+        if (this.bytesToReceive < 0) {
+            throw new FileNotFoundException();
+        }
 
-	/**
-	 * Convenience method to throw an {@link EOFException}.
-	 * 
-	 * @throws EOFException
-	 *         thrown to indicate the underlying input stream did not provide as much data as expected
-	 */
-	private void throwEOFException() throws EOFException {
-		throw new EOFException(String.format("Expected to read %d more bytes from stream", this.bytesToReceive
-			- this.bytesReceived));
-	}
+        this.md = (blobKey != null) ? BlobUtils.createMessageDigest() : null;
+    }
 
-	@Override
-	public int read() throws IOException {
-		if (this.bytesReceived == this.bytesToReceive) {
-			return -1;
-		}
+    /**
+     * Convenience method to throw an {@link EOFException}.
+     *
+     * @throws EOFException thrown to indicate the underlying input stream did not provide as much
+     *     data as expected
+     */
+    private void throwEOFException() throws EOFException {
+        throw new EOFException(
+                String.format(
+                        "Expected to read %d more bytes from stream",
+                        this.bytesToReceive - this.bytesReceived));
+    }
 
-		final int read = this.wrappedInputStream.read();
-		if (read < 0) {
-			throwEOFException();
-		}
+    @Override
+    public int read() throws IOException {
+        if (this.bytesReceived == this.bytesToReceive) {
+            return -1;
+        }
 
-		++this.bytesReceived;
+        final int read = this.wrappedInputStream.read();
+        if (read < 0) {
+            throwEOFException();
+        }
 
-		if (this.md != null) {
-			this.md.update((byte) read);
-			if (this.bytesReceived == this.bytesToReceive) {
-				final BlobKey computedKey = new BlobKey(this.md.digest());
-				if (!computedKey.equals(this.blobKey)) {
-					throw new IOException("Detected data corruption during transfer");
-				}
-			}
-		}
+        ++this.bytesReceived;
 
-		return read;
-	}
+        if (this.md != null) {
+            this.md.update((byte) read);
+            if (this.bytesReceived == this.bytesToReceive) {
+                final byte[] computedKey = this.md.digest();
+                if (!Arrays.equals(computedKey, this.blobKey.getHash())) {
+                    this.wrappedOutputStream.write(RETURN_ERROR);
+                    throw new IOException("Detected data corruption during transfer");
+                }
+                this.wrappedOutputStream.write(RETURN_OKAY);
+            }
+        }
 
-	@Override
-	public int read(byte[] b) throws IOException {
-		return read(b, 0, b.length);
-	}
+        return read;
+    }
 
-	@Override
-	public int read(byte[] b, int off, int len) throws IOException {
-		final int bytesMissing = this.bytesToReceive - this.bytesReceived;
+    @Override
+    public int read(byte[] b) throws IOException {
+        return read(b, 0, b.length);
+    }
 
-		if (bytesMissing == 0) {
-			return -1;
-		}
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+        final int bytesMissing = this.bytesToReceive - this.bytesReceived;
 
-		final int maxRecv = Math.min(len, bytesMissing);
-		final int read = this.wrappedInputStream.read(b, off, maxRecv);
-		if (read < 0) {
-			throwEOFException();
-		}
+        if (bytesMissing == 0) {
+            return -1;
+        }
 
-		this.bytesReceived += read;
+        final int maxRecv = Math.min(len, bytesMissing);
+        final int read = this.wrappedInputStream.read(b, off, maxRecv);
+        if (read < 0) {
+            throwEOFException();
+        }
 
-		if (this.md != null) {
-			this.md.update(b, off, read);
-			if (this.bytesReceived == this.bytesToReceive) {
-				final BlobKey computedKey = new BlobKey(this.md.digest());
-				if (!computedKey.equals(this.blobKey)) {
-					throw new IOException("Detected data corruption during transfer");
-				}
-			}
-		}
+        this.bytesReceived += read;
 
-		return read;
-	}
+        if (this.md != null) {
+            this.md.update(b, off, read);
+            if (this.bytesReceived == this.bytesToReceive) {
+                final byte[] computedKey = this.md.digest();
+                if (!Arrays.equals(computedKey, this.blobKey.getHash())) {
+                    this.wrappedOutputStream.write(RETURN_ERROR);
+                    throw new IOException("Detected data corruption during transfer");
+                }
+                this.wrappedOutputStream.write(RETURN_OKAY);
+            }
+        }
 
-	@Override
-	public long skip(long n) throws IOException {
-		return 0L;
-	}
+        return read;
+    }
 
-	@Override
-	public int available() throws IOException {
-		return this.bytesToReceive - this.bytesReceived;
-	}
+    @Override
+    public long skip(long n) throws IOException {
+        return 0L;
+    }
 
-	@Override
-	public void close() throws IOException {
-		// This method does not do anything as the wrapped input stream may be used for multiple get operations.
-	}
+    @Override
+    public int available() throws IOException {
+        return this.bytesToReceive - this.bytesReceived;
+    }
 
-	public void mark(final int readlimit) {
-		// Do not do anything here
-	}
+    @Override
+    public void close() throws IOException {
+        // This method does not do anything as the wrapped input stream may be used for multiple get
+        // operations.
+    }
 
-	@Override
-	public void reset() throws IOException {
-		throw new IOException("mark/reset not supported");
-	}
+    public void mark(final int readlimit) {
+        // Do not do anything here
+    }
 
-	@Override
-	public boolean markSupported() {
-		return false;
-	}
+    @Override
+    public void reset() throws IOException {
+        throw new IOException("mark/reset not supported");
+    }
+
+    @Override
+    public boolean markSupported() {
+        return false;
+    }
 }

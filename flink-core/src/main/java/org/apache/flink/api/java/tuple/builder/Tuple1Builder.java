@@ -16,33 +16,36 @@
  * limitations under the License.
  */
 
-
 // --------------------------------------------------------------
 //  THIS IS A GENERATED SOURCE FILE. DO NOT EDIT!
 //  GENERATED FROM org.apache.flink.api.java.tuple.TupleGenerator.
 // --------------------------------------------------------------
 
-
 package org.apache.flink.api.java.tuple.builder;
-
-import java.util.ArrayList;
-import java.util.List;
 
 import org.apache.flink.annotation.Public;
 import org.apache.flink.api.java.tuple.Tuple1;
 
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * A builder class for {@link Tuple1}.
+ *
+ * @param <T0> The type of field 0
+ */
 @Public
 public class Tuple1Builder<T0> {
 
-	private List<Tuple1<T0>> tuples = new ArrayList<>();
+    private List<Tuple1<T0>> tuples = new ArrayList<>();
 
-	public Tuple1Builder<T0> add(T0 value0){
-		tuples.add(new Tuple1<>(value0));
-		return this;
-	}
+    public Tuple1Builder<T0> add(T0 f0) {
+        tuples.add(new Tuple1<>(f0));
+        return this;
+    }
 
-	@SuppressWarnings("unchecked")
-	public Tuple1<T0>[] build(){
-		return tuples.toArray(new Tuple1[tuples.size()]);
-	}
+    @SuppressWarnings("unchecked")
+    public Tuple1<T0>[] build() {
+        return tuples.toArray(new Tuple1[tuples.size()]);
+    }
 }

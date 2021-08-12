@@ -26,12 +26,12 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-connectors</artifactId>
-		<version>1.3-SNAPSHOT</version>
+		<version>1.14-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
-	<artifactId>flink-connector-cassandra_2.10</artifactId>
-	<name>flink-connector-cassandra</name>
+	<artifactId>flink-connector-cassandra_${scala.binary.version}</artifactId>
+	<name>Flink : Connectors : Cassandra</name>
 
 	<packaging>jar</packaging>
 
@@ -55,7 +55,6 @@ under the License.
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-shade-plugin</artifactId>
-				<version>2.4.1</version>
 				<executions>
 					<!-- Run shade goal on package phase -->
 					<execution>
@@ -64,13 +63,16 @@ under the License.
 						<goals>
 							<goal>shade</goal>
 						</goals>
-						<configuration combine.self="override">
-							<dependencyReducedPomLocation>${project.basedir}/target/dependency-reduced-pom.xml</dependencyReducedPomLocation>
+						<configuration>
+							<!-- This is necessary because we bundle a subset of our dependencies,
+							and transitive dependencies of that subset should still be pulled into the user jar.-->
+							<promoteTransitiveDependencies>true</promoteTransitiveDependencies>
 							<artifactSet>
 								<includes>
 									<include>com.datastax.cassandra:cassandra-driver-core</include>
 									<include>com.datastax.cassandra:cassandra-driver-mapping</include>
 									<include>com.google.guava:guava</include>
+									<include>io.netty:netty-*</include>
 								</includes>
 							</artifactSet>
 							<relocations>
@@ -81,6 +83,15 @@ under the License.
 										<exclude>com.google.protobuf.**</exclude>
 										<exclude>com.google.inject.**</exclude>
 									</excludes>
+								</relocation>
+								<!--
+									Relocate to datastax' package where it
+									expects shaded netty versions; see
+									https://issues.apache.org/jira/browse/FLINK-8295
+								-->
+								<relocation>
+									<pattern>io.netty</pattern>
+									<shadedPattern>com.datastax.shaded.netty</shadedPattern>
 								</relocation>
 							</relocations>
 						</configuration>
@@ -93,7 +104,13 @@ under the License.
 	<dependencies>
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-java_2.10</artifactId>
+			<artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
+			<version>${project.version}</version>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-streaming-scala_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 			<scope>provided</scope>
 		</dependency>
@@ -113,6 +130,12 @@ under the License.
 			</exclusions>
 		</dependency>
 		<dependency>
+			<!-- Bump cassandra netty dependency -->
+			<groupId>io.netty</groupId>
+			<artifactId>netty-handler</artifactId>
+			<version>4.1.46.Final</version>
+		</dependency>
+		<dependency>
 			<groupId>com.datastax.cassandra</groupId>
 			<artifactId>cassandra-driver-mapping</artifactId>
 			<version>${driver.version}</version>
@@ -128,34 +151,59 @@ under the License.
 			</exclusions>
 		</dependency>
 		<dependency>
+			<groupId>org.scala-lang</groupId>
+			<artifactId>scala-library</artifactId>
+			<scope>provided</scope>
+		</dependency>
+		<dependency>
 			<groupId>com.google.guava</groupId>
 			<artifactId>guava</artifactId>
 			<version>${guava.version}</version>
 		</dependency>
 
+		<!-- Table ecosystem -->
+		<!-- Projects depending on this project won't depend on flink-table-*. -->
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-runtime_2.10</artifactId>
+			<artifactId>flink-table-api-java-bridge_${scala.binary.version}</artifactId>
+			<version>${project.version}</version>
+			<scope>provided</scope>
+			<optional>true</optional>
+		</dependency>
+		<!-- A planner dependency won't be necessary once FLIP-32 has been completed. -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-planner_${scala.binary.version}</artifactId>
+			<version>${project.version}</version>
+			<scope>provided</scope>
+			<optional>true</optional>
+		</dependency>
+
+		<!-- Test dependencies -->
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-runtime</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 			<type>test-jar</type>
 		</dependency>
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-java_2.10</artifactId>
+			<artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 			<type>test-jar</type>
 		</dependency>
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-tests_2.10</artifactId>
+			<artifactId>flink-tests</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-test-utils_2.10</artifactId>
+			<artifactId>flink-test-utils_${scala.binary.version}</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 		</dependency>
@@ -174,6 +222,13 @@ under the License.
 					<artifactId>logback-classic</artifactId>
 				</exclusion>
 			</exclusions>
+		</dependency>
+		<dependency>
+			<!-- Bump cassandra netty dependency -->
+			<groupId>io.netty</groupId>
+			<artifactId>netty-all</artifactId>
+			<version>4.1.46.Final</version>
+			<scope>test</scope>
 		</dependency>
 	</dependencies>
 </project>

@@ -20,171 +20,137 @@ package org.apache.flink.graph.test.operations;
 
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.io.DiscardingOutputFormat;
-import org.apache.flink.api.java.tuple.Tuple2;
-
-import org.apache.flink.configuration.ConfigConstants;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.graph.Graph;
 import org.apache.flink.graph.test.TestGraphUtils;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
+import org.apache.flink.test.util.AbstractTestBase;
 
-import org.apache.flink.types.LongValue;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
 import org.junit.Test;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.fail;
 
-public class DegreesWithExceptionITCase {
+/**
+ * Test expected errors for {@link Graph#inDegrees()}, {@link Graph#outDegrees()}, and {@link
+ * Graph#getDegrees()}.
+ */
+public class DegreesWithExceptionITCase extends AbstractTestBase {
 
-	private static final int PARALLELISM = 4;
+    private static final int PARALLELISM = 4;
 
-	private static LocalFlinkMiniCluster cluster;
-	
+    /** Test outDegrees() with an edge having a srcId that does not exist in the vertex DataSet. */
+    @Test
+    public void testOutDegreesInvalidEdgeSrcId() throws Exception {
 
-	@BeforeClass
-	public static void setupCluster() {
-		try {
-			Configuration config = new Configuration();
-			config.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, PARALLELISM);
-			cluster = new LocalFlinkMiniCluster(config, false);
-			cluster.start();
-		}
-		catch (Exception e) {
-			e.printStackTrace();
-			fail("Error starting test cluster: " + e.getMessage());
-		}
-	}
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(PARALLELISM);
 
-	@AfterClass
-	public static void tearDownCluster() {
-		try {
-			cluster.stop();
-		}
-		catch (Throwable t) {
-			t.printStackTrace();
-			fail("ClusterClient shutdown caused an exception: " + t.getMessage());
-		}
-	}
+        Graph<Long, Long, Long> graph =
+                Graph.fromDataSet(
+                        TestGraphUtils.getLongLongVertexData(env),
+                        TestGraphUtils.getLongLongEdgeInvalidSrcData(env),
+                        env);
 
-	/**
-	 * Test outDegrees() with an edge having a srcId that does not exist in the vertex DataSet
-	 */
-	@Test
-	public void testOutDegreesInvalidEdgeSrcId() throws Exception {
+        try {
+            graph.outDegrees().output(new DiscardingOutputFormat<>());
+            env.execute();
 
-		final ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(
-				"localhost", cluster.getLeaderRPCPort());
-		env.setParallelism(PARALLELISM);
-		env.getConfig().disableSysoutLogging();
-		
-		Graph<Long, Long, Long> graph = Graph.fromDataSet(TestGraphUtils.getLongLongVertexData(env),
-				TestGraphUtils.getLongLongEdgeInvalidSrcData(env), env);
+            fail("graph.outDegrees() did not fail.");
+        } catch (Exception e) {
+            // We expect the job to fail with an exception
+        }
+    }
 
-		try {
-			graph.outDegrees().output(new DiscardingOutputFormat<Tuple2<Long, LongValue>>());
-			env.execute();
+    /** Test inDegrees() with an edge having a trgId that does not exist in the vertex DataSet. */
+    @Test
+    public void testInDegreesInvalidEdgeTrgId() throws Exception {
 
-			fail("graph.outDegrees() did not fail.");
-		} catch (Exception e) {
-			// We expect the job to fail with an exception
-		}
-	}
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(PARALLELISM);
 
-	/**
-	 * Test inDegrees() with an edge having a trgId that does not exist in the vertex DataSet
-	 */
-	@Test
-	public void testInDegreesInvalidEdgeTrgId() throws Exception {
+        Graph<Long, Long, Long> graph =
+                Graph.fromDataSet(
+                        TestGraphUtils.getLongLongVertexData(env),
+                        TestGraphUtils.getLongLongEdgeInvalidTrgData(env),
+                        env);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(
-				"localhost", cluster.getLeaderRPCPort());
-		env.setParallelism(PARALLELISM);
-		env.getConfig().disableSysoutLogging();
+        try {
+            graph.inDegrees().output(new DiscardingOutputFormat<>());
+            env.execute();
 
-		Graph<Long, Long, Long> graph = Graph.fromDataSet(TestGraphUtils.getLongLongVertexData(env),
-				TestGraphUtils.getLongLongEdgeInvalidTrgData(env), env);
+            fail("graph.inDegrees() did not fail.");
+        } catch (Exception e) {
+            // We expect the job to fail with an exception
+        }
+    }
 
-		try {
-			graph.inDegrees().output(new DiscardingOutputFormat<Tuple2<Long, LongValue>>());
-			env.execute();
+    /** Test getDegrees() with an edge having a trgId that does not exist in the vertex DataSet. */
+    @Test
+    public void testGetDegreesInvalidEdgeTrgId() throws Exception {
 
-			fail("graph.inDegrees() did not fail.");
-		} catch (Exception e) {
-			// We expect the job to fail with an exception
-		}
-	}
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(PARALLELISM);
 
-	/**
-	 * Test getDegrees() with an edge having a trgId that does not exist in the vertex DataSet
-	 */
-	@Test
-	public void testGetDegreesInvalidEdgeTrgId() throws Exception {
+        Graph<Long, Long, Long> graph =
+                Graph.fromDataSet(
+                        TestGraphUtils.getLongLongVertexData(env),
+                        TestGraphUtils.getLongLongEdgeInvalidTrgData(env),
+                        env);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(
-				"localhost", cluster.getLeaderRPCPort());
-		env.setParallelism(PARALLELISM);
-		env.getConfig().disableSysoutLogging();
+        try {
+            graph.getDegrees().output(new DiscardingOutputFormat<>());
+            env.execute();
 
-		Graph<Long, Long, Long> graph = Graph.fromDataSet(TestGraphUtils.getLongLongVertexData(env),
-				TestGraphUtils.getLongLongEdgeInvalidTrgData(env), env);
+            fail("graph.getDegrees() did not fail.");
+        } catch (Exception e) {
+            // We expect the job to fail with an exception
+        }
+    }
 
-		try {
-			graph.getDegrees().output(new DiscardingOutputFormat<Tuple2<Long, LongValue>>());
-			env.execute();
+    /** Test getDegrees() with an edge having a srcId that does not exist in the vertex DataSet. */
+    @Test
+    public void testGetDegreesInvalidEdgeSrcId() throws Exception {
 
-			fail("graph.getDegrees() did not fail.");
-		} catch (Exception e) {
-			// We expect the job to fail with an exception
-		}
-	}
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(PARALLELISM);
 
-	/**
-	 * Test getDegrees() with an edge having a srcId that does not exist in the vertex DataSet
-	 */
-	@Test
-	public void testGetDegreesInvalidEdgeSrcId() throws Exception {
+        Graph<Long, Long, Long> graph =
+                Graph.fromDataSet(
+                        TestGraphUtils.getLongLongVertexData(env),
+                        TestGraphUtils.getLongLongEdgeInvalidSrcData(env),
+                        env);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(
-				"localhost", cluster.getLeaderRPCPort());
-		env.setParallelism(PARALLELISM);
-		env.getConfig().disableSysoutLogging();
+        try {
+            graph.getDegrees().output(new DiscardingOutputFormat<>());
+            env.execute();
 
-		Graph<Long, Long, Long> graph = Graph.fromDataSet(TestGraphUtils.getLongLongVertexData(env),
-				TestGraphUtils.getLongLongEdgeInvalidSrcData(env), env);
+            fail("graph.getDegrees() did not fail.");
+        } catch (Exception e) {
+            // We expect the job to fail with an exception
+        }
+    }
 
-		try {
-			graph.getDegrees().output(new DiscardingOutputFormat<Tuple2<Long, LongValue>>());
-			env.execute();
+    /**
+     * Test getDegrees() with an edge having a srcId and a trgId that does not exist in the vertex
+     * DataSet.
+     */
+    @Test
+    public void testGetDegreesInvalidEdgeSrcTrgId() throws Exception {
 
-			fail("graph.getDegrees() did not fail.");
-		} catch (Exception e) {
-			// We expect the job to fail with an exception
-		}
-	}
+        final ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(PARALLELISM);
 
-	/**
-	 * Test getDegrees() with an edge having a srcId and a trgId that does not exist in the vertex DataSet
-	 */
-	@Test
-	public void testGetDegreesInvalidEdgeSrcTrgId() throws Exception {
+        Graph<Long, Long, Long> graph =
+                Graph.fromDataSet(
+                        TestGraphUtils.getLongLongVertexData(env),
+                        TestGraphUtils.getLongLongEdgeInvalidSrcTrgData(env),
+                        env);
 
-		final ExecutionEnvironment env = ExecutionEnvironment.createRemoteEnvironment(
-				"localhost", cluster.getLeaderRPCPort());
-		env.setParallelism(PARALLELISM);
-		env.getConfig().disableSysoutLogging();
+        try {
+            graph.getDegrees().output(new DiscardingOutputFormat<>());
+            env.execute();
 
-		Graph<Long, Long, Long> graph = Graph.fromDataSet(TestGraphUtils.getLongLongVertexData(env),
-				TestGraphUtils.getLongLongEdgeInvalidSrcTrgData(env), env);
-
-		try {
-			graph.getDegrees().output(new DiscardingOutputFormat<Tuple2<Long, LongValue>>());
-			env.execute();
-
-			fail("graph.getDegrees() did not fail.");
-		}
-		catch (Exception e) {
-			// We expect the job to fail with an exception
-		}
-	}
+            fail("graph.getDegrees() did not fail.");
+        } catch (Exception e) {
+            // We expect the job to fail with an exception
+        }
+    }
 }

@@ -21,65 +21,43 @@ package org.apache.flink.runtime.io.disk.iomanager;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 
 /**
  * A synchronous {@link BufferFileReader} implementation.
  *
- * <p> This currently bypasses the I/O manager as it is the only synchronous implementation, which
- * is currently in use.
+ * <p>This currently bypasses the I/O manager as it is the only synchronous implementation, which is
+ * currently in use.
  *
- * TODO Refactor I/O manager setup and refactor this into it
+ * <p>TODO Refactor I/O manager setup and refactor this into it
  */
-public class SynchronousBufferFileReader extends SynchronousFileIOChannel implements BufferFileReader {
+public class SynchronousBufferFileReader extends SynchronousFileIOChannel
+        implements BufferFileReader {
 
-	private final ByteBuffer header = ByteBuffer.allocateDirect(8);
+    private final BufferFileChannelReader reader;
 
-	private boolean hasReachedEndOfFile;
+    private boolean hasReachedEndOfFile;
 
-	public SynchronousBufferFileReader(ID channelID, boolean writeEnabled) throws IOException {
-		super(channelID, writeEnabled);
-	}
+    public SynchronousBufferFileReader(ID channelID, boolean writeEnabled) throws IOException {
+        super(channelID, writeEnabled);
+        this.reader = new BufferFileChannelReader(fileChannel);
+    }
 
-	@Override
-	public void readInto(Buffer buffer) throws IOException {
-		if (fileChannel.size() - fileChannel.position() > 0) {
-			// This is the synchronous counter part to the asynchronous buffer read request
+    @Override
+    public void readInto(Buffer buffer) throws IOException {
+        if (fileChannel.size() - fileChannel.position() > 0) {
+            hasReachedEndOfFile = reader.readBufferFromFileChannel(buffer);
+        } else {
+            buffer.recycleBuffer();
+        }
+    }
 
-			// Read header
-			header.clear();
-			fileChannel.read(header);
-			header.flip();
+    @Override
+    public void seekToPosition(long position) throws IOException {
+        fileChannel.position(position);
+    }
 
-			final boolean isBuffer = header.getInt() == 1;
-			final int size = header.getInt();
-
-			if (size > buffer.getMemorySegment().size()) {
-				throw new IllegalStateException("Buffer is too small for data: " + buffer.getMemorySegment().size() + " bytes available, but " + size + " needed. This is most likely due to an serialized event, which is larger than the buffer size.");
-			}
-
-			buffer.setSize(size);
-
-			fileChannel.read(buffer.getNioBuffer());
-
-			if (!isBuffer) {
-				buffer.tagAsEvent();
-			}
-
-			hasReachedEndOfFile = fileChannel.size() - fileChannel.position() == 0;
-		}
-		else {
-			buffer.recycle();
-		}
-	}
-
-	@Override
-	public void seekToPosition(long position) throws IOException {
-		fileChannel.position(position);
-	}
-
-	@Override
-	public boolean hasReachedEndOfFile() {
-		return hasReachedEndOfFile;
-	}
+    @Override
+    public boolean hasReachedEndOfFile() {
+        return hasReachedEndOfFile;
+    }
 }

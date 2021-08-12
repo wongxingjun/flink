@@ -16,33 +16,27 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.memory;
-
-import java.util.List;
 
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentSource;
 
-/**
- * Simple memory segment source that draws segments from a list.
- * 
- */
-public class ListMemorySegmentSource implements MemorySegmentSource
-{
-	private final List<MemorySegment> segments;
-	
-	public ListMemorySegmentSource(final List<MemorySegment> memorySegments) {
-		this.segments = memorySegments;
-	}
-	
+import java.util.List;
 
-	@Override
-	public MemorySegment nextSegment() {
-		if (this.segments.size() > 0) {
-			return this.segments.remove(this.segments.size() - 1);
-		} else {
-			return null;
-		}
-	}
+/** Simple memory segment source that draws segments from a list. */
+public class ListMemorySegmentSource implements MemorySegmentSource {
+    private final List<MemorySegment> segments;
+
+    public ListMemorySegmentSource(final List<MemorySegment> memorySegments) {
+        this.segments = memorySegments;
+    }
+
+    @Override
+    public MemorySegment nextSegment() {
+        if (this.segments.size() > 0) {
+            return this.segments.remove(this.segments.size() - 1);
+        } else {
+            return null;
+        }
+    }
 }

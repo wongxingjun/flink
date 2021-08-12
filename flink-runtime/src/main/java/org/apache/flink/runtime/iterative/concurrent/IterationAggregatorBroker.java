@@ -16,18 +16,17 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.runtime.iterative.concurrent;
 
 import org.apache.flink.runtime.iterative.task.RuntimeAggregatorRegistry;
 
+/** {@link Broker} for {@link RuntimeAggregatorRegistry}. */
 public class IterationAggregatorBroker extends Broker<RuntimeAggregatorRegistry> {
-	
-	/** single instance */
-	private static final IterationAggregatorBroker INSTANCE = new IterationAggregatorBroker();
 
-	/** retrieve singleton instance */
-	public static IterationAggregatorBroker instance() {
-		return INSTANCE;
-	}
+    private static final IterationAggregatorBroker INSTANCE = new IterationAggregatorBroker();
+
+    /** Retrieve singleton instance. */
+    public static IterationAggregatorBroker instance() {
+        return INSTANCE;
+    }
 }

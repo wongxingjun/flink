@@ -30,32 +30,34 @@ import java.io.IOException;
 
 /**
  * Stores elements by serializing them with their type serializer.
+ *
  * @param <T> type parameter
  */
 @PublicEvolving
-public class TypeSerializerOutputFormat<T> extends BinaryOutputFormat<T> implements InputTypeConfigurable {
+public class TypeSerializerOutputFormat<T> extends BinaryOutputFormat<T>
+        implements InputTypeConfigurable {
 
-	private static final long serialVersionUID = -6653022644629315158L;
-	
-	private TypeSerializer<T> serializer;
+    private static final long serialVersionUID = -6653022644629315158L;
 
-	@Override
-	protected void serialize(T record, DataOutputView dataOutput) throws IOException {
-		if(serializer == null){
-			throw new RuntimeException("TypeSerializerOutputFormat requires a type serializer to " +
-					"be defined.");
-		}
-		
-		serializer.serialize(record, dataOutput);
-	}
+    private TypeSerializer<T> serializer;
 
-	public void setSerializer(TypeSerializer<T> serializer){
-		this.serializer = serializer;
-	}
+    @Override
+    protected void serialize(T record, DataOutputView dataOutput) throws IOException {
+        if (serializer == null) {
+            throw new RuntimeException(
+                    "TypeSerializerOutputFormat requires a type serializer to " + "be defined.");
+        }
 
-	@Override
-	@SuppressWarnings("unchecked")
-	public void setInputType(TypeInformation<?> type, ExecutionConfig executionConfig) {
-		serializer = (TypeSerializer<T>) type.createSerializer(executionConfig);
-	}
+        serializer.serialize(record, dataOutput);
+    }
+
+    public void setSerializer(TypeSerializer<T> serializer) {
+        this.serializer = serializer;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void setInputType(TypeInformation<?> type, ExecutionConfig executionConfig) {
+        serializer = (TypeSerializer<T>) type.createSerializer(executionConfig);
+    }
 }

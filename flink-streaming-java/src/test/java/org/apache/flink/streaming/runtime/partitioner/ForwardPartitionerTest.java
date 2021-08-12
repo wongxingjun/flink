@@ -17,39 +17,26 @@
 
 package org.apache.flink.streaming.runtime.partitioner;
 
-import static org.junit.Assert.*;
-
 import org.apache.flink.api.java.tuple.Tuple;
-import org.apache.flink.runtime.plugable.SerializationDelegate;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.junit.Before;
+
 import org.junit.Test;
 
-public class ForwardPartitionerTest {
+import static org.junit.Assert.assertFalse;
 
-	private ForwardPartitioner<Tuple> forwardPartitioner;
-	private StreamRecord<Tuple> streamRecord = new StreamRecord<Tuple>(null);
-	private SerializationDelegate<StreamRecord<Tuple>> sd = new SerializationDelegate<StreamRecord<Tuple>>(
-			null);
+/** Tests for {@link ForwardPartitioner}. */
+public class ForwardPartitionerTest extends StreamPartitionerTest {
 
-	@Before
-	public void setPartitioner() {
-		forwardPartitioner = new ForwardPartitioner<Tuple>();
-	}
+    @Override
+    public StreamPartitioner<Tuple> createPartitioner() {
+        StreamPartitioner<Tuple> partitioner = new ForwardPartitioner<>();
+        assertFalse(partitioner.isBroadcast());
+        return partitioner;
+    }
 
-	@Test
-	public void testSelectChannelsLength() {
-		sd.setInstance(streamRecord);
-		assertEquals(1, forwardPartitioner.selectChannels(sd, 1).length);
-		assertEquals(1, forwardPartitioner.selectChannels(sd, 2).length);
-		assertEquals(1, forwardPartitioner.selectChannels(sd, 1024).length);
-	}
-
-	@Test
-	public void testSelectChannelsInterval() {
-		sd.setInstance(streamRecord);
-		assertEquals(0, forwardPartitioner.selectChannels(sd, 1)[0]);
-		assertEquals(0, forwardPartitioner.selectChannels(sd, 2)[0]);
-		assertEquals(0, forwardPartitioner.selectChannels(sd, 1024)[0]);
-	}
+    @Test
+    public void testSelectChannelsInterval() {
+        assertSelectedChannelWithSetup(0, 1);
+        assertSelectedChannelWithSetup(0, 2);
+        assertSelectedChannelWithSetup(0, 1024);
+    }
 }

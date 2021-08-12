@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.api.java.functions;
 
 import org.apache.flink.annotation.Internal;
@@ -35,36 +36,36 @@ import java.util.Iterator;
 @Internal
 public class SampleWithFraction<T> extends RichMapPartitionFunction<T, T> {
 
-	private boolean withReplacement;
-	private double fraction;
-	private long seed;
+    private boolean withReplacement;
+    private double fraction;
+    private long seed;
 
-	/**
-	 * Create a function instance of SampleWithFraction.
-	 *
-	 * @param withReplacement Whether element can be selected more than once.
-	 * @param fraction        Probability that each element is selected.
-	 * @param seed            random number generator seed.
-	 */
-	public SampleWithFraction(boolean withReplacement, double fraction, long seed) {
-		this.withReplacement = withReplacement;
-		this.fraction = fraction;
-		this.seed = seed;
-	}
+    /**
+     * Create a function instance of SampleWithFraction.
+     *
+     * @param withReplacement Whether element can be selected more than once.
+     * @param fraction Probability that each element is selected.
+     * @param seed random number generator seed.
+     */
+    public SampleWithFraction(boolean withReplacement, double fraction, long seed) {
+        this.withReplacement = withReplacement;
+        this.fraction = fraction;
+        this.seed = seed;
+    }
 
-	@Override
-	public void mapPartition(Iterable<T> values, Collector<T> out) throws Exception {
-		RandomSampler<T> sampler;
-		long seedAndIndex = seed + getRuntimeContext().getIndexOfThisSubtask();
-		if (withReplacement) {
-			sampler = new PoissonSampler<>(fraction, seedAndIndex);
-		} else {
-			sampler = new BernoulliSampler<>(fraction, seedAndIndex);
-		}
+    @Override
+    public void mapPartition(Iterable<T> values, Collector<T> out) throws Exception {
+        RandomSampler<T> sampler;
+        long seedAndIndex = seed + getRuntimeContext().getIndexOfThisSubtask();
+        if (withReplacement) {
+            sampler = new PoissonSampler<>(fraction, seedAndIndex);
+        } else {
+            sampler = new BernoulliSampler<>(fraction, seedAndIndex);
+        }
 
-		Iterator<T> sampled = sampler.sample(values.iterator());
-		while (sampled.hasNext()) {
-			out.collect(sampled.next());
-		}
-	}
+        Iterator<T> sampled = sampler.sample(values.iterator());
+        while (sampled.hasNext()) {
+            out.collect(sampled.next());
+        }
+    }
 }

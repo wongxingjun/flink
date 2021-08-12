@@ -18,71 +18,78 @@
 
 package org.apache.flink.runtime.checkpoint;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import org.junit.Test;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/**
- * Tests for the default checkpoint properties.
- */
+/** Tests for the default checkpoint properties. */
 public class CheckpointPropertiesTest {
 
-	/**
-	 * Tests the default checkpoint properties.
-	 */
-	@Test
-	public void testCheckpointProperties() {
-		CheckpointProperties props = CheckpointProperties.forStandardCheckpoint();
+    /** Tests the external checkpoints properties. */
+    @Test
+    public void testCheckpointProperties() {
+        CheckpointProperties props =
+                CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE);
 
-		assertFalse(props.forceCheckpoint());
-		assertFalse(props.externalizeCheckpoint());
-		assertTrue(props.discardOnSubsumed());
-		assertTrue(props.discardOnJobFinished());
-		assertTrue(props.discardOnJobCancelled());
-		assertTrue(props.discardOnJobFailed());
-		assertTrue(props.discardOnJobSuspended());
-	}
+        assertFalse(props.forceCheckpoint());
+        assertTrue(props.discardOnSubsumed());
+        assertTrue(props.discardOnJobFinished());
+        assertTrue(props.discardOnJobCancelled());
+        assertFalse(props.discardOnJobFailed());
+        assertTrue(props.discardOnJobSuspended());
 
-	/**
-	 * Tests the external checkpoints properties.
-	 */
-	@Test
-	public void testExternalizedCheckpointProperties() {
-		CheckpointProperties props = CheckpointProperties.forExternalizedCheckpoint(true);
+        props =
+                CheckpointProperties.forCheckpoint(
+                        CheckpointRetentionPolicy.RETAIN_ON_CANCELLATION);
 
-		assertFalse(props.forceCheckpoint());
-		assertTrue(props.externalizeCheckpoint());
-		assertTrue(props.discardOnSubsumed());
-		assertTrue(props.discardOnJobFinished());
-		assertTrue(props.discardOnJobCancelled());
-		assertFalse(props.discardOnJobFailed());
-		assertTrue(props.discardOnJobSuspended());
+        assertFalse(props.forceCheckpoint());
+        assertTrue(props.discardOnSubsumed());
+        assertTrue(props.discardOnJobFinished());
+        assertFalse(props.discardOnJobCancelled());
+        assertFalse(props.discardOnJobFailed());
+        assertFalse(props.discardOnJobSuspended());
+    }
 
-		props = CheckpointProperties.forExternalizedCheckpoint(false);
+    /** Tests the default (manually triggered) savepoint properties. */
+    @Test
+    public void testSavepointProperties() {
+        CheckpointProperties props = CheckpointProperties.forSavepoint(true);
 
-		assertFalse(props.forceCheckpoint());
-		assertTrue(props.externalizeCheckpoint());
-		assertTrue(props.discardOnSubsumed());
-		assertTrue(props.discardOnJobFinished());
-		assertFalse(props.discardOnJobCancelled());
-		assertFalse(props.discardOnJobFailed());
-		assertFalse(props.discardOnJobSuspended());
-	}
+        assertTrue(props.forceCheckpoint());
+        assertFalse(props.discardOnSubsumed());
+        assertFalse(props.discardOnJobFinished());
+        assertFalse(props.discardOnJobCancelled());
+        assertFalse(props.discardOnJobFailed());
+        assertFalse(props.discardOnJobSuspended());
+    }
 
-	/**
-	 * Tests the default (manually triggered) savepoint properties.
-	 */
-	@Test
-	public void testSavepointProperties() {
-		CheckpointProperties props = CheckpointProperties.forStandardSavepoint();
+    /** Tests the isSavepoint utility works as expected. */
+    @Test
+    public void testIsSavepoint() throws Exception {
+        {
+            CheckpointProperties props =
+                    CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE);
+            assertFalse(props.isSavepoint());
+        }
 
-		assertTrue(props.forceCheckpoint());
-		assertTrue(props.externalizeCheckpoint());
-		assertFalse(props.discardOnSubsumed());
-		assertFalse(props.discardOnJobFinished());
-		assertFalse(props.discardOnJobCancelled());
-		assertFalse(props.discardOnJobFailed());
-		assertFalse(props.discardOnJobSuspended());
-	}
+        {
+            CheckpointProperties props =
+                    CheckpointProperties.forCheckpoint(
+                            CheckpointRetentionPolicy.RETAIN_ON_CANCELLATION);
+            assertFalse(props.isSavepoint());
+        }
+
+        {
+            CheckpointProperties props = CheckpointProperties.forSavepoint(true);
+            assertTrue(props.isSavepoint());
+
+            CheckpointProperties deserializedCheckpointProperties =
+                    InstantiationUtil.deserializeObject(
+                            InstantiationUtil.serializeObject(props), getClass().getClassLoader());
+            assertTrue(deserializedCheckpointProperties.isSavepoint());
+        }
+    }
 }

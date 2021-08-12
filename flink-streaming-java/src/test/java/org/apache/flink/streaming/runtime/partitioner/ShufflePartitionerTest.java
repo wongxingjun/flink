@@ -17,44 +17,33 @@
 
 package org.apache.flink.streaming.runtime.partitioner;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-
 import org.apache.flink.api.java.tuple.Tuple;
-import org.apache.flink.runtime.plugable.SerializationDelegate;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.junit.Before;
+
 import org.junit.Test;
 
-public class ShufflePartitionerTest {
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
-	private ShufflePartitioner<Tuple> shufflePartitioner;
-	private StreamRecord<Tuple> streamRecord = new StreamRecord<Tuple>(null);
-	private SerializationDelegate<StreamRecord<Tuple>> sd = new SerializationDelegate<StreamRecord<Tuple>>(
-			null);
+/** Tests for {@link ShufflePartitioner}. */
+public class ShufflePartitionerTest extends StreamPartitionerTest {
 
-	@Before
-	public void setPartitioner() {
-		shufflePartitioner = new ShufflePartitioner<Tuple>();
-	}
+    @Override
+    public StreamPartitioner<Tuple> createPartitioner() {
+        StreamPartitioner<Tuple> partitioner = new ShufflePartitioner<>();
+        assertFalse(partitioner.isBroadcast());
+        return partitioner;
+    }
 
-	@Test
-	public void testSelectChannelsLength() {
-		sd.setInstance(streamRecord);
-		assertEquals(1, shufflePartitioner.selectChannels(sd, 1).length);
-		assertEquals(1, shufflePartitioner.selectChannels(sd, 2).length);
-		assertEquals(1, shufflePartitioner.selectChannels(sd, 1024).length);
-	}
+    @Test
+    public void testSelectChannelsInterval() {
+        assertSelectedChannelWithSetup(0, 1);
 
-	@Test
-	public void testSelectChannelsInterval() {
-		sd.setInstance(streamRecord);
-		assertEquals(0, shufflePartitioner.selectChannels(sd, 1)[0]);
+        streamPartitioner.setup(2);
+        assertTrue(0 <= streamPartitioner.selectChannel(serializationDelegate));
+        assertTrue(2 > streamPartitioner.selectChannel(serializationDelegate));
 
-		assertTrue(0 <= shufflePartitioner.selectChannels(sd, 2)[0]);
-		assertTrue(2 > shufflePartitioner.selectChannels(sd, 2)[0]);
-
-		assertTrue(0 <= shufflePartitioner.selectChannels(sd, 1024)[0]);
-		assertTrue(1024 > shufflePartitioner.selectChannels(sd, 1024)[0]);
-	}
+        streamPartitioner.setup(1024);
+        assertTrue(0 <= streamPartitioner.selectChannel(serializationDelegate));
+        assertTrue(1024 > streamPartitioner.selectChannel(serializationDelegate));
+    }
 }

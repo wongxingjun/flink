@@ -18,37 +18,33 @@
 
 package org.apache.flink.runtime.io.network.api.reader;
 
-import java.io.IOException;
-
 import org.apache.flink.runtime.event.TaskEvent;
 import org.apache.flink.runtime.util.event.EventListener;
 
-/**
- * The basic API for every reader.
- */
+import java.io.IOException;
+
+/** The basic API for every reader. */
 public interface ReaderBase {
 
-	/**
-	 * Returns whether the reader has consumed the input.
-	 */
-	boolean isFinished();
+    /** Returns whether the reader has consumed the input. */
+    boolean isFinished();
 
-	// ------------------------------------------------------------------------
-	// Task events
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // Task events
+    // ------------------------------------------------------------------------
 
-	void sendTaskEvent(TaskEvent event) throws IOException;
+    void sendTaskEvent(TaskEvent event) throws IOException;
 
-	void registerTaskEventListener(EventListener<TaskEvent> listener, Class<? extends TaskEvent> eventType);
+    void registerTaskEventListener(
+            EventListener<TaskEvent> listener, Class<? extends TaskEvent> eventType);
 
-	// ------------------------------------------------------------------------
-	// Iterations
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // Iterations
+    // ------------------------------------------------------------------------
 
-	void setIterativeReader();
+    void setIterativeReader();
 
-	void startNextSuperstep();
+    void startNextSuperstep();
 
-	boolean hasReachedEndOfSuperstep();
-
+    boolean hasReachedEndOfSuperstep();
 }

@@ -18,192 +18,214 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.epoll.Epoll;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollServerSocketChannel;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.ssl.SslHandler;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.FatalExitExceptionHandler;
+
+import org.apache.flink.shaded.guava30.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.flink.shaded.netty4.io.netty.bootstrap.ServerBootstrap;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelFuture;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelInitializer;
+import org.apache.flink.shaded.netty4.io.netty.channel.ChannelOption;
+import org.apache.flink.shaded.netty4.io.netty.channel.epoll.Epoll;
+import org.apache.flink.shaded.netty4.io.netty.channel.epoll.EpollEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.epoll.EpollServerSocketChannel;
+import org.apache.flink.shaded.netty4.io.netty.channel.nio.NioEventLoopGroup;
+import org.apache.flink.shaded.netty4.io.netty.channel.socket.SocketChannel;
+import org.apache.flink.shaded.netty4.io.netty.channel.socket.nio.NioServerSocketChannel;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLEngine;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.concurrent.ThreadFactory;
+import java.util.function.Function;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 
 class NettyServer {
 
-	private static final ThreadFactoryBuilder THREAD_FACTORY_BUILDER = new ThreadFactoryBuilder().setDaemon(true);
+    private static final ThreadFactoryBuilder THREAD_FACTORY_BUILDER =
+            new ThreadFactoryBuilder()
+                    .setDaemon(true)
+                    .setUncaughtExceptionHandler(FatalExitExceptionHandler.INSTANCE);
 
-	private static final Logger LOG = LoggerFactory.getLogger(NettyServer.class);
+    private static final Logger LOG = LoggerFactory.getLogger(NettyServer.class);
 
-	private final NettyConfig config;
+    private final NettyConfig config;
 
-	private ServerBootstrap bootstrap;
+    private ServerBootstrap bootstrap;
 
-	private ChannelFuture bindFuture;
+    private ChannelFuture bindFuture;
 
-	private SSLContext serverSSLContext = null;
+    private InetSocketAddress localAddress;
 
-	private InetSocketAddress localAddress;
+    NettyServer(NettyConfig config) {
+        this.config = checkNotNull(config);
+        localAddress = null;
+    }
 
-	NettyServer(NettyConfig config) {
-		this.config = checkNotNull(config);
-		localAddress = null;
-	}
+    int init(final NettyProtocol protocol, NettyBufferPool nettyBufferPool) throws IOException {
+        return init(
+                nettyBufferPool,
+                sslHandlerFactory -> new ServerChannelInitializer(protocol, sslHandlerFactory));
+    }
 
-	void init(final NettyProtocol protocol, NettyBufferPool nettyBufferPool) throws IOException {
-		checkState(bootstrap == null, "Netty server has already been initialized.");
+    int init(
+            NettyBufferPool nettyBufferPool,
+            Function<SSLHandlerFactory, ServerChannelInitializer> channelInitializer)
+            throws IOException {
+        checkState(bootstrap == null, "Netty server has already been initialized.");
 
-		long start = System.currentTimeMillis();
+        final long start = System.nanoTime();
 
-		bootstrap = new ServerBootstrap();
+        bootstrap = new ServerBootstrap();
 
-		// --------------------------------------------------------------------
-		// Transport-specific configuration
-		// --------------------------------------------------------------------
+        // --------------------------------------------------------------------
+        // Transport-specific configuration
+        // --------------------------------------------------------------------
 
-		switch (config.getTransportType()) {
-			case NIO:
-				initNioBootstrap();
-				break;
+        switch (config.getTransportType()) {
+            case NIO:
+                initNioBootstrap();
+                break;
 
-			case EPOLL:
-				initEpollBootstrap();
-				break;
+            case EPOLL:
+                initEpollBootstrap();
+                break;
 
-			case AUTO:
-				if (Epoll.isAvailable()) {
-					initEpollBootstrap();
-					LOG.info("Transport type 'auto': using EPOLL.");
-				}
-				else {
-					initNioBootstrap();
-					LOG.info("Transport type 'auto': using NIO.");
-				}
-		}
+            case AUTO:
+                if (Epoll.isAvailable()) {
+                    initEpollBootstrap();
+                    LOG.info("Transport type 'auto': using EPOLL.");
+                } else {
+                    initNioBootstrap();
+                    LOG.info("Transport type 'auto': using NIO.");
+                }
+        }
 
-		// --------------------------------------------------------------------
-		// Configuration
-		// --------------------------------------------------------------------
+        // --------------------------------------------------------------------
+        // Configuration
+        // --------------------------------------------------------------------
 
-		// Server bind address
-		bootstrap.localAddress(config.getServerAddress(), config.getServerPort());
+        // Server bind address
+        bootstrap.localAddress(config.getServerAddress(), config.getServerPort());
 
-		// Pooled allocators for Netty's ByteBuf instances
-		bootstrap.option(ChannelOption.ALLOCATOR, nettyBufferPool);
-		bootstrap.childOption(ChannelOption.ALLOCATOR, nettyBufferPool);
+        // Pooled allocators for Netty's ByteBuf instances
+        bootstrap.option(ChannelOption.ALLOCATOR, nettyBufferPool);
+        bootstrap.childOption(ChannelOption.ALLOCATOR, nettyBufferPool);
 
-		if (config.getServerConnectBacklog() > 0) {
-			bootstrap.option(ChannelOption.SO_BACKLOG, config.getServerConnectBacklog());
-		}
+        if (config.getServerConnectBacklog() > 0) {
+            bootstrap.option(ChannelOption.SO_BACKLOG, config.getServerConnectBacklog());
+        }
 
-		// Receive and send buffer size
-		int receiveAndSendBufferSize = config.getSendAndReceiveBufferSize();
-		if (receiveAndSendBufferSize > 0) {
-			bootstrap.childOption(ChannelOption.SO_SNDBUF, receiveAndSendBufferSize);
-			bootstrap.childOption(ChannelOption.SO_RCVBUF, receiveAndSendBufferSize);
-		}
+        // Receive and send buffer size
+        int receiveAndSendBufferSize = config.getSendAndReceiveBufferSize();
+        if (receiveAndSendBufferSize > 0) {
+            bootstrap.childOption(ChannelOption.SO_SNDBUF, receiveAndSendBufferSize);
+            bootstrap.childOption(ChannelOption.SO_RCVBUF, receiveAndSendBufferSize);
+        }
 
-		// Low and high water marks for flow control
-		bootstrap.childOption(ChannelOption.WRITE_BUFFER_LOW_WATER_MARK, config.getMemorySegmentSize() + 1);
-		bootstrap.childOption(ChannelOption.WRITE_BUFFER_HIGH_WATER_MARK, 2 * config.getMemorySegmentSize());
+        // SSL related configuration
+        final SSLHandlerFactory sslHandlerFactory;
+        try {
+            sslHandlerFactory = config.createServerSSLEngineFactory();
+        } catch (Exception e) {
+            throw new IOException("Failed to initialize SSL Context for the Netty Server", e);
+        }
 
-		// SSL related configuration
-		try {
-			serverSSLContext = config.createServerSSLContext();
-		} catch (Exception e) {
-			throw new IOException("Failed to initialize SSL Context for the Netty Server", e);
-		}
+        // --------------------------------------------------------------------
+        // Child channel pipeline for accepted connections
+        // --------------------------------------------------------------------
 
-		// --------------------------------------------------------------------
-		// Child channel pipeline for accepted connections
-		// --------------------------------------------------------------------
+        bootstrap.childHandler(channelInitializer.apply(sslHandlerFactory));
 
-		bootstrap.childHandler(new ChannelInitializer<SocketChannel>() {
-			@Override
-			public void initChannel(SocketChannel channel) throws Exception {
-				if (serverSSLContext != null) {
-					SSLEngine sslEngine = serverSSLContext.createSSLEngine();
-					sslEngine.setUseClientMode(false);
-					channel.pipeline().addLast("ssl", new SslHandler(sslEngine));
-				}
+        // --------------------------------------------------------------------
+        // Start Server
+        // --------------------------------------------------------------------
 
-				channel.pipeline().addLast(protocol.getServerChannelHandlers());
-			}
-		});
+        bindFuture = bootstrap.bind().syncUninterruptibly();
 
-		// --------------------------------------------------------------------
-		// Start Server
-		// --------------------------------------------------------------------
+        localAddress = (InetSocketAddress) bindFuture.channel().localAddress();
 
-		bindFuture = bootstrap.bind().syncUninterruptibly();
+        final long duration = (System.nanoTime() - start) / 1_000_000;
+        LOG.info(
+                "Successful initialization (took {} ms). Listening on SocketAddress {}.",
+                duration,
+                localAddress);
 
-		localAddress = (InetSocketAddress) bindFuture.channel().localAddress();
+        return localAddress.getPort();
+    }
 
-		long end = System.currentTimeMillis();
-		LOG.info("Successful initialization (took {} ms). Listening on SocketAddress {}.", (end - start), bindFuture.channel().localAddress().toString());
-	}
+    NettyConfig getConfig() {
+        return config;
+    }
 
-	NettyConfig getConfig() {
-		return config;
-	}
+    ServerBootstrap getBootstrap() {
+        return bootstrap;
+    }
 
-	ServerBootstrap getBootstrap() {
-		return bootstrap;
-	}
+    void shutdown() {
+        final long start = System.nanoTime();
+        if (bindFuture != null) {
+            bindFuture.channel().close().awaitUninterruptibly();
+            bindFuture = null;
+        }
 
-	public InetSocketAddress getLocalAddress() {
-		return localAddress;
-	}
+        if (bootstrap != null) {
+            if (bootstrap.group() != null) {
+                bootstrap.group().shutdownGracefully();
+            }
+            bootstrap = null;
+        }
+        final long duration = (System.nanoTime() - start) / 1_000_000;
+        LOG.info("Successful shutdown (took {} ms).", duration);
+    }
 
-	void shutdown() {
-		long start = System.currentTimeMillis();
-		if (bindFuture != null) {
-			bindFuture.channel().close().awaitUninterruptibly();
-			bindFuture = null;
-		}
+    private void initNioBootstrap() {
+        // Add the server port number to the name in order to distinguish
+        // multiple servers running on the same host.
+        String name = NettyConfig.SERVER_THREAD_GROUP_NAME + " (" + config.getServerPort() + ")";
 
-		if (bootstrap != null) {
-			if (bootstrap.group() != null) {
-				bootstrap.group().shutdownGracefully();
-			}
-			bootstrap = null;
-		}
-		long end = System.currentTimeMillis();
-		LOG.info("Successful shutdown (took {} ms).", (end - start));
-	}
+        NioEventLoopGroup nioGroup =
+                new NioEventLoopGroup(config.getServerNumThreads(), getNamedThreadFactory(name));
+        bootstrap.group(nioGroup).channel(NioServerSocketChannel.class);
+    }
 
-	private void initNioBootstrap() {
-		// Add the server port number to the name in order to distinguish
-		// multiple servers running on the same host.
-		String name = NettyConfig.SERVER_THREAD_GROUP_NAME + " (" + config.getServerPort() + ")";
+    private void initEpollBootstrap() {
+        // Add the server port number to the name in order to distinguish
+        // multiple servers running on the same host.
+        String name = NettyConfig.SERVER_THREAD_GROUP_NAME + " (" + config.getServerPort() + ")";
 
-		NioEventLoopGroup nioGroup = new NioEventLoopGroup(config.getServerNumThreads(), getNamedThreadFactory(name));
-		bootstrap.group(nioGroup).channel(NioServerSocketChannel.class);
-	}
+        EpollEventLoopGroup epollGroup =
+                new EpollEventLoopGroup(config.getServerNumThreads(), getNamedThreadFactory(name));
+        bootstrap.group(epollGroup).channel(EpollServerSocketChannel.class);
+    }
 
-	private void initEpollBootstrap() {
-		// Add the server port number to the name in order to distinguish
-		// multiple servers running on the same host.
-		String name = NettyConfig.SERVER_THREAD_GROUP_NAME + " (" + config.getServerPort() + ")";
+    public static ThreadFactory getNamedThreadFactory(String name) {
+        return THREAD_FACTORY_BUILDER.setNameFormat(name + " Thread %d").build();
+    }
 
-		EpollEventLoopGroup epollGroup = new EpollEventLoopGroup(config.getServerNumThreads(), getNamedThreadFactory(name));
-		bootstrap.group(epollGroup).channel(EpollServerSocketChannel.class);
-	}
+    @VisibleForTesting
+    static class ServerChannelInitializer extends ChannelInitializer<SocketChannel> {
+        private final NettyProtocol protocol;
+        private final SSLHandlerFactory sslHandlerFactory;
 
-	public static ThreadFactory getNamedThreadFactory(String name) {
-		return THREAD_FACTORY_BUILDER.setNameFormat(name + " Thread %d").build();
-	}
+        public ServerChannelInitializer(
+                NettyProtocol protocol, SSLHandlerFactory sslHandlerFactory) {
+            this.protocol = protocol;
+            this.sslHandlerFactory = sslHandlerFactory;
+        }
+
+        @Override
+        public void initChannel(SocketChannel channel) throws Exception {
+            if (sslHandlerFactory != null) {
+                channel.pipeline()
+                        .addLast("ssl", sslHandlerFactory.createNettySSLHandler(channel.alloc()));
+            }
+
+            channel.pipeline().addLast(protocol.getServerChannelHandlers());
+        }
+    }
 }

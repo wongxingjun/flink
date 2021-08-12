@@ -18,20 +18,19 @@
 
 package org.apache.flink.graph.validation;
 
-import java.io.Serializable;
-
 import org.apache.flink.graph.Graph;
+
+import java.io.Serializable;
 
 /**
  * A utility for defining validation criteria for different types of Graphs.
- * 
+ *
  * @param <K> the vertex key type
  * @param <VV> the vertex value type
  * @param <EV> the edge value type
  */
 @SuppressWarnings("serial")
-public abstract class GraphValidator<K, VV, EV>	implements Serializable {
+public abstract class GraphValidator<K, VV, EV> implements Serializable {
 
-	public abstract boolean validate(Graph<K, VV, EV> graph) throws Exception;
-
+    public abstract boolean validate(Graph<K, VV, EV> graph) throws Exception;
 }

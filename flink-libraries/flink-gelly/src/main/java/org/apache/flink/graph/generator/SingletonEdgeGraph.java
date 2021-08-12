@@ -28,80 +28,84 @@ import org.apache.flink.graph.Vertex;
 import org.apache.flink.types.LongValue;
 import org.apache.flink.types.NullValue;
 import org.apache.flink.util.LongValueSequenceIterator;
+import org.apache.flink.util.Preconditions;
 
-/**
- * A singleton-edge {@link Graph} contains one or more isolated two-paths. The in- and out-degree
- * of every vertex is 1. For {@code n} vertices there are {@code n/2} components.
- */
-public class SingletonEdgeGraph
-extends AbstractGraphGenerator<LongValue, NullValue, NullValue> {
+/** A singleton-edge {@link Graph} contains one or more isolated two-paths. */
+public class SingletonEdgeGraph extends GraphGeneratorBase<LongValue, NullValue, NullValue> {
 
-	// Required to create the DataSource
-	private final ExecutionEnvironment env;
+    public static final int MINIMUM_VERTEX_PAIR_COUNT = 1;
 
-	// Required configuration
-	private long vertexPairCount;
+    // Required to create the DataSource
+    private final ExecutionEnvironment env;
 
-	/**
-	 * An undirected {@link Graph} containing isolated two-paths.
-	 *
-	 * @param env the Flink execution environment
-	 * @param vertexPairCount number of pairs of vertices
-	 */
-	public SingletonEdgeGraph(ExecutionEnvironment env, long vertexPairCount) {
-		if (vertexPairCount <= 0) {
-			throw new IllegalArgumentException("Vertex pair count must be greater than zero");
-		}
+    // Required configuration
+    private final long vertexPairCount;
 
-		this.env = env;
-		this.vertexPairCount = vertexPairCount;
-	}
+    /**
+     * An undirected {@link Graph} containing one or more isolated two-paths. The in- and out-degree
+     * of every vertex is 1. For {@code n} vertices there are {@code n/2} components.
+     *
+     * @param env the Flink execution environment
+     * @param vertexPairCount number of pairs of vertices
+     */
+    public SingletonEdgeGraph(ExecutionEnvironment env, long vertexPairCount) {
+        Preconditions.checkArgument(
+                vertexPairCount >= MINIMUM_VERTEX_PAIR_COUNT,
+                "Vertex pair count must be at least " + MINIMUM_VERTEX_PAIR_COUNT);
 
-	@Override
-	public Graph<LongValue,NullValue,NullValue> generate() {
-		// Vertices
-		long vertexCount = 2 * this.vertexPairCount;
+        this.env = env;
+        this.vertexPairCount = vertexPairCount;
+    }
 
-		DataSet<Vertex<LongValue,NullValue>> vertices = GraphGeneratorUtils.vertexSequence(env, parallelism, vertexCount);
+    @Override
+    public Graph<LongValue, NullValue, NullValue> generate() {
+        Preconditions.checkState(vertexPairCount > 0);
 
-		// Edges
-		LongValueSequenceIterator iterator = new LongValueSequenceIterator(0, vertexCount - 1);
+        // Vertices
+        long vertexCount = 2 * vertexPairCount;
 
-		DataSet<Edge<LongValue,NullValue>> edges = env
-			.fromParallelCollection(iterator, LongValue.class)
-				.setParallelism(parallelism)
-				.name("Edge iterators")
-			.map(new LinkVertexToSingletonNeighbor())
-				.setParallelism(parallelism)
-				.name("Complete graph edges");
+        DataSet<Vertex<LongValue, NullValue>> vertices =
+                GraphGeneratorUtils.vertexSequence(env, parallelism, vertexCount);
 
-		// Graph
-		return Graph.fromDataSet(vertices, edges, env);
-	}
+        // Edges
+        LongValueSequenceIterator iterator = new LongValueSequenceIterator(0, vertexCount - 1);
 
-	@ForwardedFields("*->f0")
-	private static class LinkVertexToSingletonNeighbor
-	implements MapFunction<LongValue, Edge<LongValue,NullValue>> {
+        DataSet<Edge<LongValue, NullValue>> edges =
+                env.fromParallelCollection(iterator, LongValue.class)
+                        .setParallelism(parallelism)
+                        .name("Edge iterators")
+                        .map(new LinkVertexToSingletonNeighbor())
+                        .setParallelism(parallelism)
+                        .name("Complete graph edges");
 
-		private LongValue source = new LongValue();
+        // Graph
+        return Graph.fromDataSet(vertices, edges, env);
+    }
 
-		private LongValue target = new LongValue();
+    @ForwardedFields("*->f0")
+    private static class LinkVertexToSingletonNeighbor
+            implements MapFunction<LongValue, Edge<LongValue, NullValue>> {
 
-		private Edge<LongValue,NullValue> edge = new Edge<>(source, target, NullValue.getInstance());
+        private LongValue source = new LongValue();
 
-		@Override
-		public Edge<LongValue,NullValue> map(LongValue value) throws Exception {
-			long val = value.getValue();
+        private LongValue target = new LongValue();
 
-			source.setValue(val);
+        private Edge<LongValue, NullValue> edge =
+                new Edge<>(source, target, NullValue.getInstance());
 
-			if (val % 2 == 0) {
-				target.setValue(val + 1);
-			} else {
-				target.setValue(val - 1);
-			}
+        @Override
+        public Edge<LongValue, NullValue> map(LongValue value) throws Exception {
+            long val = value.getValue();
 
-			return edge;
-		}
-	}
+            source.setValue(val);
+
+            if (val % 2 == 0) {
+                target.setValue(val + 1);
+            } else {
+                target.setValue(val - 1);
+            }
+
+            return edge;
+        }
+    }
 }

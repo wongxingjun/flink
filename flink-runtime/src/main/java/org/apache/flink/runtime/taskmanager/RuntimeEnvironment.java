@@ -21,245 +21,331 @@ package org.apache.flink.runtime.taskmanager;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.TaskInfo;
+import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.accumulators.AccumulatorRegistry;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
-import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
-import org.apache.flink.runtime.checkpoint.SubtaskState;
+import org.apache.flink.runtime.checkpoint.CheckpointException;
+import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
+import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
+import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
-import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
+import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
+import org.apache.flink.runtime.jobgraph.tasks.TaskOperatorEventGateway;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
+import org.apache.flink.runtime.state.TaskStateManager;
+import org.apache.flink.runtime.taskexecutor.GlobalAggregateManager;
+import org.apache.flink.runtime.throughput.ThroughputCalculator;
+import org.apache.flink.util.UserCodeClassLoader;
+
+import javax.annotation.Nullable;
 
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/**
- * In implementation of the {@link Environment}.
- */
+/** In implementation of the {@link Environment}. */
 public class RuntimeEnvironment implements Environment {
 
-	private final JobID jobId;
-	private final JobVertexID jobVertexId;
-	private final ExecutionAttemptID executionId;
-	
-	private final TaskInfo taskInfo;
-	
-	private final Configuration jobConfiguration;
-	private final Configuration taskConfiguration;
-	private final ExecutionConfig executionConfig;
+    private final JobID jobId;
+    private final JobVertexID jobVertexId;
+    private final ExecutionAttemptID executionId;
 
-	private final ClassLoader userCodeClassLoader;
+    private final TaskInfo taskInfo;
 
-	private final MemoryManager memManager;
-	private final IOManager ioManager;
-	private final BroadcastVariableManager bcVarManager;
-	private final InputSplitProvider splitProvider;
-	
-	private final Map<String, Future<Path>> distCacheEntries;
+    private final Configuration jobConfiguration;
+    private final Configuration taskConfiguration;
+    private final ExecutionConfig executionConfig;
 
-	private final ResultPartitionWriter[] writers;
-	private final InputGate[] inputGates;
-	
-	private final CheckpointResponder checkpointResponder;
+    private final UserCodeClassLoader userCodeClassLoader;
 
-	private final AccumulatorRegistry accumulatorRegistry;
+    private final MemoryManager memManager;
+    private final IOManager ioManager;
+    private final BroadcastVariableManager bcVarManager;
+    private final TaskStateManager taskStateManager;
+    private final GlobalAggregateManager aggregateManager;
+    private final InputSplitProvider splitProvider;
+    private final ExternalResourceInfoProvider externalResourceInfoProvider;
 
-	private final TaskKvStateRegistry kvStateRegistry;
+    private final Map<String, Future<Path>> distCacheEntries;
 
-	private final TaskManagerRuntimeInfo taskManagerInfo;
-	private final TaskMetricGroup metrics;
+    private final ResultPartitionWriter[] writers;
+    private final IndexedInputGate[] inputGates;
 
-	private final Task containingTask;
+    private final TaskEventDispatcher taskEventDispatcher;
 
-	// ------------------------------------------------------------------------
+    private final CheckpointResponder checkpointResponder;
+    private final TaskOperatorEventGateway operatorEventGateway;
 
-	public RuntimeEnvironment(
-			JobID jobId,
-			JobVertexID jobVertexId,
-			ExecutionAttemptID executionId,
-			ExecutionConfig executionConfig,
-			TaskInfo taskInfo,
-			Configuration jobConfiguration,
-			Configuration taskConfiguration,
-			ClassLoader userCodeClassLoader,
-			MemoryManager memManager,
-			IOManager ioManager,
-			BroadcastVariableManager bcVarManager,
-			AccumulatorRegistry accumulatorRegistry,
-			TaskKvStateRegistry kvStateRegistry,
-			InputSplitProvider splitProvider,
-			Map<String, Future<Path>> distCacheEntries,
-			ResultPartitionWriter[] writers,
-			InputGate[] inputGates,
-			CheckpointResponder checkpointResponder,
-			TaskManagerRuntimeInfo taskManagerInfo,
-			TaskMetricGroup metrics,
-			Task containingTask) {
+    private final AccumulatorRegistry accumulatorRegistry;
 
-		this.jobId = checkNotNull(jobId);
-		this.jobVertexId = checkNotNull(jobVertexId);
-		this.executionId = checkNotNull(executionId);
-		this.taskInfo = checkNotNull(taskInfo);
-		this.executionConfig = checkNotNull(executionConfig);
-		this.jobConfiguration = checkNotNull(jobConfiguration);
-		this.taskConfiguration = checkNotNull(taskConfiguration);
-		this.userCodeClassLoader = checkNotNull(userCodeClassLoader);
-		this.memManager = checkNotNull(memManager);
-		this.ioManager = checkNotNull(ioManager);
-		this.bcVarManager = checkNotNull(bcVarManager);
-		this.accumulatorRegistry = checkNotNull(accumulatorRegistry);
-		this.kvStateRegistry = checkNotNull(kvStateRegistry);
-		this.splitProvider = checkNotNull(splitProvider);
-		this.distCacheEntries = checkNotNull(distCacheEntries);
-		this.writers = checkNotNull(writers);
-		this.inputGates = checkNotNull(inputGates);
-		this.checkpointResponder = checkNotNull(checkpointResponder);
-		this.taskManagerInfo = checkNotNull(taskManagerInfo);
-		this.containingTask = containingTask;
-		this.metrics = metrics;
-	}
+    private final TaskKvStateRegistry kvStateRegistry;
 
-	// ------------------------------------------------------------------------
+    private final TaskManagerRuntimeInfo taskManagerInfo;
+    private final TaskMetricGroup metrics;
 
-	@Override
-	public ExecutionConfig getExecutionConfig() {
-		return this.executionConfig;
-	}
+    private final Task containingTask;
 
-	@Override
-	public JobID getJobID() {
-		return jobId;
-	}
+    @Nullable private MailboxExecutor mainMailboxExecutor;
 
-	@Override
-	public JobVertexID getJobVertexId() {
-		return jobVertexId;
-	}
+    @Nullable private ExecutorService asyncOperationsThreadPool;
 
-	@Override
-	public ExecutionAttemptID getExecutionId() {
-		return executionId;
-	}
+    private final ThroughputCalculator throughputCalculator;
 
-	@Override
-	public TaskInfo getTaskInfo() {
-		return this.taskInfo;
-	}
+    // ------------------------------------------------------------------------
 
-	@Override
-	public Configuration getJobConfiguration() {
-		return jobConfiguration;
-	}
+    public RuntimeEnvironment(
+            JobID jobId,
+            JobVertexID jobVertexId,
+            ExecutionAttemptID executionId,
+            ExecutionConfig executionConfig,
+            TaskInfo taskInfo,
+            Configuration jobConfiguration,
+            Configuration taskConfiguration,
+            UserCodeClassLoader userCodeClassLoader,
+            MemoryManager memManager,
+            IOManager ioManager,
+            BroadcastVariableManager bcVarManager,
+            TaskStateManager taskStateManager,
+            GlobalAggregateManager aggregateManager,
+            AccumulatorRegistry accumulatorRegistry,
+            TaskKvStateRegistry kvStateRegistry,
+            InputSplitProvider splitProvider,
+            Map<String, Future<Path>> distCacheEntries,
+            ResultPartitionWriter[] writers,
+            IndexedInputGate[] inputGates,
+            TaskEventDispatcher taskEventDispatcher,
+            CheckpointResponder checkpointResponder,
+            TaskOperatorEventGateway operatorEventGateway,
+            TaskManagerRuntimeInfo taskManagerInfo,
+            TaskMetricGroup metrics,
+            Task containingTask,
+            ExternalResourceInfoProvider externalResourceInfoProvider,
+            ThroughputCalculator throughputCalculator) {
 
-	@Override
-	public Configuration getTaskConfiguration() {
-		return taskConfiguration;
-	}
+        this.jobId = checkNotNull(jobId);
+        this.jobVertexId = checkNotNull(jobVertexId);
+        this.executionId = checkNotNull(executionId);
+        this.taskInfo = checkNotNull(taskInfo);
+        this.executionConfig = checkNotNull(executionConfig);
+        this.jobConfiguration = checkNotNull(jobConfiguration);
+        this.taskConfiguration = checkNotNull(taskConfiguration);
+        this.userCodeClassLoader = checkNotNull(userCodeClassLoader);
+        this.memManager = checkNotNull(memManager);
+        this.ioManager = checkNotNull(ioManager);
+        this.bcVarManager = checkNotNull(bcVarManager);
+        this.taskStateManager = checkNotNull(taskStateManager);
+        this.aggregateManager = checkNotNull(aggregateManager);
+        this.accumulatorRegistry = checkNotNull(accumulatorRegistry);
+        this.kvStateRegistry = checkNotNull(kvStateRegistry);
+        this.splitProvider = checkNotNull(splitProvider);
+        this.distCacheEntries = checkNotNull(distCacheEntries);
+        this.writers = checkNotNull(writers);
+        this.inputGates = checkNotNull(inputGates);
+        this.taskEventDispatcher = checkNotNull(taskEventDispatcher);
+        this.checkpointResponder = checkNotNull(checkpointResponder);
+        this.operatorEventGateway = checkNotNull(operatorEventGateway);
+        this.taskManagerInfo = checkNotNull(taskManagerInfo);
+        this.containingTask = containingTask;
+        this.metrics = metrics;
+        this.externalResourceInfoProvider = checkNotNull(externalResourceInfoProvider);
+        this.throughputCalculator = throughputCalculator;
+    }
 
-	@Override
-	public TaskManagerRuntimeInfo getTaskManagerInfo() {
-		return taskManagerInfo;
-	}
+    // ------------------------------------------------------------------------
 
-	@Override
-	public TaskMetricGroup getMetricGroup() {
-		return metrics;
-	}
+    @Override
+    public ExecutionConfig getExecutionConfig() {
+        return this.executionConfig;
+    }
 
-	@Override
-	public ClassLoader getUserClassLoader() {
-		return userCodeClassLoader;
-	}
+    @Override
+    public JobID getJobID() {
+        return jobId;
+    }
 
-	@Override
-	public MemoryManager getMemoryManager() {
-		return memManager;
-	}
+    @Override
+    public JobVertexID getJobVertexId() {
+        return jobVertexId;
+    }
 
-	@Override
-	public IOManager getIOManager() {
-		return ioManager;
-	}
+    @Override
+    public ExecutionAttemptID getExecutionId() {
+        return executionId;
+    }
 
-	@Override
-	public BroadcastVariableManager getBroadcastVariableManager() {
-		return bcVarManager;
-	}
+    @Override
+    public TaskInfo getTaskInfo() {
+        return this.taskInfo;
+    }
 
-	@Override
-	public AccumulatorRegistry getAccumulatorRegistry() {
-		return accumulatorRegistry;
-	}
+    @Override
+    public Configuration getJobConfiguration() {
+        return jobConfiguration;
+    }
 
-	@Override
-	public TaskKvStateRegistry getTaskKvStateRegistry() {
-		return kvStateRegistry;
-	}
+    @Override
+    public Configuration getTaskConfiguration() {
+        return taskConfiguration;
+    }
 
-	@Override
-	public InputSplitProvider getInputSplitProvider() {
-		return splitProvider;
-	}
+    @Override
+    public TaskManagerRuntimeInfo getTaskManagerInfo() {
+        return taskManagerInfo;
+    }
 
-	@Override
-	public Map<String, Future<Path>> getDistributedCacheEntries() {
-		return distCacheEntries;
-	}
+    @Override
+    public TaskMetricGroup getMetricGroup() {
+        return metrics;
+    }
 
-	@Override
-	public ResultPartitionWriter getWriter(int index) {
-		return writers[index];
-	}
+    @Override
+    public UserCodeClassLoader getUserCodeClassLoader() {
+        return userCodeClassLoader;
+    }
 
-	@Override
-	public ResultPartitionWriter[] getAllWriters() {
-		return writers;
-	}
+    @Override
+    public MemoryManager getMemoryManager() {
+        return memManager;
+    }
 
-	@Override
-	public InputGate getInputGate(int index) {
-		return inputGates[index];
-	}
+    @Override
+    public IOManager getIOManager() {
+        return ioManager;
+    }
 
-	@Override
-	public InputGate[] getAllInputGates() {
-		return inputGates;
-	}
+    @Override
+    public BroadcastVariableManager getBroadcastVariableManager() {
+        return bcVarManager;
+    }
 
-	@Override
-	public void acknowledgeCheckpoint(CheckpointMetaData checkpointMetaData) {
+    @Override
+    public TaskStateManager getTaskStateManager() {
+        return taskStateManager;
+    }
 
-		acknowledgeCheckpoint(checkpointMetaData, null);
-	}
+    @Override
+    public GlobalAggregateManager getGlobalAggregateManager() {
+        return aggregateManager;
+    }
 
-	@Override
-	public void acknowledgeCheckpoint(
-			CheckpointMetaData checkpointMetaData,
-			SubtaskState checkpointStateHandles) {
+    @Override
+    public AccumulatorRegistry getAccumulatorRegistry() {
+        return accumulatorRegistry;
+    }
 
+    @Override
+    public TaskKvStateRegistry getTaskKvStateRegistry() {
+        return kvStateRegistry;
+    }
 
-		checkpointResponder.acknowledgeCheckpoint(
-				jobId, executionId, checkpointMetaData,
-				checkpointStateHandles);
-	}
+    @Override
+    public InputSplitProvider getInputSplitProvider() {
+        return splitProvider;
+    }
 
-	@Override
-	public void declineCheckpoint(long checkpointId, Throwable cause) {
-		checkpointResponder.declineCheckpoint(jobId, executionId, checkpointId, cause);
-	}
+    @Override
+    public Map<String, Future<Path>> getDistributedCacheEntries() {
+        return distCacheEntries;
+    }
 
-	@Override
-	public void failExternally(Throwable cause) {
-		this.containingTask.failExternally(cause);
-	}
+    @Override
+    public ResultPartitionWriter getWriter(int index) {
+        return writers[index];
+    }
+
+    @Override
+    public ResultPartitionWriter[] getAllWriters() {
+        return writers;
+    }
+
+    @Override
+    public IndexedInputGate getInputGate(int index) {
+        return inputGates[index];
+    }
+
+    @Override
+    public IndexedInputGate[] getAllInputGates() {
+        return inputGates;
+    }
+
+    @Override
+    public TaskEventDispatcher getTaskEventDispatcher() {
+        return taskEventDispatcher;
+    }
+
+    @Override
+    public ExternalResourceInfoProvider getExternalResourceInfoProvider() {
+        return externalResourceInfoProvider;
+    }
+
+    @Override
+    public void acknowledgeCheckpoint(long checkpointId, CheckpointMetrics checkpointMetrics) {
+        acknowledgeCheckpoint(checkpointId, checkpointMetrics, null);
+    }
+
+    @Override
+    public void acknowledgeCheckpoint(
+            long checkpointId,
+            CheckpointMetrics checkpointMetrics,
+            TaskStateSnapshot checkpointStateHandles) {
+
+        checkpointResponder.acknowledgeCheckpoint(
+                jobId, executionId, checkpointId, checkpointMetrics, checkpointStateHandles);
+    }
+
+    @Override
+    public void declineCheckpoint(long checkpointId, CheckpointException checkpointException) {
+        checkpointResponder.declineCheckpoint(
+                jobId, executionId, checkpointId, checkpointException);
+    }
+
+    @Override
+    public TaskOperatorEventGateway getOperatorCoordinatorEventGateway() {
+        return operatorEventGateway;
+    }
+
+    @Override
+    public void failExternally(Throwable cause) {
+        this.containingTask.failExternally(cause);
+    }
+
+    @Override
+    public void setMainMailboxExecutor(MailboxExecutor mainMailboxExecutor) {
+        this.mainMailboxExecutor = mainMailboxExecutor;
+    }
+
+    @Override
+    public MailboxExecutor getMainMailboxExecutor() {
+        return checkNotNull(
+                mainMailboxExecutor, "mainMailboxExecutor has not been initialized yet!");
+    }
+
+    @Override
+    public void setAsyncOperationsThreadPool(ExecutorService executorService) {
+        this.asyncOperationsThreadPool = executorService;
+    }
+
+    @Override
+    public ExecutorService getAsyncOperationsThreadPool() {
+        return checkNotNull(
+                asyncOperationsThreadPool,
+                "asyncOperationsThreadPool has not been initialized yet!");
+    }
+
+    @Override
+    public ThroughputCalculator getThroughputCalculator() {
+        return throughputCalculator;
+    }
 }

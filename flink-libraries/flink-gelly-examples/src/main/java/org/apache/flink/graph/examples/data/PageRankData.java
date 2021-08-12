@@ -18,52 +18,41 @@
 
 package org.apache.flink.graph.examples.data;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.graph.Edge;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * Provides the default data set used for the PageRank test program.
- * If no parameters are given to the program, the default edge data set is used.
+ * Provides the default data set used for the PageRank test program. If no parameters are given to
+ * the program, the default edge data set is used.
  */
 public class PageRankData {
-	
-	public static final String EDGES = "2	1\n" +
-										"5	2\n" + 
-										"5	4\n" +
-										"4	3\n" +
-										"4	2\n" +
-										"1	4\n" +
-										"1	2\n" +
-										"1	3\n" +
-										"3	5\n";
 
-	
-	public static final String RANKS_AFTER_3_ITERATIONS = "1,0.237\n" +
-														"2,0.248\n" + 
-														"3,0.173\n" +
-														"4,0.175\n" +
-														"5,0.165\n";
+    public static final String EDGES =
+            "2	1\n" + "5	2\n" + "5	4\n" + "4	3\n" + "4	2\n" + "1	4\n" + "1	2\n" + "1	3\n" + "3	5\n";
 
-	private PageRankData() {}
+    public static final String RANKS_AFTER_3_ITERATIONS =
+            "1,0.237\n" + "2,0.248\n" + "3,0.173\n" + "4,0.175\n" + "5,0.165\n";
 
-	public static final DataSet<Edge<Long, Double>> getDefaultEdgeDataSet(ExecutionEnvironment env) {
+    private PageRankData() {}
 
-		List<Edge<Long, Double>> edges = new ArrayList<Edge<Long, Double>>();
-		edges.add(new Edge<Long, Double>(2L, 1L, 1.0));
-		edges.add(new Edge<Long, Double>(5L, 2L, 1.0));
-		edges.add(new Edge<Long, Double>(5L, 4L, 1.0));
-		edges.add(new Edge<Long, Double>(4L, 3L, 1.0));
-		edges.add(new Edge<Long, Double>(4L, 2L, 1.0));
-		edges.add(new Edge<Long, Double>(1L, 4L, 1.0));
-		edges.add(new Edge<Long, Double>(1L, 2L, 1.0));
-		edges.add(new Edge<Long, Double>(1L, 3L, 1.0));
-		edges.add(new Edge<Long, Double>(3L, 5L, 1.0));
+    public static final DataSet<Edge<Long, Double>> getDefaultEdgeDataSet(
+            ExecutionEnvironment env) {
 
-		return env.fromCollection(edges);
-	}
+        List<Edge<Long, Double>> edges = new ArrayList<>();
+        edges.add(new Edge<>(2L, 1L, 1.0));
+        edges.add(new Edge<>(5L, 2L, 1.0));
+        edges.add(new Edge<>(5L, 4L, 1.0));
+        edges.add(new Edge<>(4L, 3L, 1.0));
+        edges.add(new Edge<>(4L, 2L, 1.0));
+        edges.add(new Edge<>(1L, 4L, 1.0));
+        edges.add(new Edge<>(1L, 2L, 1.0));
+        edges.add(new Edge<>(1L, 3L, 1.0));
+        edges.add(new Edge<>(3L, 5L, 1.0));
+
+        return env.fromCollection(edges);
+    }
 }
-

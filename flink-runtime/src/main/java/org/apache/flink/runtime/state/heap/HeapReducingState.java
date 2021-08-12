@@ -21,103 +21,123 @@ package org.apache.flink.runtime.state.heap;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.state.ReducingState;
 import org.apache.flink.api.common.state.ReducingStateDescriptor;
+import org.apache.flink.api.common.state.State;
+import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.runtime.state.KeyedStateBackend;
+import org.apache.flink.runtime.state.StateTransformationFunction;
+import org.apache.flink.runtime.state.internal.InternalReducingState;
 import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
-import java.util.Map;
 
 /**
- * Heap-backed partitioned {@link org.apache.flink.api.common.state.ReducingState} that is
- * snapshotted into files.
- * 
+ * Heap-backed partitioned {@link ReducingState} that is snapshotted into files.
+ *
  * @param <K> The type of the key.
  * @param <N> The type of the namespace.
  * @param <V> The type of the value.
  */
-public class HeapReducingState<K, N, V>
-		extends AbstractHeapState<K, N, V, ReducingState<V>, ReducingStateDescriptor<V>>
-		implements ReducingState<V> {
+class HeapReducingState<K, N, V> extends AbstractHeapMergingState<K, N, V, V, V>
+        implements InternalReducingState<K, N, V> {
 
-	private final ReduceFunction<V> reduceFunction;
+    private final ReduceTransformation<V> reduceTransformation;
 
-	/**
-	 * Creates a new key/value state for the given hash map of key/value pairs.
-	 *
-	 * @param backend The state backend backing that created this state.
-	 * @param stateDesc The state identifier for the state. This contains name
-	 *                           and can create a default state value.
-	 * @param stateTable The state tab;e to use in this kev/value state. May contain initial state.
-	 */
-	public HeapReducingState(
-			KeyedStateBackend<K> backend,
-			ReducingStateDescriptor<V> stateDesc,
-			StateTable<K, N, V> stateTable,
-			TypeSerializer<K> keySerializer,
-			TypeSerializer<N> namespaceSerializer) {
-		super(backend, stateDesc, stateTable, keySerializer, namespaceSerializer);
-		this.reduceFunction = stateDesc.getReduceFunction();
-	}
+    /**
+     * Creates a new key/value state for the given hash map of key/value pairs.
+     *
+     * @param stateTable The state table for which this state is associated to.
+     * @param keySerializer The serializer for the keys.
+     * @param valueSerializer The serializer for the state.
+     * @param namespaceSerializer The serializer for the namespace.
+     * @param defaultValue The default value for the state.
+     * @param reduceFunction The reduce function used for reducing state.
+     */
+    private HeapReducingState(
+            StateTable<K, N, V> stateTable,
+            TypeSerializer<K> keySerializer,
+            TypeSerializer<V> valueSerializer,
+            TypeSerializer<N> namespaceSerializer,
+            V defaultValue,
+            ReduceFunction<V> reduceFunction) {
 
-	@Override
-	public V get() {
-		Preconditions.checkState(currentNamespace != null, "No namespace set.");
-		Preconditions.checkState(backend.getCurrentKey() != null, "No key set.");
+        super(stateTable, keySerializer, valueSerializer, namespaceSerializer, defaultValue);
+        this.reduceTransformation = new ReduceTransformation<>(reduceFunction);
+    }
 
-		Map<N, Map<K, V>> namespaceMap =
-				stateTable.get(backend.getCurrentKeyGroupIndex());
+    @Override
+    public TypeSerializer<K> getKeySerializer() {
+        return keySerializer;
+    }
 
-		if (namespaceMap == null) {
-			return null;
-		}
+    @Override
+    public TypeSerializer<N> getNamespaceSerializer() {
+        return namespaceSerializer;
+    }
 
-		Map<K, V> keyedMap = namespaceMap.get(currentNamespace);
+    @Override
+    public TypeSerializer<V> getValueSerializer() {
+        return valueSerializer;
+    }
 
-		if (keyedMap == null) {
-			return null;
-		}
+    // ------------------------------------------------------------------------
+    //  state access
+    // ------------------------------------------------------------------------
 
-		return keyedMap.get(backend.<K>getCurrentKey());
-	}
+    @Override
+    public V get() {
+        return getInternal();
+    }
 
-	@Override
-	public void add(V value) throws IOException {
-		Preconditions.checkState(currentNamespace != null, "No namespace set.");
-		Preconditions.checkState(backend.getCurrentKey() != null, "No key set.");
+    @Override
+    public void add(V value) throws IOException {
 
-		if (value == null) {
-			clear();
-			return;
-		}
+        if (value == null) {
+            clear();
+            return;
+        }
 
-		Map<N, Map<K, V>> namespaceMap =
-				stateTable.get(backend.getCurrentKeyGroupIndex());
+        try {
+            stateTable.transform(currentNamespace, value, reduceTransformation);
+        } catch (Exception e) {
+            throw new IOException("Exception while applying ReduceFunction in reducing state", e);
+        }
+    }
 
-		if (namespaceMap == null) {
-			namespaceMap = createNewMap();
-			stateTable.set(backend.getCurrentKeyGroupIndex(), namespaceMap);
-		}
+    // ------------------------------------------------------------------------
+    //  state merging
+    // ------------------------------------------------------------------------
 
-		Map<K, V> keyedMap = namespaceMap.get(currentNamespace);
+    @Override
+    protected V mergeState(V a, V b) throws Exception {
+        return reduceTransformation.apply(a, b);
+    }
 
-		if (keyedMap == null) {
-			keyedMap = createNewMap();
-			namespaceMap.put(currentNamespace, keyedMap);
-		}
+    static final class ReduceTransformation<V> implements StateTransformationFunction<V, V> {
 
-		V currentValue = keyedMap.put(backend.<K>getCurrentKey(), value);
+        private final ReduceFunction<V> reduceFunction;
 
-		if (currentValue == null) {
-			// we're good, just added the new value
-		} else {
-			V reducedValue = null;
-			try {
-				reducedValue = reduceFunction.reduce(currentValue, value);
-			} catch (Exception e) {
-				throw new RuntimeException("Could not add value to reducing state.", e);
-			}
-			keyedMap.put(backend.<K>getCurrentKey(), reducedValue);
-		}
-	}
+        ReduceTransformation(ReduceFunction<V> reduceFunction) {
+            this.reduceFunction = Preconditions.checkNotNull(reduceFunction);
+        }
+
+        @Override
+        public V apply(V previousState, V value) throws Exception {
+            return previousState != null ? reduceFunction.reduce(previousState, value) : value;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    static <K, N, SV, S extends State, IS extends S> IS create(
+            StateDescriptor<S, SV> stateDesc,
+            StateTable<K, N, SV> stateTable,
+            TypeSerializer<K> keySerializer) {
+        return (IS)
+                new HeapReducingState<>(
+                        stateTable,
+                        keySerializer,
+                        stateTable.getStateSerializer(),
+                        stateTable.getNamespaceSerializer(),
+                        stateDesc.getDefaultValue(),
+                        ((ReducingStateDescriptor<SV>) stateDesc).getReduceFunction());
+    }
 }

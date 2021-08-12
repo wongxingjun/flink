@@ -21,94 +21,51 @@ import org.apache.flink.annotation.Public;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.java.ExecutionEnvironment;
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.runtime.jobgraph.JobGraph;
-import org.apache.flink.runtime.minicluster.LocalFlinkMiniCluster;
-
+import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.streaming.api.graph.StreamGraph;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * The LocalStreamEnvironment is a StreamExecutionEnvironment that runs the program locally,
- * multi-threaded, in the JVM where the environment is instantiated. It spawns an embedded
- * Flink cluster in the background and executes the program on that cluster.
- *
- * <p>When this environment is instantiated, it uses a default parallelism of {@code 1}. The default
- * parallelism can be set via {@link #setParallelism(int)}.
- *
- * <p>Local environments can also be instantiated through {@link StreamExecutionEnvironment#createLocalEnvironment()}
- * and {@link StreamExecutionEnvironment#createLocalEnvironment(int)}. The former version will pick a
- * default parallelism equal to the number of hardware contexts in the local machine.
+ * multi-threaded, in the JVM where the environment is instantiated. It spawns an embedded Flink
+ * cluster in the background and executes the program on that cluster.
  */
 @Public
 public class LocalStreamEnvironment extends StreamExecutionEnvironment {
 
-	private static final Logger LOG = LoggerFactory.getLogger(LocalStreamEnvironment.class);
-	
-	/** The configuration to use for the local cluster */
-	private final Configuration conf;
+    /** Creates a new mini cluster stream environment that uses the default configuration. */
+    public LocalStreamEnvironment() {
+        this(new Configuration());
+    }
 
-	/**
-	 * Creates a new local stream environment that uses the default configuration.
-	 */
-	public LocalStreamEnvironment() {
-		this(null);
-	}
+    /**
+     * Creates a new mini cluster stream environment that configures its local executor with the
+     * given configuration.
+     *
+     * @param configuration The configuration used to configure the local executor.
+     */
+    public LocalStreamEnvironment(@Nonnull Configuration configuration) {
+        super(validateAndGetConfiguration(configuration));
+    }
 
-	/**
-	 * Creates a new local stream environment that configures its local executor with the given configuration.
-	 *
-	 * @param config The configuration used to configure the local executor.
-	 */
-	public LocalStreamEnvironment(Configuration config) {
-		if (!ExecutionEnvironment.areExplicitEnvironmentsAllowed()) {
-			throw new InvalidProgramException(
-					"The LocalStreamEnvironment cannot be used when submitting a program through a client, " +
-							"or running in a TestEnvironment context.");
-		}
-		
-		this.conf = config == null ? new Configuration() : config;
-	}
+    private static Configuration validateAndGetConfiguration(final Configuration configuration) {
+        if (!ExecutionEnvironment.areExplicitEnvironmentsAllowed()) {
+            throw new InvalidProgramException(
+                    "The LocalStreamEnvironment cannot be used when submitting a program through a client, "
+                            + "or running in a TestEnvironment context.");
+        }
+        final Configuration effectiveConfiguration = new Configuration(checkNotNull(configuration));
+        effectiveConfiguration.set(DeploymentOptions.TARGET, "local");
+        effectiveConfiguration.set(DeploymentOptions.ATTACHED, true);
+        return effectiveConfiguration;
+    }
 
-	/**
-	 * Executes the JobGraph of the on a mini cluster of CLusterUtil with a user
-	 * specified name.
-	 * 
-	 * @param jobName
-	 *            name of the job
-	 * @return The result of the job execution, containing elapsed time and accumulators.
-	 */
-	@Override
-	public JobExecutionResult execute(String jobName) throws Exception {
-		// transform the streaming program into a JobGraph
-		StreamGraph streamGraph = getStreamGraph();
-		streamGraph.setJobName(jobName);
-
-		JobGraph jobGraph = streamGraph.getJobGraph();
-
-		Configuration configuration = new Configuration();
-		configuration.addAll(jobGraph.getJobConfiguration());
-
-		configuration.setLong(ConfigConstants.TASK_MANAGER_MEMORY_SIZE_KEY, -1L);
-		configuration.setInteger(ConfigConstants.TASK_MANAGER_NUM_TASK_SLOTS, jobGraph.getMaximumParallelism());
-		
-		// add (and override) the settings with what the user defined
-		configuration.addAll(this.conf);
-		
-		if (LOG.isInfoEnabled()) {
-			LOG.info("Running job on local embedded Flink mini cluster");
-		}
-
-		LocalFlinkMiniCluster exec = new LocalFlinkMiniCluster(configuration, true);
-		try {
-			exec.start();
-			return exec.submitJobAndWait(jobGraph, getConfig().isSysoutLoggingEnabled());
-		}
-		finally {
-			transformations.clear();
-			exec.stop();
-		}
-	}
+    @Override
+    public JobExecutionResult execute(StreamGraph streamGraph) throws Exception {
+        return super.execute(streamGraph);
+    }
 }

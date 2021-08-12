@@ -18,14 +18,17 @@
 
 package org.apache.flink.runtime.io.network.netty;
 
-import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
+import org.apache.flink.configuration.SecurityOptions;
 import org.apache.flink.runtime.net.SSLUtils;
+import org.apache.flink.util.NetUtils;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLParameters;
+import javax.annotation.Nullable;
+
 import java.net.InetAddress;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -33,236 +36,164 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 
 public class NettyConfig {
 
-	private static final Logger LOG = LoggerFactory.getLogger(NettyConfig.class);
+    private static final Logger LOG = LoggerFactory.getLogger(NettyConfig.class);
 
-	// - Config keys ----------------------------------------------------------
+    enum TransportType {
+        NIO,
+        EPOLL,
+        AUTO
+    }
 
-	public static final String NUM_ARENAS = "taskmanager.net.num-arenas";
+    static final String SERVER_THREAD_GROUP_NAME = "Flink Netty Server";
 
-	public static final String NUM_THREADS_SERVER = "taskmanager.net.server.numThreads";
+    static final String CLIENT_THREAD_GROUP_NAME = "Flink Netty Client";
 
-	public static final String NUM_THREADS_CLIENT = "taskmanager.net.client.numThreads";
+    private final InetAddress serverAddress;
 
-	public static final String CONNECT_BACKLOG = "taskmanager.net.server.backlog";
+    private final int serverPort;
 
-	public static final String CLIENT_CONNECT_TIMEOUT_SECONDS = "taskmanager.net.client.connectTimeoutSec";
+    private final int memorySegmentSize;
 
-	public static final String SEND_RECEIVE_BUFFER_SIZE = "taskmanager.net.sendReceiveBufferSize";
+    private final int numberOfSlots;
 
-	public static final String TRANSPORT_TYPE = "taskmanager.net.transport";
+    private final Configuration config; // optional configuration
 
-	// ------------------------------------------------------------------------
+    public NettyConfig(
+            InetAddress serverAddress,
+            int serverPort,
+            int memorySegmentSize,
+            int numberOfSlots,
+            Configuration config) {
 
-	enum TransportType {
-		NIO, EPOLL, AUTO
-	}
+        this.serverAddress = checkNotNull(serverAddress);
 
-	final static String SERVER_THREAD_GROUP_NAME = "Flink Netty Server";
+        checkArgument(NetUtils.isValidHostPort(serverPort), "Invalid port number.");
+        this.serverPort = serverPort;
 
-	final static String CLIENT_THREAD_GROUP_NAME = "Flink Netty Client";
+        checkArgument(memorySegmentSize > 0, "Invalid memory segment size.");
+        this.memorySegmentSize = memorySegmentSize;
 
-	private final InetAddress serverAddress;
+        checkArgument(numberOfSlots > 0, "Number of slots");
+        this.numberOfSlots = numberOfSlots;
 
-	private final int serverPort;
+        this.config = checkNotNull(config);
 
-	private final int memorySegmentSize;
+        LOG.info(this.toString());
+    }
 
-	private final int numberOfSlots;
+    InetAddress getServerAddress() {
+        return serverAddress;
+    }
 
-	private final Configuration config; // optional configuration
+    int getServerPort() {
+        return serverPort;
+    }
 
-	public NettyConfig(
-			InetAddress serverAddress,
-			int serverPort,
-			int memorySegmentSize,
-			int numberOfSlots,
-			Configuration config) {
+    // ------------------------------------------------------------------------
+    // Getters
+    // ------------------------------------------------------------------------
 
-		this.serverAddress = checkNotNull(serverAddress);
+    public int getServerConnectBacklog() {
+        return config.getInteger(NettyShuffleEnvironmentOptions.CONNECT_BACKLOG);
+    }
 
-		checkArgument(serverPort >= 0 && serverPort <= 65536, "Invalid port number.");
-		this.serverPort = serverPort;
+    public int getNumberOfArenas() {
+        // default: number of slots
+        final int configValue = config.getInteger(NettyShuffleEnvironmentOptions.NUM_ARENAS);
+        return configValue == -1 ? numberOfSlots : configValue;
+    }
 
-		checkArgument(memorySegmentSize > 0, "Invalid memory segment size.");
-		this.memorySegmentSize = memorySegmentSize;
+    public int getServerNumThreads() {
+        // default: number of task slots
+        final int configValue =
+                config.getInteger(NettyShuffleEnvironmentOptions.NUM_THREADS_SERVER);
+        return configValue == -1 ? numberOfSlots : configValue;
+    }
 
-		checkArgument(numberOfSlots > 0, "Number of slots");
-		this.numberOfSlots = numberOfSlots;
+    public int getClientNumThreads() {
+        // default: number of task slots
+        final int configValue =
+                config.getInteger(NettyShuffleEnvironmentOptions.NUM_THREADS_CLIENT);
+        return configValue == -1 ? numberOfSlots : configValue;
+    }
 
-		this.config = checkNotNull(config);
+    public int getClientConnectTimeoutSeconds() {
+        return config.getInteger(NettyShuffleEnvironmentOptions.CLIENT_CONNECT_TIMEOUT_SECONDS);
+    }
 
-		LOG.info(this.toString());
-	}
+    public int getNetworkRetries() {
+        return config.getInteger(NettyShuffleEnvironmentOptions.NETWORK_RETRIES);
+    }
 
-	InetAddress getServerAddress() {
-		return serverAddress;
-	}
+    public int getSendAndReceiveBufferSize() {
+        return config.getInteger(NettyShuffleEnvironmentOptions.SEND_RECEIVE_BUFFER_SIZE);
+    }
 
-	int getServerPort() {
-		return serverPort;
-	}
+    public TransportType getTransportType() {
+        String transport = config.getString(NettyShuffleEnvironmentOptions.TRANSPORT_TYPE);
 
-	int getMemorySegmentSize() {
-		return memorySegmentSize;
-	}
+        switch (transport) {
+            case "nio":
+                return TransportType.NIO;
+            case "epoll":
+                return TransportType.EPOLL;
+            default:
+                return TransportType.AUTO;
+        }
+    }
 
-	public int getNumberOfSlots() {
-		return numberOfSlots;
-	}
+    @Nullable
+    public SSLHandlerFactory createClientSSLEngineFactory() throws Exception {
+        return getSSLEnabled() ? SSLUtils.createInternalClientSSLEngineFactory(config) : null;
+    }
 
-	// ------------------------------------------------------------------------
-	// Setters
-	// ------------------------------------------------------------------------
+    @Nullable
+    public SSLHandlerFactory createServerSSLEngineFactory() throws Exception {
+        return getSSLEnabled() ? SSLUtils.createInternalServerSSLEngineFactory(config) : null;
+    }
 
-	public NettyConfig setServerConnectBacklog(int connectBacklog) {
-		checkArgument(connectBacklog >= 0);
-		config.setInteger(CONNECT_BACKLOG, connectBacklog);
+    public boolean getSSLEnabled() {
+        return config.getBoolean(NettyShuffleEnvironmentOptions.DATA_SSL_ENABLED)
+                && SecurityOptions.isInternalSSLEnabled(config);
+    }
 
-		return this;
-	}
+    public Configuration getConfig() {
+        return config;
+    }
 
-	public NettyConfig setServerNumThreads(int numThreads) {
-		checkArgument(numThreads >= 0);
-		config.setInteger(NUM_THREADS_SERVER, numThreads);
+    @Override
+    public String toString() {
+        String format =
+                "NettyConfig ["
+                        + "server address: %s, "
+                        + "server port: %d, "
+                        + "ssl enabled: %s, "
+                        + "memory segment size (bytes): %d, "
+                        + "transport type: %s, "
+                        + "number of server threads: %d (%s), "
+                        + "number of client threads: %d (%s), "
+                        + "server connect backlog: %d (%s), "
+                        + "client connect timeout (sec): %d, "
+                        + "send/receive buffer size (bytes): %d (%s)]";
 
-		return this;
-	}
+        String def = "use Netty's default";
+        String man = "manual";
 
-	public NettyConfig setClientNumThreads(int numThreads) {
-		checkArgument(numThreads >= 0);
-		config.setInteger(NUM_THREADS_CLIENT, numThreads);
-
-		return this;
-	}
-
-	public NettyConfig setClientConnectTimeoutSeconds(int connectTimeoutSeconds) {
-		checkArgument(connectTimeoutSeconds >= 0);
-		config.setInteger(CLIENT_CONNECT_TIMEOUT_SECONDS, connectTimeoutSeconds);
-
-		return this;
-	}
-
-	public NettyConfig setSendAndReceiveBufferSize(int bufferSize) {
-		checkArgument(bufferSize >= 0);
-		config.setInteger(SEND_RECEIVE_BUFFER_SIZE, bufferSize);
-
-		return this;
-	}
-
-	public NettyConfig setTransportType(String transport) {
-		if (transport.equals("nio") || transport.equals("epoll") || transport.equals("auto")) {
-			config.setString(TRANSPORT_TYPE, transport);
-		}
-		else {
-			throw new IllegalArgumentException("Unknown transport type.");
-		}
-
-		return this;
-	}
-
-	// ------------------------------------------------------------------------
-	// Getters
-	// ------------------------------------------------------------------------
-
-	public int getServerConnectBacklog() {
-		// default: 0 => Netty's default
-		return config.getInteger(CONNECT_BACKLOG, 0);
-	}
-
-	public int getNumberOfArenas() {
-		// default: number of slots
-		return config.getInteger(NUM_ARENAS, numberOfSlots);
-	}
-
-	public int getServerNumThreads() {
-		// default: number of task slots
-		return config.getInteger(NUM_THREADS_SERVER, numberOfSlots);
-	}
-
-	public int getClientNumThreads() {
-		// default: number of task slots
-		return config.getInteger(NUM_THREADS_CLIENT, numberOfSlots);
-	}
-
-	public int getClientConnectTimeoutSeconds() {
-		// default: 120s = 2min
-		return config.getInteger(CLIENT_CONNECT_TIMEOUT_SECONDS, 120);
-	}
-
-	public int getSendAndReceiveBufferSize() {
-		// default: 0 => Netty's default
-		return config.getInteger(SEND_RECEIVE_BUFFER_SIZE, 0);
-	}
-
-	public TransportType getTransportType() {
-		String transport = config.getString(TRANSPORT_TYPE, "nio");
-
-		if (transport.equals("nio")) {
-			return TransportType.NIO;
-		}
-		else if (transport.equals("epoll")) {
-			return TransportType.EPOLL;
-		}
-		else {
-			return TransportType.AUTO;
-		}
-	}
-
-	public SSLContext createClientSSLContext() throws Exception {
-
-		// Create SSL Context from config
-		SSLContext clientSSLContext = null;
-		if (getSSLEnabled()) {
-			clientSSLContext = SSLUtils.createSSLClientContext(config);
-		}
-
-		return clientSSLContext;
-	}
-
-	public SSLContext createServerSSLContext() throws Exception {
-
-		// Create SSL Context from config
-		SSLContext serverSSLContext = null;
-		if (getSSLEnabled()) {
-			serverSSLContext = SSLUtils.createSSLServerContext(config);
-		}
-
-		return serverSSLContext;
-	}
-
-	public boolean getSSLEnabled() {
-		return config.getBoolean(ConfigConstants.TASK_MANAGER_DATA_SSL_ENABLED,
-				ConfigConstants.DEFAULT_TASK_MANAGER_DATA_SSL_ENABLED)
-			&& SSLUtils.getSSLEnabled(config);
-	}
-
-	public void setSSLVerifyHostname(SSLParameters sslParams) {
-		SSLUtils.setSSLVerifyHostname(config, sslParams);
-	}
-
-	@Override
-	public String toString() {
-		String format = "NettyConfig [" +
-				"server address: %s, " +
-				"server port: %d, " +
-				"ssl enabled: %s, " +
-				"memory segment size (bytes): %d, " +
-				"transport type: %s, " +
-				"number of server threads: %d (%s), " +
-				"number of client threads: %d (%s), " +
-				"server connect backlog: %d (%s), " +
-				"client connect timeout (sec): %d, " +
-				"send/receive buffer size (bytes): %d (%s)]";
-
-		String def = "use Netty's default";
-		String man = "manual";
-
-		return String.format(format, serverAddress, serverPort, getSSLEnabled() ? "true":"false",
-				memorySegmentSize, getTransportType(), getServerNumThreads(),
-				getServerNumThreads() == 0 ? def : man,
-				getClientNumThreads(), getClientNumThreads() == 0 ? def : man,
-				getServerConnectBacklog(), getServerConnectBacklog() == 0 ? def : man,
-				getClientConnectTimeoutSeconds(), getSendAndReceiveBufferSize(),
-				getSendAndReceiveBufferSize() == 0 ? def : man);
-	}
+        return String.format(
+                format,
+                serverAddress,
+                serverPort,
+                getSSLEnabled() ? "true" : "false",
+                memorySegmentSize,
+                getTransportType(),
+                getServerNumThreads(),
+                getServerNumThreads() == 0 ? def : man,
+                getClientNumThreads(),
+                getClientNumThreads() == 0 ? def : man,
+                getServerConnectBacklog(),
+                getServerConnectBacklog() == 0 ? def : man,
+                getClientConnectTimeoutSeconds(),
+                getSendAndReceiveBufferSize(),
+                getSendAndReceiveBufferSize() == 0 ? def : man);
+    }
 }

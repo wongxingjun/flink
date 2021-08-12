@@ -18,86 +18,74 @@
 
 package org.apache.flink.test.classloading.jar;
 
-import java.util.StringTokenizer;
-
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
+import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
 import org.apache.flink.test.testdata.WordCountData;
 import org.apache.flink.util.Collector;
 
+import java.util.StringTokenizer;
+
+/** Test class used by the {@link org.apache.flink.test.classloading.ClassLoaderITCase}. */
 @SuppressWarnings("serial")
 public class StreamingProgram {
-	
-	public static void main(String[] args) throws Exception {
-		
-		final String jarFile = args[0];
-		final String host = args[1];
-		final int port = Integer.parseInt(args[2]);
-		
-		StreamExecutionEnvironment env = StreamExecutionEnvironment.createRemoteEnvironment(host, port, jarFile);
-		env.getConfig().disableSysoutLogging();
-		
-		DataStream<String> text = env.fromElements(WordCountData.TEXT).rebalance();
 
-		DataStream<Word> counts =
-				text.flatMap(new Tokenizer()).keyBy("word").sum("frequency");
+    public static void main(String[] args) throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-		counts.addSink(new NoOpSink());
+        DataStream<String> text = env.fromElements(WordCountData.TEXT).rebalance();
 
-		env.execute();
-	}
-	// --------------------------------------------------------------------------------------------
+        DataStream<Word> counts = text.flatMap(new Tokenizer()).keyBy("word").sum("frequency");
 
-	public static class Word {
+        counts.addSink(new DiscardingSink<>());
 
-		private String word;
-		private Integer frequency;
+        env.execute();
+    }
+    // --------------------------------------------------------------------------------------------
 
-		public Word() {
-		}
+    /** POJO with word and count. */
+    public static class Word {
 
-		public Word(String word, int i) {
-			this.word = word;
-			this.frequency = i;
-		}
+        private String word;
+        private Integer frequency;
 
-		public String getWord() {
-			return word;
-		}
+        public Word() {}
 
-		public void setWord(String word) {
-			this.word = word;
-		}
+        public Word(String word, int i) {
+            this.word = word;
+            this.frequency = i;
+        }
 
-		public Integer getFrequency() {
-			return frequency;
-		}
+        public String getWord() {
+            return word;
+        }
 
-		public void setFrequency(Integer frequency) {
-			this.frequency = frequency;
-		}
+        public void setWord(String word) {
+            this.word = word;
+        }
 
-		@Override
-		public String toString() {
-			return "(" + word + ", " + frequency + ")";
-		}
-	}
+        public Integer getFrequency() {
+            return frequency;
+        }
 
-	public static class Tokenizer implements FlatMapFunction<String, Word>{
-		@Override
-		public void flatMap(String value, Collector<Word> out) throws Exception {
-			StringTokenizer tokenizer = new StringTokenizer(value);
-			while (tokenizer.hasMoreTokens()){
-				out.collect(new Word(tokenizer.nextToken(), 1));
-			}
-		}
-	}
+        public void setFrequency(Integer frequency) {
+            this.frequency = frequency;
+        }
 
-	public static class NoOpSink implements SinkFunction<Word>{
-		@Override
-		public void invoke(Word value) throws Exception {
-		}
-	}
+        @Override
+        public String toString() {
+            return "(" + word + ", " + frequency + ")";
+        }
+    }
+
+    private static class Tokenizer implements FlatMapFunction<String, Word> {
+        @Override
+        public void flatMap(String value, Collector<Word> out) throws Exception {
+            StringTokenizer tokenizer = new StringTokenizer(value);
+            while (tokenizer.hasMoreTokens()) {
+                out.collect(new Word(tokenizer.nextToken(), 1));
+            }
+        }
+    }
 }

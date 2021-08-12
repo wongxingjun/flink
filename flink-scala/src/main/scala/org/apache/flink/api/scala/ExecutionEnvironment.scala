@@ -18,26 +18,22 @@
 package org.apache.flink.api.scala
 
 import com.esotericsoftware.kryo.Serializer
-import org.apache.flink.annotation.{PublicEvolving, Public}
+import org.apache.flink.annotation.{Public, PublicEvolving}
 import org.apache.flink.api.common.io.{FileInputFormat, InputFormat}
 import org.apache.flink.api.common.restartstrategy.RestartStrategies.RestartStrategyConfiguration
 import org.apache.flink.api.common.typeinfo.{BasicTypeInfo, TypeInformation}
 import org.apache.flink.api.common.typeutils.CompositeType
-import org.apache.flink.api.common.{ExecutionConfig, JobExecutionResult, JobID}
+import org.apache.flink.api.common.{ExecutionConfig, JobExecutionResult}
 import org.apache.flink.api.java.io._
 import org.apache.flink.api.java.operators.DataSource
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer
 import org.apache.flink.api.java.typeutils.{PojoTypeInfo, TupleTypeInfoBase, ValueTypeInfo}
 import org.apache.flink.api.java.{CollectionEnvironment, ExecutionEnvironment => JavaEnv}
-import org.apache.flink.api.scala.hadoop.{mapred, mapreduce}
-import org.apache.flink.configuration.Configuration
+import org.apache.flink.configuration.{Configuration, ReadableConfig}
+import org.apache.flink.core.execution.{JobClient, JobListener, PipelineExecutor}
 import org.apache.flink.core.fs.Path
 import org.apache.flink.types.StringValue
 import org.apache.flink.util.{NumberSequenceIterator, Preconditions, SplittableIterator}
-import org.apache.hadoop.fs.{Path => HadoopPath}
-import org.apache.hadoop.mapred.{FileInputFormat => MapredFileInputFormat, InputFormat => MapredInputFormat, JobConf}
-import org.apache.hadoop.mapreduce.lib.input.{FileInputFormat => MapreduceFileInputFormat}
-import org.apache.hadoop.mapreduce.{InputFormat => MapreduceInputFormat, Job}
 
 import scala.collection.JavaConverters._
 import scala.reflect.ClassTag
@@ -140,57 +136,9 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   def getNumberOfExecutionRetries = javaEnv.getNumberOfExecutionRetries
 
   /**
-   * Gets the UUID by which this environment is identified. The UUID sets the execution context
-   * in the cluster or local environment.
-   */
-  @PublicEvolving
-  def getId: JobID = {
-    javaEnv.getId
-  }
-
-  /**
    * Gets the JobExecutionResult of the last executed job.
    */
   def getLastJobExecutionResult = javaEnv.getLastJobExecutionResult
-
-  /**
-   * Gets the UUID by which this environment is identified, as a string.
-   */
-  @PublicEvolving
-  def getIdString: String = {
-    javaEnv.getIdString
-  }
-
-  /**
-   * Starts a new session, discarding all intermediate results.
-   */
-  @PublicEvolving
-  def startNewSession() {
-    javaEnv.startNewSession()
-  }
-
-  /**
-   * Sets the session timeout to hold the intermediate results of a job. This only
-   * applies the updated timeout in future executions.
- *
-   * @param timeout The timeout in seconds.
-   */
-  @PublicEvolving
-  def setSessionTimeout(timeout: Long) {
-    javaEnv.setSessionTimeout(timeout)
-  }
-
-  /**
-   * Gets the session timeout for this environment. The session timeout defines for how long
-   * after an execution, the job and its intermediate results will be kept for future
-   * interactions.
-   *
-   * @return The session timeout, in seconds.
-   */
-  @PublicEvolving
-  def getSessionTimeout: Long = {
-    javaEnv.getSessionTimeout
-  }
 
   /**
    * Registers the given type with the serializer at the [[KryoSerializer]].
@@ -245,11 +193,28 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   }
 
   /**
+   * Sets all relevant options contained in the [[ReadableConfig]] such as e.g.
+   * [[org.apache.flink.configuration.PipelineOptions#CACHED_FILES]]. It will reconfigure
+   * [[ExecutionEnvironment]] and [[ExecutionConfig]].
+   *
+   * It will change the value of a setting only if a corresponding option was set in the
+   * `configuration`. If a key is not present, the current value of a field will remain
+   * untouched.
+   *
+   * @param configuration a configuration to read the values from
+   * @param classLoader   a class loader to use when loading classes
+   */
+  @PublicEvolving
+  def configure(configuration: ReadableConfig, classLoader: ClassLoader): Unit = {
+    javaEnv.configure(configuration, classLoader)
+  }
+
+  /**
    * Creates a DataSet of Strings produced by reading the given file line wise.
    *
    * @param filePath The path of the file, as a URI (e.g., "file:///some/local/file" or
    *                 "hdfs://host:port/file/path").
-   * @param charsetName The name of the character set used to read the file. Default is UTF-0
+   * @param charsetName The name of the character set used to read the file. Default is UTF-8
    */
   def readTextFile(filePath: String, charsetName: String = "UTF-8"): DataSet[String] = {
     require(filePath != null, "The file path may not be null.")
@@ -268,7 +233,7 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
    *
    * @param filePath The path of the file, as a URI (e.g., "file:///some/local/file" or
    *                 "hdfs://host:port/file/path").
-   * @param charsetName The name of the character set used to read the file. Default is UTF-0
+   * @param charsetName The name of the character set used to read the file. Default is UTF-8
    */
   def readTextFileWithValue(
       filePath: String,
@@ -410,147 +375,6 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   }
 
   /**
-   * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapred.FileInputFormat]]. The
-   * given inputName is set on the given job.
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def readHadoopFile[K, V](
-      mapredInputFormat: MapredFileInputFormat[K, V],
-      key: Class[K],
-      value: Class[V],
-      inputPath: String,
-      job: JobConf)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[(K, V)] = {
-    val result = createHadoopInput(mapredInputFormat, key, value, job)
-    MapredFileInputFormat.addInputPath(job, new HadoopPath(inputPath))
-    result
-  }
-
-  /**
-   * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapred.FileInputFormat]]. A
-   * [[org.apache.hadoop.mapred.JobConf]] with the given inputPath is created.
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def readHadoopFile[K, V](
-      mapredInputFormat: MapredFileInputFormat[K, V],
-      key: Class[K],
-      value: Class[V],
-      inputPath: String)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[(K, V)] = {
-    readHadoopFile(mapredInputFormat, key, value, inputPath, new JobConf)
-  }
-
-  /**
-   * Creates a [[DataSet]] from [[org.apache.hadoop.mapred.SequenceFileInputFormat]]
-   * A [[org.apache.hadoop.mapred.JobConf]] with the given inputPath is created.
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readSequenceFile]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def readSequenceFile[K, V](
-      key: Class[K],
-      value: Class[V],
-      inputPath: String)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[(K, V)] = {
-    readHadoopFile(new org.apache.hadoop.mapred.SequenceFileInputFormat[K, V],
-      key, value, inputPath)
-  }
-
-  /**
-   * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapred.InputFormat]].
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#createHadoopInput]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def createHadoopInput[K, V](
-      mapredInputFormat: MapredInputFormat[K, V],
-      key: Class[K],
-      value: Class[V],
-      job: JobConf)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[(K, V)] = {
-    val hadoopInputFormat = new mapred.HadoopInputFormat[K, V](mapredInputFormat, key, value, job)
-    createInput(hadoopInputFormat)
-  }
-
-  /**
-   * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapreduce.lib.input.FileInputFormat]].
-   * The given inputName is set on the given job.
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def readHadoopFile[K, V](
-      mapreduceInputFormat: MapreduceFileInputFormat[K, V],
-      key: Class[K],
-      value: Class[V],
-      inputPath: String,
-      job: Job)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[(K, V)] = {
-    val result = createHadoopInput(mapreduceInputFormat, key, value, job)
-    MapreduceFileInputFormat.addInputPath(job, new HadoopPath(inputPath))
-    result
-  }
-
-  /**
-   * Creates a [[DataSet]] from the given
-   * [[org.apache.hadoop.mapreduce.lib.input.FileInputFormat]]. A
-   * [[org.apache.hadoop.mapreduce.Job]] with the given inputPath will be created.
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#readHadoopFile]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def readHadoopFile[K, V](
-      mapreduceInputFormat: MapreduceFileInputFormat[K, V],
-      key: Class[K],
-      value: Class[V],
-      inputPath: String)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[Tuple2[K, V]] = {
-    readHadoopFile(mapreduceInputFormat, key, value, inputPath, Job.getInstance)
-  }
-
-  /**
-   * Creates a [[DataSet]] from the given [[org.apache.hadoop.mapreduce.InputFormat]].
-   *
-   * @deprecated Please use
-   *             [[org.apache.flink.hadoopcompatibility.scala.HadoopInputs#createHadoopInput]]
-   * from the flink-hadoop-compatibility module.
-   */
-  @Deprecated
-  @PublicEvolving
-  def createHadoopInput[K, V](
-      mapreduceInputFormat: MapreduceInputFormat[K, V],
-      key: Class[K],
-      value: Class[V],
-      job: Job)
-      (implicit tpe: TypeInformation[(K, V)]): DataSet[Tuple2[K, V]] = {
-    val hadoopInputFormat =
-      new mapreduce.HadoopInputFormat[K, V](mapreduceInputFormat, key, value, job)
-    createInput(hadoopInputFormat)
-  }
-
-  /**
    * Creates a DataSet from the given non-empty [[Iterable]].
    *
    * Note that this operation will result in a non-parallel data source, i.e. a data source with
@@ -639,9 +463,8 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Registers a file at the distributed cache under the given name. The file will be accessible
    * from any user-defined function in the (distributed) runtime under a local path. Files
-   * may be local files (as long as all relevant workers have access to it),
-   * or files in a distributed file system.
-   * The runtime will copy the files temporarily to a local cache, if needed.
+   * may be local files (which will be distributed via BlobServer), or files in a distributed file
+   * system. The runtime will copy the files temporarily to a local cache, if needed.
    *
    * The [[org.apache.flink.api.common.functions.RuntimeContext]] can be obtained inside UDFs
    * via
@@ -687,6 +510,62 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   }
 
   /**
+   * Register a [[JobListener]] in this environment. The [[JobListener]] will be
+   * notified on specific job status changed.
+   */
+  @PublicEvolving
+  def registerJobListener(jobListener: JobListener): Unit = {
+    javaEnv.registerJobListener(jobListener)
+  }
+
+  /**
+   * Clear all registered [[JobListener]]s.
+   */
+  @PublicEvolving def clearJobListeners(): Unit = {
+    javaEnv.clearJobListeners()
+  }
+
+  /**
+   * Triggers the program execution asynchronously.
+   * The environment will execute all parts of the program that have
+   * resulted in a "sink" operation. Sink operations are for example printing results
+   * [[DataSet.print]], writing results (e.g. [[DataSet.writeAsText]], [[DataSet.write]], or other
+   * generic data sinks created with [[DataSet.output]].
+   *
+   * The program execution will be logged and displayed with a generated default name.
+   *
+   * <b>ATTENTION:</b> The caller of this method is responsible for managing the lifecycle
+   * of the returned [[JobClient]]. This means calling [[JobClient#close()]] at the end of
+   * its usage. In other case, there may be resource leaks depending on the JobClient
+   * implementation.
+   *
+   * @return A [[JobClient]] that can be used to communicate with the submitted job,
+   *         completed on submission succeeded.
+   */
+  @PublicEvolving
+  def executeAsync(): JobClient = javaEnv.executeAsync()
+
+  /**
+   * Triggers the program execution asynchronously.
+   * The environment will execute all parts of the program that have
+   * resulted in a "sink" operation. Sink operations are for example printing results
+   * [[DataSet.print]], writing results (e.g. [[DataSet.writeAsText]], [[DataSet.write]], or other
+   * generic data sinks created with [[DataSet.output]].
+   *
+   * The program execution will be logged and displayed with the given name.
+   *
+   * <b>ATTENTION:</b> The caller of this method is responsible for managing the lifecycle
+   * of the returned [[JobClient]]. This means calling [[JobClient#close()]] at the end of
+   * its usage. In other case, there may be resource leaks depending on the JobClient
+   * implementation.
+   *
+   * @return A [[JobClient]] that can be used to communicate with the submitted job,
+   *         completed on submission succeeded.
+   */
+  @PublicEvolving
+  def executeAsync(jobName: String): JobClient = javaEnv.executeAsync(jobName)
+
+  /**
    * Creates the plan with which the system will execute the program, and returns it as  a String
    * using a JSON representation of the execution data flow graph.
    */
@@ -697,8 +576,8 @@ class ExecutionEnvironment(javaEnv: JavaEnv) {
   /**
    * Creates the program's [[org.apache.flink.api.common.Plan]].
    * The plan is a description of all data sources, data sinks,
-   * and operations and how they interact, as an isolated unit that can be executed with a
-   * [[org.apache.flink.api.common.PlanExecutor]]. Obtaining a plan and starting it with an
+   * and operations and how they interact, as an isolated unit that can be executed with an
+   * [[PipelineExecutor]]. Obtaining a plan and starting it with an
    * executor is an alternative way to run a program and is only possible if the program only
    * consists of distributed operations.
    */
@@ -779,7 +658,7 @@ object ExecutionEnvironment {
    * the same JVM as the environment was created in. It will use the parallelism specified in the
    * parameter.
    *
-   * If the configuration key 'jobmanager.web.port' was set in the configuration, that particular
+   * If the configuration key 'rest.port' was set in the configuration, that particular
    * port will be used for the web UI. Otherwise, the default port (8081) will be used.
    *
    * @param config optional config for the local execution

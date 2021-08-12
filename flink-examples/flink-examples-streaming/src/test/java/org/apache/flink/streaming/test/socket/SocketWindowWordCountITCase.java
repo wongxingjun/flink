@@ -17,9 +17,10 @@
 
 package org.apache.flink.streaming.test.socket;
 
-import org.apache.flink.streaming.util.StreamingMultipleProgramsTestBase;
-
+import org.apache.flink.configuration.ConfigConstants;
+import org.apache.flink.streaming.examples.socket.SocketWindowWordCount;
 import org.apache.flink.test.testdata.WordCountData;
+import org.apache.flink.test.util.AbstractTestBase;
 
 import org.junit.Test;
 
@@ -34,124 +35,129 @@ import java.net.Socket;
 
 import static org.junit.Assert.fail;
 
-public class SocketWindowWordCountITCase extends StreamingMultipleProgramsTestBase {
-	
-	@Test
-	public void testJavaProgram() throws Exception {
-		InetAddress localhost = InetAddress.getByName("localhost");
-		
-		// suppress sysout messages from this example
-		final PrintStream originalSysout = System.out;
-		final PrintStream originalSyserr = System.err;
-		
-		final ByteArrayOutputStream errorMessages = new ByteArrayOutputStream();
-		
-		System.setOut(new PrintStream(new NullStream()));
-		System.setErr(new PrintStream(errorMessages));
-		
-		try {
-			try (ServerSocket server = new ServerSocket(0, 10, localhost)) {
-				
-				final ServerThread serverThread = new ServerThread(server);
-				serverThread.setDaemon(true);
-				serverThread.start();
-				
-				final int serverPort = server.getLocalPort();
+/** Tests for {@link SocketWindowWordCount}. */
+public class SocketWindowWordCountITCase extends AbstractTestBase {
 
-				org.apache.flink.streaming.examples.socket.SocketWindowWordCount.main(
-						new String[] { "--port", String.valueOf(serverPort) });
+    @Test
+    public void testJavaProgram() throws Exception {
+        InetAddress localhost = InetAddress.getByName("localhost");
 
-				if (errorMessages.size() != 0) {
-					fail("Found error message: " + new String(errorMessages.toByteArray()));
-				}
-				
-				serverThread.join();
-				serverThread.checkError();
-			}
-		}
-		finally {
-			System.setOut(originalSysout);
-			System.setErr(originalSyserr);
-		}
-	}
+        // suppress sysout messages from this example
+        final PrintStream originalSysout = System.out;
+        final PrintStream originalSyserr = System.err;
 
-	@Test
-	public void testScalaProgram() throws Exception {
-		InetAddress localhost = InetAddress.getByName("localhost");
+        final ByteArrayOutputStream errorMessages = new ByteArrayOutputStream();
 
-		// suppress sysout messages from this example
-		final PrintStream originalSysout = System.out;
-		final PrintStream originalSyserr = System.err;
+        System.setOut(new PrintStream(new NullStream()));
+        System.setErr(new PrintStream(errorMessages));
 
-		final ByteArrayOutputStream errorMessages = new ByteArrayOutputStream();
+        try {
+            try (ServerSocket server = new ServerSocket(0, 10, localhost)) {
 
-		System.setOut(new PrintStream(new NullStream()));
-		System.setErr(new PrintStream(errorMessages));
+                final ServerThread serverThread = new ServerThread(server);
+                serverThread.setDaemon(true);
+                serverThread.start();
 
-		try {
-			try (ServerSocket server = new ServerSocket(0, 10, localhost)) {
+                final int serverPort = server.getLocalPort();
 
-				final ServerThread serverThread = new ServerThread(server);
-				serverThread.setDaemon(true);
-				serverThread.start();
+                SocketWindowWordCount.main(new String[] {"--port", String.valueOf(serverPort)});
 
-				final int serverPort = server.getLocalPort();
+                if (errorMessages.size() != 0) {
+                    fail(
+                            "Found error message: "
+                                    + new String(
+                                            errorMessages.toByteArray(),
+                                            ConfigConstants.DEFAULT_CHARSET));
+                }
 
-				org.apache.flink.streaming.scala.examples.socket.SocketWindowWordCount.main(
-						new String[] { "--port", String.valueOf(serverPort) });
+                serverThread.join();
+                serverThread.checkError();
+            }
+        } finally {
+            System.setOut(originalSysout);
+            System.setErr(originalSyserr);
+        }
+    }
 
-				if (errorMessages.size() != 0) {
-					fail("Found error message: " + new String(errorMessages.toByteArray()));
-				}
-				
-				serverThread.join();
-				serverThread.checkError();
-			}
-		}
-		finally {
-			System.setOut(originalSysout);
-			System.setErr(originalSyserr);
-		}
-	}
-	
-	// ------------------------------------------------------------------------
+    @Test
+    public void testScalaProgram() throws Exception {
+        InetAddress localhost = InetAddress.getByName("localhost");
 
-	private static class ServerThread extends Thread {
+        // suppress sysout messages from this example
+        final PrintStream originalSysout = System.out;
+        final PrintStream originalSyserr = System.err;
 
-		private final ServerSocket serverSocket;
+        final ByteArrayOutputStream errorMessages = new ByteArrayOutputStream();
 
-		private volatile Throwable error;
-		
-		public ServerThread(ServerSocket serverSocket) {
-			super("Socket Server Thread");
-			
-			this.serverSocket = serverSocket;
-		}
+        System.setOut(new PrintStream(new NullStream()));
+        System.setErr(new PrintStream(errorMessages));
 
-		@Override
-		public void run() {
-			try {
-				try (Socket socket = serverSocket.accept(); 
-						PrintWriter writer = new PrintWriter(socket.getOutputStream(), true)) {
-					
-					writer.println(WordCountData.TEXT);
-				}
-			}
-			catch (Throwable t) {
-				this.error = t;
-			}
-		}
-		
-		public void checkError() throws IOException {
-			if (error != null) {
-				throw new IOException("Error in server thread: " + error.getMessage(), error);
-			}
-		}
-	}
-	
-	private static final class NullStream extends OutputStream {
-		
-		@Override
-		public void write(int b) {}
-	}
+        try {
+            try (ServerSocket server = new ServerSocket(0, 10, localhost)) {
+
+                final ServerThread serverThread = new ServerThread(server);
+                serverThread.setDaemon(true);
+                serverThread.start();
+
+                final int serverPort = server.getLocalPort();
+
+                org.apache.flink.streaming.scala.examples.socket.SocketWindowWordCount.main(
+                        new String[] {"--port", String.valueOf(serverPort)});
+
+                if (errorMessages.size() != 0) {
+                    fail(
+                            "Found error message: "
+                                    + new String(
+                                            errorMessages.toByteArray(),
+                                            ConfigConstants.DEFAULT_CHARSET));
+                }
+
+                serverThread.join();
+                serverThread.checkError();
+            }
+        } finally {
+            System.setOut(originalSysout);
+            System.setErr(originalSyserr);
+        }
+    }
+
+    // ------------------------------------------------------------------------
+
+    private static class ServerThread extends Thread {
+
+        private final ServerSocket serverSocket;
+
+        private volatile Throwable error;
+
+        public ServerThread(ServerSocket serverSocket) {
+            super("Socket Server Thread");
+
+            this.serverSocket = serverSocket;
+        }
+
+        @Override
+        public void run() {
+            try {
+                try (Socket socket = serverSocket.accept();
+                        PrintWriter writer = new PrintWriter(socket.getOutputStream(), true)) {
+
+                    writer.println(WordCountData.TEXT);
+                }
+            } catch (Throwable t) {
+                this.error = t;
+            }
+        }
+
+        public void checkError() throws IOException {
+            if (error != null) {
+                throw new IOException("Error in server thread: " + error.getMessage(), error);
+            }
+        }
+    }
+
+    private static final class NullStream extends OutputStream {
+
+        @Override
+        public void write(int b) {}
+    }
 }

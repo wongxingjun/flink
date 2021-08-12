@@ -20,8 +20,8 @@ package org.apache.flink.api.common;
 
 import org.apache.flink.annotation.Internal;
 
-import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkArgument;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * Encapsulates task-specific information: name, index of subtask, parallelism and attempt number.
@@ -29,82 +29,126 @@ import static org.apache.flink.util.Preconditions.checkArgument;
 @Internal
 public class TaskInfo {
 
-	private final String taskName;
-	private final String taskNameWithSubtasks;
-	private final int numberOfKeyGroups;
-	private final int indexOfSubtask;
-	private final int numberOfParallelSubtasks;
-	private final int attemptNumber;
+    private final String taskName;
+    private final String taskNameWithSubtasks;
+    private final String allocationIDAsString;
+    private final int maxNumberOfParallelSubtasks;
+    private final int indexOfSubtask;
+    private final int numberOfParallelSubtasks;
+    private final int attemptNumber;
 
-	public TaskInfo(String taskName, int numberOfKeyGroups, int indexOfSubtask, int numberOfParallelSubtasks, int attemptNumber) {
-		checkArgument(indexOfSubtask >= 0, "Task index must be a non-negative number.");
-		checkArgument(numberOfKeyGroups >= 1, "Max parallelism must be a positive number.");
-		checkArgument(numberOfKeyGroups >= numberOfParallelSubtasks, "Max parallelism must be >= than parallelism.");
-		checkArgument(numberOfParallelSubtasks >= 1, "Parallelism must be a positive number.");
-		checkArgument(indexOfSubtask < numberOfParallelSubtasks, "Task index must be less than parallelism.");
-		checkArgument(attemptNumber >= 0, "Attempt number must be a non-negative number.");
-		this.taskName = checkNotNull(taskName, "Task Name must not be null.");
-		this.numberOfKeyGroups = numberOfKeyGroups;
-		this.indexOfSubtask = indexOfSubtask;
-		this.numberOfParallelSubtasks = numberOfParallelSubtasks;
-		this.attemptNumber = attemptNumber;
-		this.taskNameWithSubtasks = taskName + " (" + (indexOfSubtask + 1) + '/' + numberOfParallelSubtasks + ')';
-	}
+    public TaskInfo(
+            String taskName,
+            int maxNumberOfParallelSubtasks,
+            int indexOfSubtask,
+            int numberOfParallelSubtasks,
+            int attemptNumber) {
+        this(
+                taskName,
+                maxNumberOfParallelSubtasks,
+                indexOfSubtask,
+                numberOfParallelSubtasks,
+                attemptNumber,
+                "UNKNOWN");
+    }
 
-	/**
-	 * Returns the name of the task
-	 *
-	 * @return The name of the task
-	 */
-	public String getTaskName() {
-		return this.taskName;
-	}
+    public TaskInfo(
+            String taskName,
+            int maxNumberOfParallelSubtasks,
+            int indexOfSubtask,
+            int numberOfParallelSubtasks,
+            int attemptNumber,
+            String allocationIDAsString) {
 
-	/**
-	 * Gets the number of key groups aka the max parallelism aka the max number of subtasks.
-	 */
-	public int getNumberOfKeyGroups() {
-		return numberOfKeyGroups;
-	}
+        checkArgument(indexOfSubtask >= 0, "Task index must be a non-negative number.");
+        checkArgument(
+                maxNumberOfParallelSubtasks >= 1, "Max parallelism must be a positive number.");
+        checkArgument(
+                maxNumberOfParallelSubtasks >= numberOfParallelSubtasks,
+                "Max parallelism must be >= than parallelism.");
+        checkArgument(numberOfParallelSubtasks >= 1, "Parallelism must be a positive number.");
+        checkArgument(
+                indexOfSubtask < numberOfParallelSubtasks,
+                "Task index must be less than parallelism.");
+        checkArgument(attemptNumber >= 0, "Attempt number must be a non-negative number.");
+        this.taskName = checkNotNull(taskName, "Task Name must not be null.");
+        this.maxNumberOfParallelSubtasks = maxNumberOfParallelSubtasks;
+        this.indexOfSubtask = indexOfSubtask;
+        this.numberOfParallelSubtasks = numberOfParallelSubtasks;
+        this.attemptNumber = attemptNumber;
+        this.taskNameWithSubtasks =
+                taskName
+                        + " ("
+                        + (indexOfSubtask + 1)
+                        + '/'
+                        + numberOfParallelSubtasks
+                        + ')'
+                        + "#"
+                        + attemptNumber;
+        this.allocationIDAsString = checkNotNull(allocationIDAsString);
+    }
 
-	/**
-	 * Gets the number of this parallel subtask. The numbering starts from 0 and goes up to
-	 * parallelism-1 (parallelism as returned by {@link #getNumberOfParallelSubtasks()}).
-	 *
-	 * @return The index of the parallel subtask.
-	 */
-	public int getIndexOfThisSubtask() {
-		return this.indexOfSubtask;
-	}
+    /**
+     * Returns the name of the task
+     *
+     * @return The name of the task
+     */
+    public String getTaskName() {
+        return this.taskName;
+    }
 
-	/**
-	 * Gets the parallelism with which the parallel task runs.
-	 *
-	 * @return The parallelism with which the parallel task runs.
-	 */
-	public int getNumberOfParallelSubtasks() {
-		return this.numberOfParallelSubtasks;
-	}
+    /** Gets the max parallelism aka the max number of subtasks. */
+    public int getMaxNumberOfParallelSubtasks() {
+        return maxNumberOfParallelSubtasks;
+    }
 
-	/**
-	 * Gets the attempt number of this parallel subtask. First attempt is numbered 0.
-	 * The attempt number corresponds to the number of times this task has been restarted(after
-	 * failure/cancellation) since the job was initially started.
-	 *
-	 * @return Attempt number of the subtask.
-	 */
-	public int getAttemptNumber() {
-		return this.attemptNumber;
-	}
+    /**
+     * Gets the number of this parallel subtask. The numbering starts from 0 and goes up to
+     * parallelism-1 (parallelism as returned by {@link #getNumberOfParallelSubtasks()}).
+     *
+     * @return The index of the parallel subtask.
+     */
+    public int getIndexOfThisSubtask() {
+        return this.indexOfSubtask;
+    }
 
-	/**
-	 * Returns the name of the task, appended with the subtask indicator, such as "MyTask (3/6)",
-	 * where 3 would be ({@link #getIndexOfThisSubtask()} + 1), and 6 would be
-	 * {@link #getNumberOfParallelSubtasks()}.
-	 *
-	 * @return The name of the task, with subtask indicator.
-	 */
-	public String getTaskNameWithSubtasks() {
-		return this.taskNameWithSubtasks;
-	}
+    /**
+     * Gets the parallelism with which the parallel task runs.
+     *
+     * @return The parallelism with which the parallel task runs.
+     */
+    public int getNumberOfParallelSubtasks() {
+        return this.numberOfParallelSubtasks;
+    }
+
+    /**
+     * Gets the attempt number of this parallel subtask. First attempt is numbered 0. The attempt
+     * number corresponds to the number of times this task has been restarted(after
+     * failure/cancellation) since the job was initially started.
+     *
+     * @return Attempt number of the subtask.
+     */
+    public int getAttemptNumber() {
+        return this.attemptNumber;
+    }
+
+    /**
+     * Returns the name of the task, appended with the subtask indicator, such as "MyTask (3/6)#1",
+     * where 3 would be ({@link #getIndexOfThisSubtask()} + 1), and 6 would be {@link
+     * #getNumberOfParallelSubtasks()}, and 1 would be {@link #getAttemptNumber()}.
+     *
+     * @return The name of the task, with subtask indicator.
+     */
+    public String getTaskNameWithSubtasks() {
+        return this.taskNameWithSubtasks;
+    }
+
+    /**
+     * Returns the allocation id for where this task is executed.
+     *
+     * @return the allocation id for where this task is executed.
+     */
+    public String getAllocationIDAsString() {
+        return allocationIDAsString;
+    }
 }

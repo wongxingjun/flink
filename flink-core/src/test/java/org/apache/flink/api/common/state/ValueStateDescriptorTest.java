@@ -19,115 +19,77 @@
 package org.apache.flink.api.common.state;
 
 import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
 import org.apache.flink.configuration.ConfigConstants;
-import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.testutils.CommonTestUtils;
+import org.apache.flink.util.TestLogger;
 
 import org.junit.Test;
 
-import java.io.File;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
-public class ValueStateDescriptorTest {
-	
-	@Test
-	public void testValueStateDescriptorEagerSerializer() throws Exception {
+/** Tests for the {@link ValueStateDescriptor}. */
+public class ValueStateDescriptorTest extends TestLogger {
 
-		TypeSerializer<String> serializer = new KryoSerializer<>(String.class, new ExecutionConfig());
-		String defaultValue = "le-value-default";
-		
-		ValueStateDescriptor<String> descr = 
-				new ValueStateDescriptor<String>("testName", serializer, defaultValue);
-		
-		assertEquals("testName", descr.getName());
-		assertEquals(defaultValue, descr.getDefaultValue());
-		assertNotNull(descr.getSerializer());
-		assertEquals(serializer, descr.getSerializer());
+    @Test
+    public void testHashCodeEquals() throws Exception {
+        final String name = "testName";
 
-		ValueStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
+        ValueStateDescriptor<String> original = new ValueStateDescriptor<>(name, String.class);
+        ValueStateDescriptor<String> same = new ValueStateDescriptor<>(name, String.class);
+        ValueStateDescriptor<String> sameBySerializer =
+                new ValueStateDescriptor<>(name, StringSerializer.INSTANCE);
 
-		assertEquals("testName", copy.getName());
-		assertEquals(defaultValue, copy.getDefaultValue());
-		assertNotNull(copy.getSerializer());
-		assertEquals(serializer, copy.getSerializer());
-	}
+        // test that hashCode() works on state descriptors with initialized and uninitialized
+        // serializers
+        assertEquals(original.hashCode(), same.hashCode());
+        assertEquals(original.hashCode(), sameBySerializer.hashCode());
 
-	@Test
-	public void testValueStateDescriptorLazySerializer() throws Exception {
-		
-		// some default value that goes to the generic serializer
-		Path defaultValue = new Path(new File(ConfigConstants.DEFAULT_TASK_MANAGER_TMP_PATH).toURI());
-		
-		// some different registered value
-		ExecutionConfig cfg = new ExecutionConfig();
-		cfg.registerKryoType(TaskInfo.class);
+        assertEquals(original, same);
+        assertEquals(original, sameBySerializer);
 
-		ValueStateDescriptor<Path> descr =
-				new ValueStateDescriptor<Path>("testName", Path.class, defaultValue);
+        // equality with a clone
+        ValueStateDescriptor<String> clone = CommonTestUtils.createCopySerializable(original);
+        assertEquals(original, clone);
 
-		try {
-			descr.getSerializer();
-			fail("should cause an exception");
-		} catch (IllegalStateException ignored) {}
+        // equality with an initialized
+        clone.initializeSerializerUnlessSet(new ExecutionConfig());
+        assertEquals(original, clone);
 
-		descr.initializeSerializerUnlessSet(cfg);
-		
-		assertNotNull(descr.getSerializer());
-		assertTrue(descr.getSerializer() instanceof KryoSerializer);
+        original.initializeSerializerUnlessSet(new ExecutionConfig());
+        assertEquals(original, same);
+    }
 
-		assertTrue(((KryoSerializer<?>) descr.getSerializer()).getKryo().getRegistration(TaskInfo.class).getId() > 0);
-	}
+    @Test
+    public void testVeryLargeDefaultValue() throws Exception {
+        // ensure that we correctly read very large data when deserializing the default value
 
-	@Test
-	public void testValueStateDescriptorAutoSerializer() throws Exception {
-		
-		String defaultValue = "le-value-default";
+        TypeSerializer<String> serializer =
+                new KryoSerializer<>(String.class, new ExecutionConfig());
+        byte[] data = new byte[200000];
+        for (int i = 0; i < 200000; i++) {
+            data[i] = 65;
+        }
+        data[199000] = '\0';
 
-		ValueStateDescriptor<String> descr =
-				new ValueStateDescriptor<String>("testName", String.class, defaultValue);
+        String defaultValue = new String(data, ConfigConstants.DEFAULT_CHARSET);
 
-		ValueStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
+        ValueStateDescriptor<String> descr =
+                new ValueStateDescriptor<>("testName", serializer, defaultValue);
 
-		assertEquals("testName", copy.getName());
-		assertEquals(defaultValue, copy.getDefaultValue());
-		assertNotNull(copy.getSerializer());
-		assertEquals(StringSerializer.INSTANCE, copy.getSerializer());
-	}
+        assertEquals("testName", descr.getName());
+        assertEquals(defaultValue, descr.getDefaultValue());
+        assertNotNull(descr.getSerializer());
+        assertEquals(serializer, descr.getSerializer());
 
-	@Test
-	public void testVeryLargeDefaultValue() throws Exception {
-		// ensure that we correctly read very large data when deserializing the default value
+        ValueStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
 
-		TypeSerializer<String> serializer = new KryoSerializer<>(String.class, new ExecutionConfig());
-		byte[] data = new byte[200000];
-		for (int i = 0; i < 200000; i++) {
-			data[i] = 65;
-		}
-		data[199000] = '\0';
-
-		String defaultValue = new String(data);
-
-		ValueStateDescriptor<String> descr =
-				new ValueStateDescriptor<String>("testName", serializer, defaultValue);
-
-		assertEquals("testName", descr.getName());
-		assertEquals(defaultValue, descr.getDefaultValue());
-		assertNotNull(descr.getSerializer());
-		assertEquals(serializer, descr.getSerializer());
-
-		ValueStateDescriptor<String> copy = CommonTestUtils.createCopySerializable(descr);
-
-		assertEquals("testName", copy.getName());
-		assertEquals(defaultValue, copy.getDefaultValue());
-		assertNotNull(copy.getSerializer());
-		assertEquals(serializer, copy.getSerializer());
-	}
+        assertEquals("testName", copy.getName());
+        assertEquals(defaultValue, copy.getDefaultValue());
+        assertNotNull(copy.getSerializer());
+        assertEquals(serializer, copy.getSerializer());
+    }
 }

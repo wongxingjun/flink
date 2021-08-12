@@ -18,15 +18,18 @@
 
 package org.apache.flink.runtime;
 
-public class JobException extends Exception {
+import org.apache.flink.util.FlinkException;
 
-	private static final long serialVersionUID = 1275864691743020176L;
+/** Indicates that a job has failed. */
+public class JobException extends FlinkException {
 
-	public JobException(String msg) {
-		super(msg);
-	}
+    private static final long serialVersionUID = 1275864691743020176L;
 
-	public JobException(String message, Throwable cause) {
-		super(message, cause);
-	}
+    public JobException(String msg) {
+        super(msg);
+    }
+
+    public JobException(String message, Throwable cause) {
+        super(message, cause);
+    }
 }

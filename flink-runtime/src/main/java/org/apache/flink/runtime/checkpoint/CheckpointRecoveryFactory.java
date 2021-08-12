@@ -20,42 +20,26 @@ package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.api.common.JobID;
 
-/**
- * A factory for per Job checkpoint recovery components.
- */
+/** A factory for per Job checkpoint recovery components. */
 public interface CheckpointRecoveryFactory {
 
-	/**
-	 * The number of {@link CompletedCheckpoint} instances to retain.
-	 */
-	int NUMBER_OF_SUCCESSFUL_CHECKPOINTS_TO_RETAIN = 1;
+    /**
+     * Creates a {@link CompletedCheckpointStore} instance for a job.
+     *
+     * @param jobId Job ID to recover checkpoints for
+     * @param maxNumberOfCheckpointsToRetain Maximum number of checkpoints to retain
+     * @param userClassLoader User code class loader of the job
+     * @return {@link CompletedCheckpointStore} instance for the job
+     */
+    CompletedCheckpointStore createCheckpointStore(
+            JobID jobId, int maxNumberOfCheckpointsToRetain, ClassLoader userClassLoader)
+            throws Exception;
 
-	/**
-	 * Starts the {@link CheckpointRecoveryFactory} service.
-	 */
-	void start();
-
-	/**
-	 * Stops the {@link CheckpointRecoveryFactory} service.
-	 */
-	void stop();
-
-	/**
-	 * Creates a {@link CompletedCheckpointStore} instance for a job.
-	 *
-	 * @param jobId           Job ID to recover checkpoints for
-	 * @param userClassLoader User code class loader of the job
-	 * @return {@link CompletedCheckpointStore} instance for the job
-	 */
-	CompletedCheckpointStore createCheckpointStore(JobID jobId, ClassLoader userClassLoader)
-			throws Exception;
-
-	/**
-	 * Creates a {@link CheckpointIDCounter} instance for a job.
-	 *
-	 * @param jobId Job ID to recover checkpoints for
-	 * @return {@link CheckpointIDCounter} instance for the job
-	 */
-	CheckpointIDCounter createCheckpointIDCounter(JobID jobId) throws Exception;
-
+    /**
+     * Creates a {@link CheckpointIDCounter} instance for a job.
+     *
+     * @param jobId Job ID to recover checkpoints for
+     * @return {@link CheckpointIDCounter} instance for the job
+     */
+    CheckpointIDCounter createCheckpointIDCounter(JobID jobId) throws Exception;
 }

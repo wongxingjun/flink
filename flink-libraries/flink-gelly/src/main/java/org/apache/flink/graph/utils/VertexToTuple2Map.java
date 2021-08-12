@@ -24,7 +24,7 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.graph.Vertex;
 
 /**
- * Create a Tuple2 DataSet from a Vertex DataSet
+ * Create a Tuple2 DataSet from a Vertex DataSet.
  *
  * @param <K> vertex ID type
  * @param <VV> vertex value type
@@ -32,11 +32,10 @@ import org.apache.flink.graph.Vertex;
 @ForwardedFields("f0; f1")
 public class VertexToTuple2Map<K, VV> implements MapFunction<Vertex<K, VV>, Tuple2<K, VV>> {
 
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	@Override
-	public Tuple2<K, VV> map(Vertex<K, VV> vertex) {
-		return vertex;
-	}
-
+    @Override
+    public Tuple2<K, VV> map(Vertex<K, VV> vertex) {
+        return vertex;
+    }
 }

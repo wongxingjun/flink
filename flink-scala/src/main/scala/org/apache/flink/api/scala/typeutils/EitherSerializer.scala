@@ -18,22 +18,34 @@
 package org.apache.flink.api.scala.typeutils
 
 import org.apache.flink.annotation.Internal
-import org.apache.flink.api.common.typeutils.TypeSerializer
-import org.apache.flink.core.memory.{DataOutputView, DataInputView}
+import org.apache.flink.api.common.typeutils._
+import org.apache.flink.api.java.typeutils.runtime.EitherSerializerConfigSnapshot
+import org.apache.flink.core.memory.{DataInputView, DataOutputView}
 
 /**
  * Serializer for [[Either]].
  */
 @Internal
-class EitherSerializer[A, B, T <: Either[A, B]](
+@SerialVersionUID(9219995873023657525L)
+class EitherSerializer[A, B](
     val leftSerializer: TypeSerializer[A],
     val rightSerializer: TypeSerializer[B])
-  extends TypeSerializer[T] {
+  extends TypeSerializer[Either[A, B]]
+  with LegacySerializerSnapshotTransformer[Either[A, B]] {
 
-  override def duplicate: EitherSerializer[A,B,T] = this
+  override def duplicate: EitherSerializer[A,B] = {
+    val leftDup = leftSerializer.duplicate()
+    val rightDup = rightSerializer.duplicate()
 
-  override def createInstance: T = {
-    Left(null).asInstanceOf[T]
+    if (leftDup.eq(leftSerializer) && rightDup.eq(rightSerializer)) {
+      this
+    } else {
+      new EitherSerializer[A, B](leftDup, rightDup)
+    }
+  }
+
+  override def createInstance: Either[A, B] = {
+    Left(null).asInstanceOf[Left[A, B]]
   }
 
   override def isImmutableType: Boolean = {
@@ -43,12 +55,12 @@ class EitherSerializer[A, B, T <: Either[A, B]](
 
   override def getLength: Int = -1
 
-  override def copy(from: T): T = from match {
-    case Left(a) => Left(leftSerializer.copy(a)).asInstanceOf[T]
-    case Right(b) => Right(rightSerializer.copy(b)).asInstanceOf[T]
+  override def copy(from: Either[A, B]): Either[A, B] = from match {
+    case Left(a) => Left(leftSerializer.copy(a))
+    case Right(b) => Right(rightSerializer.copy(b))
   }
 
-  override def copy(from: T, reuse: T): T = copy(from)
+  override def copy(from: Either[A, B], reuse: Either[A, B]): Either[A, B] = copy(from)
 
   override def copy(source: DataInputView, target: DataOutputView): Unit = {
     val isLeft = source.readBoolean()
@@ -60,7 +72,7 @@ class EitherSerializer[A, B, T <: Either[A, B]](
     }
   }
 
-  override def serialize(either: T, target: DataOutputView): Unit = either match {
+  override def serialize(either: Either[A, B], target: DataOutputView): Unit = either match {
     case Left(a) =>
       target.writeBoolean(true)
       leftSerializer.serialize(a, target)
@@ -69,39 +81,65 @@ class EitherSerializer[A, B, T <: Either[A, B]](
       rightSerializer.serialize(b, target)
   }
 
-  override def deserialize(source: DataInputView): T = {
+  override def deserialize(source: DataInputView): Either[A, B] = {
     val isLeft = source.readBoolean()
     if (isLeft) {
-      Left(leftSerializer.deserialize(source)).asInstanceOf[T]
+      Left(leftSerializer.deserialize(source))
     } else {
-      Right(rightSerializer.deserialize(source)).asInstanceOf[T]
+      Right(rightSerializer.deserialize(source))
     }
   }
 
-  override def deserialize(reuse: T, source: DataInputView): T = {
+  override def deserialize(reuse: Either[A, B], source: DataInputView): Either[A, B] = {
     val isLeft = source.readBoolean()
     if (isLeft) {
-      Left(leftSerializer.deserialize(source)).asInstanceOf[T]
+      Left(leftSerializer.deserialize(source))
     } else {
-      Right(rightSerializer.deserialize(source)).asInstanceOf[T]
+      Right(rightSerializer.deserialize(source))
     }
   }
 
   override def equals(obj: Any): Boolean = {
     obj match {
-      case eitherSerializer: EitherSerializer[_, _, _] =>
-        eitherSerializer.canEqual(this) &&
+      case eitherSerializer: EitherSerializer[_, _] =>
         leftSerializer.equals(eitherSerializer.leftSerializer) &&
         rightSerializer.equals(eitherSerializer.rightSerializer)
       case _ => false
     }
   }
 
-  override def canEqual(obj: Any): Boolean = {
-    obj.isInstanceOf[EitherSerializer[_, _, _]]
-  }
-
   override def hashCode(): Int = {
     31 * leftSerializer.hashCode() + rightSerializer.hashCode()
+  }
+
+  def getLeftSerializer: TypeSerializer[A] = leftSerializer
+
+  def getRightSerializer: TypeSerializer[B] = rightSerializer
+
+  // --------------------------------------------------------------------------------------------
+  // Serializer configuration snapshotting & compatibility
+  // --------------------------------------------------------------------------------------------
+
+  override def snapshotConfiguration(): ScalaEitherSerializerSnapshot[A, B] = {
+    new ScalaEitherSerializerSnapshot[A, B](this)
+  }
+
+  override def transformLegacySerializerSnapshot[U](
+      legacySnapshot: TypeSerializerSnapshot[U]
+  ): TypeSerializerSnapshot[Either[A, B]] = {
+
+    legacySnapshot match {
+      case correctSnapshot: ScalaEitherSerializerSnapshot[A, B] =>
+        correctSnapshot
+
+      case legacySnapshot: EitherSerializerConfigSnapshot[A, B] =>
+        val transformedSnapshot = new ScalaEitherSerializerSnapshot[A, B]()
+        CompositeTypeSerializerUtil.setNestedSerializersSnapshots(
+          transformedSnapshot,
+          legacySnapshot.getNestedSerializersAndConfigs.get(0).f1,
+          legacySnapshot.getNestedSerializersAndConfigs.get(1).f1
+        )
+        transformedSnapshot
+    }
   }
 }

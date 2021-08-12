@@ -16,11 +16,7 @@
  * limitations under the License.
  */
 
-
 package org.apache.flink.test.iterative;
-
-import java.io.BufferedReader;
-import java.util.Collection;
 
 import org.apache.flink.api.common.functions.FlatJoinFunction;
 import org.apache.flink.api.common.functions.MapFunction;
@@ -30,124 +26,148 @@ import org.apache.flink.api.java.aggregation.Aggregations;
 import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.examples.java.graph.ConnectedComponents;
 import org.apache.flink.test.testdata.ConnectedComponentsData;
 import org.apache.flink.test.util.JavaProgramTestBase;
 import org.apache.flink.util.Collector;
+
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
+import java.io.BufferedReader;
+import java.util.Arrays;
+import java.util.Collection;
+
+/**
+ * Delta iteration test implementing the connected components algorithm with a cogroup and join on
+ * the solution set.
+ */
 @RunWith(Parameterized.class)
 public class ConnectedComponentsWithDeferredUpdateITCase extends JavaProgramTestBase {
-	
-	private static final long SEED = 0xBADC0FFEEBEEFL;
-	
-	private static final int NUM_VERTICES = 1000;
-	
-	private static final int NUM_EDGES = 10000;
 
-	
-	protected String verticesPath;
-	protected String edgesPath;
-	protected String resultPath;
-	
-	
-	public ConnectedComponentsWithDeferredUpdateITCase(Configuration config) {
-		super(config);
-	}
+    private static final long SEED = 0xBADC0FFEEBEEFL;
 
-	@Override
-	protected void preSubmit() throws Exception {
-		verticesPath = createTempFile("vertices.txt", ConnectedComponentsData.getEnumeratingVertices(NUM_VERTICES));
-		edgesPath = createTempFile("edges.txt", ConnectedComponentsData.getRandomOddEvenEdges(NUM_EDGES, NUM_VERTICES, SEED));
-		resultPath = getTempFilePath("results");
-	}
+    private static final int NUM_VERTICES = 1000;
 
-	@Override
-	protected void testProgram() throws Exception {
-		boolean extraMapper = config.getBoolean("ExtraMapper", false);
+    private static final int NUM_EDGES = 10000;
 
-		// set up execution environment
-		ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
+    private final boolean extraMapper;
 
-		// read vertex and edge data
-		DataSet<Tuple1<Long>> vertices = env.readCsvFile(verticesPath).types(Long.class);
+    protected String verticesPath;
+    protected String edgesPath;
+    protected String resultPath;
 
-		DataSet<Tuple2<Long, Long>> edges = env.readCsvFile(edgesPath).fieldDelimiter(" ").types(Long.class, Long.class)
-				.flatMap(new ConnectedComponents.UndirectEdge());
+    public ConnectedComponentsWithDeferredUpdateITCase(boolean extraMapper) {
+        this.extraMapper = extraMapper;
+    }
 
-		// assign the initial components (equal to the vertex id)
-		DataSet<Tuple2<Long, Long>> verticesWithInitialId = vertices.map(new ConnectedComponentsITCase.DuplicateValue<Long>());
+    @Override
+    protected void preSubmit() throws Exception {
+        verticesPath =
+                createTempFile(
+                        "vertices.txt",
+                        ConnectedComponentsData.getEnumeratingVertices(NUM_VERTICES));
+        edgesPath =
+                createTempFile(
+                        "edges.txt",
+                        ConnectedComponentsData.getRandomOddEvenEdges(
+                                NUM_EDGES, NUM_VERTICES, SEED));
+        resultPath = getTempFilePath("results");
+    }
 
-		// open a delta iteration
-		DeltaIteration<Tuple2<Long, Long>, Tuple2<Long, Long>> iteration =
-				verticesWithInitialId.iterateDelta(verticesWithInitialId, 100, 0);
+    @Override
+    protected void testProgram() throws Exception {
+        // set up execution environment
+        ExecutionEnvironment env = ExecutionEnvironment.getExecutionEnvironment();
 
-		// apply the step logic: join with the edges, select the minimum neighbor, update if the component of the candidate is smaller
-		DataSet<Tuple2<Long, Long>> changes = iteration.getWorkset()
-				.join(edges).where(0).equalTo(0).with(new ConnectedComponents.NeighborWithComponentIDJoin())
-				.groupBy(0).aggregate(Aggregations.MIN, 1)
-				.join(iteration.getSolutionSet()).where(0).equalTo(0)
-				.with(new UpdateComponentIdMatchNonPreserving());
+        // read vertex and edge data
+        DataSet<Tuple1<Long>> vertices = env.readCsvFile(verticesPath).types(Long.class);
 
-		DataSet<Tuple2<Long,Long>> delta;
-		if(extraMapper) {
-			delta = changes.map(
-					// ID Mapper
-					new MapFunction<Tuple2<Long, Long>, Tuple2<Long, Long>>() {
-						@Override
-						public Tuple2<Long, Long> map(Tuple2<Long, Long> v) throws Exception {
-							return v;
-						}
-					});
-		}
-		else {
-			delta = changes;
-		}
+        DataSet<Tuple2<Long, Long>> edges =
+                env.readCsvFile(edgesPath)
+                        .fieldDelimiter(" ")
+                        .types(Long.class, Long.class)
+                        .flatMap(new ConnectedComponents.UndirectEdge());
 
-		// close the delta iteration (delta and new workset are identical)
-		DataSet<Tuple2<Long, Long>> result = iteration.closeWith(delta, changes);
+        // assign the initial components (equal to the vertex id)
+        DataSet<Tuple2<Long, Long>> verticesWithInitialId =
+                vertices.map(new ConnectedComponentsITCase.DuplicateValue<Long>());
 
-		result.writeAsCsv(resultPath, "\n", " ");
+        // open a delta iteration
+        DeltaIteration<Tuple2<Long, Long>, Tuple2<Long, Long>> iteration =
+                verticesWithInitialId.iterateDelta(verticesWithInitialId, 100, 0);
 
-		// execute program
-		env.execute("Connected Components Example");
-	}
+        // apply the step logic: join with the edges, select the minimum neighbor, update if the
+        // component of the candidate is smaller
+        DataSet<Tuple2<Long, Long>> changes =
+                iteration
+                        .getWorkset()
+                        .join(edges)
+                        .where(0)
+                        .equalTo(0)
+                        .with(new ConnectedComponents.NeighborWithComponentIDJoin())
+                        .groupBy(0)
+                        .aggregate(Aggregations.MIN, 1)
+                        .join(iteration.getSolutionSet())
+                        .where(0)
+                        .equalTo(0)
+                        .with(new UpdateComponentIdMatchNonPreserving());
 
-	@Override
-	protected void postSubmit() throws Exception {
-		for (BufferedReader reader : getResultReader(resultPath)) {
-			ConnectedComponentsData.checkOddEvenResult(reader);
-		}
-	}
+        DataSet<Tuple2<Long, Long>> delta;
+        if (extraMapper) {
+            delta =
+                    changes.map(
+                            // ID Mapper
+                            new MapFunction<Tuple2<Long, Long>, Tuple2<Long, Long>>() {
+                                private static final long serialVersionUID = -3929364091829757322L;
 
-	@Parameters
-	public static Collection<Object[]> getConfigurations() {
-		Configuration config1 = new Configuration();
-		config1.setBoolean("ExtraMapper", false);
-		
-		Configuration config2 = new Configuration();
-		config2.setBoolean("ExtraMapper", true);
-		
-		return toParameterList(config1, config2);
-	}
+                                @Override
+                                public Tuple2<Long, Long> map(Tuple2<Long, Long> v)
+                                        throws Exception {
+                                    return v;
+                                }
+                            });
+        } else {
+            delta = changes;
+        }
 
-	public static final class UpdateComponentIdMatchNonPreserving
-			implements FlatJoinFunction<Tuple2<Long, Long>, Tuple2<Long, Long>, Tuple2<Long, Long>> {
-		private static final long serialVersionUID = 1L;
+        // close the delta iteration (delta and new workset are identical)
+        DataSet<Tuple2<Long, Long>> result = iteration.closeWith(delta, changes);
 
-		@Override
-		public void join(
-				Tuple2<Long, Long> candidate,
-				Tuple2<Long, Long> current,
-				Collector<Tuple2<Long, Long>> out) throws Exception {
+        result.writeAsCsv(resultPath, "\n", " ");
 
-			if(candidate.f1 < current.f1) {
-				out.collect(candidate);
-			}
-		}
-	}
+        // execute program
+        env.execute("Connected Components Example");
+    }
 
+    @Override
+    protected void postSubmit() throws Exception {
+        for (BufferedReader reader : getResultReader(resultPath)) {
+            ConnectedComponentsData.checkOddEvenResult(reader);
+        }
+    }
+
+    @Parameters
+    public static Collection<Object[]> getConfigurations() {
+        return Arrays.asList(new Object[] {false}, new Object[] {true});
+    }
+
+    private static final class UpdateComponentIdMatchNonPreserving
+            implements FlatJoinFunction<
+                    Tuple2<Long, Long>, Tuple2<Long, Long>, Tuple2<Long, Long>> {
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public void join(
+                Tuple2<Long, Long> candidate,
+                Tuple2<Long, Long> current,
+                Collector<Tuple2<Long, Long>> out)
+                throws Exception {
+
+            if (candidate.f1 < current.f1) {
+                out.collect(candidate);
+            }
+        }
+    }
 }

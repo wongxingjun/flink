@@ -18,47 +18,123 @@
 
 package org.apache.flink.runtime.state;
 
-/**
- * Helpers for {@link StateObject} related code.
- */
+import org.apache.flink.util.LambdaUtil;
+
+import org.apache.flink.shaded.guava30.com.google.common.base.Joiner;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.Future;
+import java.util.concurrent.RunnableFuture;
+
+/** Helpers for {@link StateObject} related code. */
 public class StateUtil {
 
-	private StateUtil() {
-		throw new AssertionError();
-	}
+    private static final Logger LOG = LoggerFactory.getLogger(StateUtil.class);
 
-	/**
-	 * Iterates through the passed state handles and calls discardState() on each handle that is not null. All
-	 * occurring exceptions are suppressed and collected until the iteration is over and emitted as a single exception.
-	 *
-	 * @param handlesToDiscard State handles to discard. Passed iterable is allowed to deliver null values.
-	 * @throws Exception exception that is a collection of all suppressed exceptions that were caught during iteration
-	 */
-	public static void bestEffortDiscardAllStateObjects(
-			Iterable<? extends StateObject> handlesToDiscard) throws Exception {
+    private StateUtil() {
+        throw new AssertionError();
+    }
 
-		if (handlesToDiscard != null) {
+    /**
+     * Returns the size of a state object.
+     *
+     * @param handle The handle to the retrieved state
+     */
+    public static long getStateSize(StateObject handle) {
+        return handle == null ? 0 : handle.getStateSize();
+    }
 
-			Exception suppressedExceptions = null;
+    /**
+     * Iterates through the passed state handles and calls discardState() on each handle that is not
+     * null. All occurring exceptions are suppressed and collected until the iteration is over and
+     * emitted as a single exception.
+     *
+     * @param handlesToDiscard State handles to discard. Passed iterable is allowed to deliver null
+     *     values.
+     * @throws Exception exception that is a collection of all suppressed exceptions that were
+     *     caught during iteration
+     */
+    public static void bestEffortDiscardAllStateObjects(
+            Iterable<? extends StateObject> handlesToDiscard) throws Exception {
+        LambdaUtil.applyToAllWhileSuppressingExceptions(
+                handlesToDiscard, StateObject::discardState);
+    }
 
-			for (StateObject state : handlesToDiscard) {
+    /**
+     * Discards the given state future by first trying to cancel it. If this is not possible, then
+     * the state object contained in the future is calculated and afterwards discarded.
+     *
+     * @param stateFuture to be discarded
+     * @throws Exception if the discard operation failed
+     * @return the size of state before cancellation (if available)
+     */
+    public static long discardStateFuture(Future<? extends StateObject> stateFuture)
+            throws Exception {
+        long stateSize = 0;
+        if (null != stateFuture) {
+            if (!stateFuture.cancel(true)) {
 
-				if (state != null) {
-					try {
-						state.discardState();
-					} catch (Exception ex) {
-						//best effort to still cleanup other states and deliver exceptions in the end
-						if (suppressedExceptions == null) {
-							suppressedExceptions = new Exception(ex);
-						}
-						suppressedExceptions.addSuppressed(ex);
-					}
-				}
-			}
+                try {
+                    // We attempt to get a result, in case the future completed before cancellation.
+                    if (stateFuture instanceof RunnableFuture<?> && !stateFuture.isDone()) {
+                        ((RunnableFuture<?>) stateFuture).run();
+                    }
+                    StateObject stateObject = stateFuture.get();
+                    if (stateObject != null) {
+                        stateSize = stateObject.getStateSize();
+                        stateObject.discardState();
+                    }
 
-			if (suppressedExceptions != null) {
-				throw suppressedExceptions;
-			}
-		}
-	}
+                } catch (Exception ex) {
+                    LOG.debug(
+                            "Cancelled execution of snapshot future runnable. Cancellation produced the following "
+                                    + "exception, which is expected an can be ignored.",
+                            ex);
+                }
+            } else if (stateFuture.isDone()) {
+                try {
+                    stateSize = stateFuture.get().getStateSize();
+                } catch (Exception e) {
+                    // ignored
+                }
+            }
+        }
+        return stateSize;
+    }
+
+    /**
+     * Creates an {@link RuntimeException} that signals that an operation did not get the type of
+     * {@link StateObject} that was expected. This can mostly happen when a different {@link
+     * StateBackend} from the one that was used for taking a checkpoint/savepoint is used when
+     * restoring.
+     */
+    @SuppressWarnings("unchecked")
+    public static RuntimeException unexpectedStateHandleException(
+            Class<? extends StateObject> expectedStateHandleClass,
+            Class<? extends StateObject> actualStateHandleClass) {
+        return unexpectedStateHandleException(
+                new Class[] {expectedStateHandleClass}, actualStateHandleClass);
+    }
+
+    /**
+     * Creates a {@link RuntimeException} that signals that an operation did not get the type of
+     * {@link StateObject} that was expected. This can mostly happen when a different {@link
+     * StateBackend} from the one that was used for taking a checkpoint/savepoint is used when
+     * restoring.
+     */
+    public static RuntimeException unexpectedStateHandleException(
+            Class<? extends StateObject>[] expectedStateHandleClasses,
+            Class<? extends StateObject> actualStateHandleClass) {
+
+        return new IllegalStateException(
+                "Unexpected state handle type, expected one of: "
+                        + Joiner.on(", ").join(expectedStateHandleClasses)
+                        + ", but found: "
+                        + actualStateHandleClass
+                        + ". "
+                        + "This can mostly happen when a different StateBackend from the one "
+                        + "that was used for taking a checkpoint/savepoint is used when restoring.");
+    }
 }

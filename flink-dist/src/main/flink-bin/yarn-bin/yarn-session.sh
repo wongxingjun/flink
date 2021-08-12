@@ -29,27 +29,10 @@ fi
 
 JVM_ARGS="$JVM_ARGS -Xmx512m"
 
-# auxilliary function to construct a lightweight classpath for the
-# Flink CLI client
-constructCLIClientClassPath() {
-
-    while read -d '' -r jarfile ; do
-        if [[ $CC_CLASSPATH = "" ]]; then
-            CC_CLASSPATH="$jarfile";
-        else
-            CC_CLASSPATH="$CC_CLASSPATH":"$jarfile"
-        fi
-    done < <(find "$FLINK_LIB_DIR" ! -type d -name '*.jar' -print0)
-
-    echo $CC_CLASSPATH:$INTERNAL_HADOOP_CLASSPATHS
-}
-
-CC_CLASSPATH=`manglePathList $(constructCLIClientClassPath)`
+CC_CLASSPATH=`manglePathList $(constructFlinkClassPath):$INTERNAL_HADOOP_CLASSPATHS`
 
 log=$FLINK_LOG_DIR/flink-$FLINK_IDENT_STRING-yarn-session-$HOSTNAME.log
-log_setting="-Dlog.file="$log" -Dlog4j.configuration=file:"$FLINK_CONF_DIR"/log4j-yarn-session.properties -Dlogback.configurationFile=file:"$FLINK_CONF_DIR"/logback-yarn.xml"
+log_setting="-Dlog.file="$log" -Dlog4j.configuration=file:"$FLINK_CONF_DIR"/log4j-session.properties -Dlog4j.configurationFile=file:"$FLINK_CONF_DIR"/log4j-session.properties -Dlogback.configurationFile=file:"$FLINK_CONF_DIR"/logback-session.xml"
 
-export FLINK_CONF_DIR
-
-$JAVA_RUN $JVM_ARGS -classpath "$CC_CLASSPATH" $log_setting org.apache.flink.yarn.cli.FlinkYarnSessionCli -j "$FLINK_LIB_DIR"/flink-dist*.jar "$@"
+"$JAVA_RUN" $JVM_ARGS -classpath "$CC_CLASSPATH" $log_setting org.apache.flink.yarn.cli.FlinkYarnSessionCli -j "$FLINK_LIB_DIR"/flink-dist*.jar "$@"
 

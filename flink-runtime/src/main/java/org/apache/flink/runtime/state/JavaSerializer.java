@@ -19,96 +19,101 @@
 package org.apache.flink.runtime.state;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.typeutils.SimpleTypeSerializerSnapshot;
+import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
+import org.apache.flink.api.common.typeutils.base.TypeSerializerSingleton;
 import org.apache.flink.api.java.typeutils.runtime.DataInputViewStream;
 import org.apache.flink.api.java.typeutils.runtime.DataOutputViewStream;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.InstantiationUtil;
 
 import java.io.IOException;
 import java.io.Serializable;
 
-@SuppressWarnings("serial")
+/**
+ * A {@link org.apache.flink.api.common.typeutils.TypeSerializer} that uses Java serialization. This
+ * should not be used for anything.
+ */
 @Internal
-final class JavaSerializer<T extends Serializable> extends TypeSerializer<T> {
+@VisibleForTesting
+public final class JavaSerializer<T extends Serializable> extends TypeSerializerSingleton<T> {
 
-	private static final long serialVersionUID = 5067491650263321234L;
+    private static final long serialVersionUID = 5067491650263321234L;
 
-	@Override
-	public boolean isImmutableType() {
-		return false;
-	}
+    @Override
+    public boolean isImmutableType() {
+        return false;
+    }
 
-	@Override
-	public TypeSerializer<T> duplicate() {
-		return this;
-	}
+    @Override
+    public T createInstance() {
+        return null;
+    }
 
-	@Override
-	public T createInstance() {
-		return null;
-	}
+    @Override
+    public T copy(T from) {
+        try {
+            return InstantiationUtil.clone(from, Thread.currentThread().getContextClassLoader());
+        } catch (IOException | ClassNotFoundException e) {
+            throw new FlinkRuntimeException("Could not copy element via serialization: " + from, e);
+        }
+    }
 
-	@Override
-	public T copy(T from) {
+    @Override
+    public T copy(T from, T reuse) {
+        return copy(from);
+    }
 
-		try {
-			return InstantiationUtil.clone(from);
-		} catch (IOException | ClassNotFoundException e) {
-			throw new RuntimeException("Could not copy instance of " + from + '.', e);
-		}
-	}
+    @Override
+    public int getLength() {
+        return -1;
+    }
 
-	@Override
-	public T copy(T from, T reuse) {
-		return copy(from);
-	}
+    @Override
+    public void serialize(T record, DataOutputView target) throws IOException {
+        try (final DataOutputViewStream outViewWrapper = new DataOutputViewStream(target)) {
+            InstantiationUtil.serializeObject(outViewWrapper, record);
+        }
+    }
 
-	@Override
-	public int getLength() {
-		return 0;
-	}
+    @Override
+    public T deserialize(DataInputView source) throws IOException {
+        try (final DataInputViewStream inViewWrapper = new DataInputViewStream(source)) {
+            return InstantiationUtil.deserializeObject(
+                    inViewWrapper, Thread.currentThread().getContextClassLoader());
+        } catch (ClassNotFoundException e) {
+            throw new IOException("Could not deserialize object.", e);
+        }
+    }
 
-	@Override
-	public void serialize(T record, DataOutputView target) throws IOException {
-		InstantiationUtil.serializeObject(new DataOutputViewStream(target), record);
-	}
+    @Override
+    public T deserialize(T reuse, DataInputView source) throws IOException {
+        return deserialize(source);
+    }
 
-	@Override
-	public T deserialize(DataInputView source) throws IOException {
-		try {
-			return InstantiationUtil.deserializeObject(
-					new DataInputViewStream(source), Thread.currentThread().getContextClassLoader());
-		} catch (ClassNotFoundException e) {
-			throw new IOException("Could not deserialize object.", e);
-		}
-	}
+    @Override
+    public void copy(DataInputView source, DataOutputView target) throws IOException {
+        T tmp = deserialize(source);
+        serialize(tmp, target);
+    }
 
-	@Override
-	public T deserialize(T reuse, DataInputView source) throws IOException {
-		return deserialize(source);
-	}
+    // ------------------------------------------------------------------------
 
-	@Override
-	public void copy(DataInputView source, DataOutputView target) throws IOException {
-		int size = source.readInt();
-		target.writeInt(size);
-		target.write(source, size);
-	}
+    @Override
+    public TypeSerializerSnapshot<T> snapshotConfiguration() {
+        return new JavaSerializerSnapshot<>();
+    }
 
-	@Override
-	public boolean equals(Object obj) {
-		return obj instanceof JavaSerializer;
-	}
+    /** Serializer configuration snapshot for compatibility and format evolution. */
+    @SuppressWarnings("WeakerAccess")
+    public static final class JavaSerializerSnapshot<T extends Serializable>
+            extends SimpleTypeSerializerSnapshot<T> {
 
-	@Override
-	public boolean canEqual(Object obj) {
-		return obj instanceof JavaSerializer;
-	}
-
-	@Override
-	public int hashCode() {
-		return getClass().hashCode();
-	}
+        public JavaSerializerSnapshot() {
+            super(JavaSerializer::new);
+        }
+    }
 }

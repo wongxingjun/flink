@@ -22,41 +22,39 @@ import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.runtime.event.RuntimeEvent;
 
-/**
- * Marks the end of a superstep of one particular iteration superstep.
- */
+/** Marks the end of a superstep of one particular iteration superstep. */
 public class EndOfSuperstepEvent extends RuntimeEvent {
 
-	/** The singleton instance of this event */
-	public static final EndOfSuperstepEvent INSTANCE = new EndOfSuperstepEvent();
+    /** The singleton instance of this event. */
+    public static final EndOfSuperstepEvent INSTANCE = new EndOfSuperstepEvent();
 
-	// ------------------------------------------------------------------------
-	
-	// not instantiable
-	private EndOfSuperstepEvent() {}
-	
-	// ------------------------------------------------------------------------
-	
-	@Override
-	public void write(DataOutputView out) {}
+    // ------------------------------------------------------------------------
 
-	@Override
-	public void read(DataInputView in) {}
+    /** This class is not meant to be instantiated. */
+    private EndOfSuperstepEvent() {}
 
-	// ------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
 
-	@Override
-	public int hashCode() {
-		return 41;
-	}
+    @Override
+    public void write(DataOutputView out) {}
 
-	@Override
-	public boolean equals(Object obj) {
-		return obj != null && obj.getClass() == EndOfSuperstepEvent.class;
-	}
+    @Override
+    public void read(DataInputView in) {}
 
-	@Override
-	public String toString() {
-		return getClass().getSimpleName();
-	}
+    // ------------------------------------------------------------------------
+
+    @Override
+    public int hashCode() {
+        return 41;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        return obj != null && obj.getClass() == EndOfSuperstepEvent.class;
+    }
+
+    @Override
+    public String toString() {
+        return getClass().getSimpleName();
+    }
 }

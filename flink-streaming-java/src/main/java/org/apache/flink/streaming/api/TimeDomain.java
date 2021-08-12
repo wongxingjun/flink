@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.streaming.api;
 
 /**
@@ -22,13 +23,9 @@ package org.apache.flink.streaming.api;
  */
 public enum TimeDomain {
 
-	/**
-	 * Time is based on the timestamp of events.
-	 */
-	EVENT_TIME,
+    /** Time is based on the timestamp of events. */
+    EVENT_TIME,
 
-	/**
-	 * Time is based on the current processing-time of a machine where processing happens.
-	 */
-	PROCESSING_TIME
+    /** Time is based on the current processing-time of a machine where processing happens. */
+    PROCESSING_TIME
 }

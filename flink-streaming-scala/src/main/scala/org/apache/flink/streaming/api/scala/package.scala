@@ -17,13 +17,12 @@
  */
 
 package org.apache.flink.streaming.api
-
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala.{createTuple2TypeInformation => apiTupleCreator}
 import org.apache.flink.api.scala.typeutils.{CaseClassTypeInfo, TypeUtils}
 import org.apache.flink.streaming.api.datastream.{ DataStream => JavaStream }
-import org.apache.flink.streaming.api.datastream.{ SplitStream => SplitJavaStream }
 import org.apache.flink.streaming.api.datastream.{ ConnectedStreams => ConnectedJavaStreams }
+import org.apache.flink.streaming.api.datastream.{ BroadcastConnectedStream => BroadcastConnectedJavaStreams }
 import org.apache.flink.streaming.api.datastream.{ KeyedStream => KeyedJavaStream }
 
 import language.implicitConversions
@@ -50,19 +49,18 @@ package object scala {
                                              = new KeyedStream[R, K](stream)
 
   /**
-   * Converts an [[org.apache.flink.streaming.api.datastream.SplitStream]] to a
-   * [[org.apache.flink.streaming.api.scala.SplitStream]].
-   */
-  private[flink] def asScalaStream[R](stream: SplitJavaStream[R])
-                                             = new SplitStream[R](stream)
-  /**
    * Converts an [[org.apache.flink.streaming.api.datastream.ConnectedStreams]] to a
    * [[org.apache.flink.streaming.api.scala.ConnectedStreams]].
    */
   private[flink] def asScalaStream[IN1, IN2](stream: ConnectedJavaStreams[IN1, IN2])
                                              = new ConnectedStreams[IN1, IN2](stream)
+  /**
+    * Converts an [[org.apache.flink.streaming.api.datastream.BroadcastConnectedStream]] to a
+    * [[org.apache.flink.streaming.api.scala.BroadcastConnectedStream]].
+    */
+  private[flink] def asScalaStream[IN1, IN2](stream: BroadcastConnectedJavaStreams[IN1, IN2])
+                                              = new BroadcastConnectedStream[IN1, IN2](stream)
 
-  
   private[flink] def fieldNames2Indices(
       typeInfo: TypeInformation[_],
       fields: Array[String]): Array[Int] = {

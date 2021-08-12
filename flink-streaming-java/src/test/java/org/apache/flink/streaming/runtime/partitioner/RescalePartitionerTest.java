@@ -17,202 +17,180 @@
 
 package org.apache.flink.streaming.runtime.partitioner;
 
-import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.JobException;
-import org.apache.flink.runtime.akka.AkkaUtils;
-import org.apache.flink.runtime.blob.BlobKey;
-import org.apache.flink.runtime.executiongraph.ExecutionEdge;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
-import org.apache.flink.runtime.executiongraph.restart.NoRestartStrategy;
+import org.apache.flink.runtime.executiongraph.IntermediateResultPartition;
+import org.apache.flink.runtime.executiongraph.InternalExecutionGraphAccessor;
+import org.apache.flink.runtime.executiongraph.TestingDefaultExecutionGraphBuilder;
+import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
-import org.apache.flink.runtime.plugable.SerializationDelegate;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.runtime.scheduler.SchedulerBase;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
-import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.util.Collector;
-import org.apache.flink.util.SerializedValue;
-import org.apache.flink.util.TestLogger;
-import org.junit.Before;
+
 import org.junit.Test;
 
-import java.net.URL;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
 
+/** Tests for {@link RescalePartitioner}. */
 @SuppressWarnings("serial")
-public class RescalePartitionerTest extends TestLogger {
-	
-	private RescalePartitioner<Tuple> distributePartitioner;
-	private StreamRecord<Tuple> streamRecord = new StreamRecord<Tuple>(null);
-	private SerializationDelegate<StreamRecord<Tuple>> sd = new SerializationDelegate<StreamRecord<Tuple>>(
-			null);
-	
-	@Before
-	public void setPartitioner() {
-		distributePartitioner = new RescalePartitioner<Tuple>();
-	}
-	
-	@Test
-	public void testSelectChannelsLength() {
-		sd.setInstance(streamRecord);
-		assertEquals(1, distributePartitioner.selectChannels(sd, 1).length);
-		assertEquals(1, distributePartitioner.selectChannels(sd, 2).length);
-		assertEquals(1, distributePartitioner.selectChannels(sd, 1024).length);
-	}
-	
-	@Test
-	public void testSelectChannelsInterval() {
-		sd.setInstance(streamRecord);
-		assertEquals(0, distributePartitioner.selectChannels(sd, 3)[0]);
-		assertEquals(1, distributePartitioner.selectChannels(sd, 3)[0]);
-		assertEquals(2, distributePartitioner.selectChannels(sd, 3)[0]);
-		assertEquals(0, distributePartitioner.selectChannels(sd, 3)[0]);
-	}
+public class RescalePartitionerTest extends StreamPartitionerTest {
 
-	@Test
-	public void testExecutionGraphGeneration() throws Exception {
-		final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+    @Override
+    public StreamPartitioner<Tuple> createPartitioner() {
+        StreamPartitioner<Tuple> partitioner = new RescalePartitioner<>();
+        assertFalse(partitioner.isBroadcast());
+        return partitioner;
+    }
 
-		env.setParallelism(4);
+    @Test
+    public void testSelectChannelsInterval() {
+        streamPartitioner.setup(3);
 
-		// get input data
-		DataStream<String> text = env.addSource(new ParallelSourceFunction<String>() {
-			private static final long serialVersionUID = 7772338606389180774L;
+        assertSelectedChannel(0);
+        assertSelectedChannel(1);
+        assertSelectedChannel(2);
+        assertSelectedChannel(0);
+    }
 
-			@Override
-			public void run(SourceContext<String> ctx) throws Exception {
+    @Test
+    public void testExecutionGraphGeneration() throws Exception {
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-			}
+        env.setParallelism(4);
 
-			@Override
-			public void cancel() {
+        // get input data
+        DataStream<String> text =
+                env.addSource(
+                                new ParallelSourceFunction<String>() {
+                                    private static final long serialVersionUID =
+                                            7772338606389180774L;
 
-			}
-		}).setParallelism(2);
+                                    @Override
+                                    public void run(SourceContext<String> ctx) throws Exception {}
 
-		DataStream<Tuple2<String, Integer>> counts = text
-			.rescale()
-			.flatMap(new FlatMapFunction<String, Tuple2<String, Integer>>() {
-				private static final long serialVersionUID = -5255930322161596829L;
+                                    @Override
+                                    public void cancel() {}
+                                })
+                        .setParallelism(2);
 
-				@Override
-				public void flatMap(String value,
-					Collector<Tuple2<String, Integer>> out) throws Exception {
+        DataStream<Tuple2<String, Integer>> counts =
+                text.rescale()
+                        .flatMap(
+                                new FlatMapFunction<String, Tuple2<String, Integer>>() {
+                                    private static final long serialVersionUID =
+                                            -5255930322161596829L;
 
-				}
-			});
+                                    @Override
+                                    public void flatMap(
+                                            String value, Collector<Tuple2<String, Integer>> out)
+                                            throws Exception {}
+                                });
 
-		counts.rescale().print().setParallelism(2);
+        counts.rescale().print().setParallelism(2);
 
-		JobGraph jobGraph = env.getStreamGraph().getJobGraph();
+        JobGraph jobGraph = env.getStreamGraph().getJobGraph();
 
-		final JobID jobId = new JobID();
-		final String jobName = "Semi-Rebalance Test Job";
-		final Configuration cfg = new Configuration();
+        List<JobVertex> jobVertices = jobGraph.getVerticesSortedTopologicallyFromSources();
 
-		List<JobVertex> jobVertices = jobGraph.getVerticesSortedTopologicallyFromSources();
+        JobVertex sourceVertex = jobVertices.get(0);
+        JobVertex mapVertex = jobVertices.get(1);
+        JobVertex sinkVertex = jobVertices.get(2);
 
-		JobVertex sourceVertex = jobVertices.get(0);
-		JobVertex mapVertex = jobVertices.get(1);
-		JobVertex sinkVertex = jobVertices.get(2);
+        assertEquals(2, sourceVertex.getParallelism());
+        assertEquals(4, mapVertex.getParallelism());
+        assertEquals(2, sinkVertex.getParallelism());
 
-		assertEquals(2, sourceVertex.getParallelism());
-		assertEquals(4, mapVertex.getParallelism());
-		assertEquals(2, sinkVertex.getParallelism());
+        ExecutionGraph eg =
+                TestingDefaultExecutionGraphBuilder.newBuilder()
+                        .setVertexParallelismStore(
+                                SchedulerBase.computeVertexParallelismStore(jobGraph))
+                        .build();
 
-		ExecutionGraph eg = new ExecutionGraph(
-			TestingUtils.defaultExecutionContext(),
-			TestingUtils.defaultExecutionContext(),
-			jobId,
-			jobName,
-			cfg,
-			new SerializedValue<>(new ExecutionConfig()),
-			AkkaUtils.getDefaultTimeout(),
-			new NoRestartStrategy(),
-			new ArrayList<BlobKey>(),
-			new ArrayList<URL>(),
-			ExecutionGraph.class.getClassLoader(),
-			new UnregisteredMetricsGroup());
-		try {
-			eg.attachJobGraph(jobVertices);
-		}
-		catch (JobException e) {
-			e.printStackTrace();
-			fail("Building ExecutionGraph failed: " + e.getMessage());
-		}
+        try {
+            eg.attachJobGraph(jobVertices);
+        } catch (JobException e) {
+            e.printStackTrace();
+            fail("Building ExecutionGraph failed: " + e.getMessage());
+        }
 
+        ExecutionJobVertex execSourceVertex = eg.getJobVertex(sourceVertex.getID());
+        ExecutionJobVertex execMapVertex = eg.getJobVertex(mapVertex.getID());
+        ExecutionJobVertex execSinkVertex = eg.getJobVertex(sinkVertex.getID());
 
-		ExecutionJobVertex execSourceVertex = eg.getJobVertex(sourceVertex.getID());
-		ExecutionJobVertex execMapVertex= eg.getJobVertex(mapVertex.getID());
-		ExecutionJobVertex execSinkVertex= eg.getJobVertex(sinkVertex.getID());
+        assertEquals(0, execSourceVertex.getInputs().size());
 
-		assertEquals(0, execSourceVertex.getInputs().size());
+        assertEquals(1, execMapVertex.getInputs().size());
+        assertEquals(4, execMapVertex.getParallelism());
+        ExecutionVertex[] mapTaskVertices = execMapVertex.getTaskVertices();
 
-		assertEquals(1, execMapVertex.getInputs().size());
-		assertEquals(4, execMapVertex.getParallelism());
-		ExecutionVertex[] mapTaskVertices = execMapVertex.getTaskVertices();
+        // verify that we have each parallel input partition exactly twice, i.e. that one source
+        // sends to two unique mappers
+        Map<Integer, Integer> mapInputPartitionCounts = new HashMap<>();
+        for (ExecutionVertex mapTaskVertex : mapTaskVertices) {
+            assertEquals(1, mapTaskVertex.getNumberOfInputs());
+            assertEquals(1, mapTaskVertex.getConsumedPartitionGroup(0).size());
+            IntermediateResultPartitionID consumedPartitionId =
+                    mapTaskVertex.getConsumedPartitionGroup(0).getFirst();
+            assertEquals(
+                    sourceVertex.getID(),
+                    mapTaskVertex
+                            .getExecutionGraphAccessor()
+                            .getResultPartitionOrThrow(consumedPartitionId)
+                            .getProducer()
+                            .getJobvertexId());
+            int inputPartition = consumedPartitionId.getPartitionNumber();
+            if (!mapInputPartitionCounts.containsKey(inputPartition)) {
+                mapInputPartitionCounts.put(inputPartition, 1);
+            } else {
+                mapInputPartitionCounts.put(
+                        inputPartition, mapInputPartitionCounts.get(inputPartition) + 1);
+            }
+        }
 
-		// verify that we have each parallel input partition exactly twice, i.e. that one source
-		// sends to two unique mappers
-		Map<Integer, Integer> mapInputPartitionCounts = new HashMap<>();
-		for (ExecutionVertex mapTaskVertex: mapTaskVertices) {
-			assertEquals(1, mapTaskVertex.getNumberOfInputs());
-			assertEquals(1, mapTaskVertex.getInputEdges(0).length);
-			ExecutionEdge inputEdge = mapTaskVertex.getInputEdges(0)[0];
-			assertEquals(sourceVertex.getID(), inputEdge.getSource().getProducer().getJobvertexId());
-			int inputPartition = inputEdge.getSource().getPartitionNumber();
-			if (!mapInputPartitionCounts.containsKey(inputPartition)) {
-				mapInputPartitionCounts.put(inputPartition, 1);
-			} else {
-				mapInputPartitionCounts.put(inputPartition, mapInputPartitionCounts.get(inputPartition) + 1);
-			}
-		}
+        assertEquals(2, mapInputPartitionCounts.size());
+        for (int count : mapInputPartitionCounts.values()) {
+            assertEquals(2, count);
+        }
 
-		assertEquals(2, mapInputPartitionCounts.size());
-		for (int count: mapInputPartitionCounts.values()) {
-			assertEquals(2, count);
-		}
+        assertEquals(1, execSinkVertex.getInputs().size());
+        assertEquals(2, execSinkVertex.getParallelism());
+        ExecutionVertex[] sinkTaskVertices = execSinkVertex.getTaskVertices();
+        InternalExecutionGraphAccessor executionGraphAccessor = execSinkVertex.getGraph();
 
-		assertEquals(1, execSinkVertex.getInputs().size());
-		assertEquals(2, execSinkVertex.getParallelism());
-		ExecutionVertex[] sinkTaskVertices = execSinkVertex.getTaskVertices();
+        // verify each sink instance has two inputs from the map and that each map subpartition
+        // only occurs in one unique input edge
+        Set<Integer> mapSubpartitions = new HashSet<>();
+        for (ExecutionVertex sinkTaskVertex : sinkTaskVertices) {
+            assertEquals(1, sinkTaskVertex.getNumberOfInputs());
+            assertEquals(2, sinkTaskVertex.getConsumedPartitionGroup(0).size());
+            for (IntermediateResultPartitionID consumedPartitionId :
+                    sinkTaskVertex.getConsumedPartitionGroup(0)) {
+                IntermediateResultPartition consumedPartition =
+                        executionGraphAccessor.getResultPartitionOrThrow(consumedPartitionId);
+                assertEquals(mapVertex.getID(), consumedPartition.getProducer().getJobvertexId());
+                int partitionNumber = consumedPartition.getPartitionNumber();
+                assertFalse(mapSubpartitions.contains(partitionNumber));
+                mapSubpartitions.add(partitionNumber);
+            }
+        }
 
-		// verify each sink instance has two inputs from the map and that each map subpartition
-		// only occurs in one unique input edge
-		Set<Integer> mapSubpartitions = new HashSet<>();
-		for (ExecutionVertex sinkTaskVertex: sinkTaskVertices) {
-			assertEquals(1, sinkTaskVertex.getNumberOfInputs());
-			assertEquals(2, sinkTaskVertex.getInputEdges(0).length);
-			ExecutionEdge inputEdge1 = sinkTaskVertex.getInputEdges(0)[0];
-			ExecutionEdge inputEdge2 = sinkTaskVertex.getInputEdges(0)[1];
-			assertEquals(mapVertex.getID(), inputEdge1.getSource().getProducer().getJobvertexId());
-			assertEquals(mapVertex.getID(), inputEdge2.getSource().getProducer().getJobvertexId());
-
-			int inputPartition1 = inputEdge1.getSource().getPartitionNumber();
-			assertFalse(mapSubpartitions.contains(inputPartition1));
-			mapSubpartitions.add(inputPartition1);
-			int inputPartition2 = inputEdge2.getSource().getPartitionNumber();
-			assertFalse(mapSubpartitions.contains(inputPartition2));
-			mapSubpartitions.add(inputPartition2);
-		}
-
-		assertEquals(4, mapSubpartitions.size());
-	}
+        assertEquals(4, mapSubpartitions.size());
+    }
 }

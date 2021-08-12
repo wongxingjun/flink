@@ -15,13 +15,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.runtime.metrics.util;
 
 import org.apache.flink.metrics.CharacterFilter;
 
+/** A {@link CharacterFilter} that returns the given string without any modification. */
 public class DummyCharacterFilter implements CharacterFilter {
-	@Override
-	public String filterCharacters(String input) {
-		return input;
-	}
+    @Override
+    public String filterCharacters(String input) {
+        return input;
+    }
 }

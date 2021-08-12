@@ -15,35 +15,35 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.api.common.io.compression;
 
-import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 import org.apache.flink.annotation.Internal;
+
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Collection;
 import java.util.Collections;
 
+/** Factory for XZ decompressors. */
 @Internal
 public class XZInputStreamFactory implements InflaterInputStreamFactory<XZCompressorInputStream> {
 
-	private static XZInputStreamFactory INSTANCE = null;
+    private static final XZInputStreamFactory INSTANCE = new XZInputStreamFactory();
 
-	public static XZInputStreamFactory getInstance() {
-		if (INSTANCE == null) {
-			INSTANCE = new XZInputStreamFactory();
-		}
-		return INSTANCE;
-	}
+    public static XZInputStreamFactory getInstance() {
+        return INSTANCE;
+    }
 
-	@Override
-	public XZCompressorInputStream create(InputStream in) throws IOException {
-		return new XZCompressorInputStream(in, true);
-	}
+    @Override
+    public XZCompressorInputStream create(InputStream in) throws IOException {
+        return new XZCompressorInputStream(in, true);
+    }
 
-	@Override
-	public Collection<String> getCommonFileExtensions() {
-		return Collections.singleton("xz");
-	}
+    @Override
+    public Collection<String> getCommonFileExtensions() {
+        return Collections.singleton("xz");
+    }
 }

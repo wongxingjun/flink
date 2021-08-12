@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.streaming.api.windowing.assigners;
 
 import org.apache.flink.annotation.PublicEvolving;
@@ -30,28 +31,28 @@ import java.util.Collection;
  */
 @PublicEvolving
 public abstract class MergingWindowAssigner<T, W extends Window> extends WindowAssigner<T, W> {
-	private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1L;
 
-	/**
-	 * Determines which windows (if any) should be merged.
-	 *
-	 * @param windows The window candidates.
-	 * @param callback A callback that can be invoked to signal which windows should be merged.
-	 */
-	public abstract void mergeWindows(Collection<W> windows, MergeCallback<W> callback);
+    /**
+     * Determines which windows (if any) should be merged.
+     *
+     * @param windows The window candidates.
+     * @param callback A callback that can be invoked to signal which windows should be merged.
+     */
+    public abstract void mergeWindows(Collection<W> windows, MergeCallback<W> callback);
 
-	/**
-	 * Callback to be used in {@link #mergeWindows(Collection, MergeCallback)} for specifying which
-	 * windows should be merged.
-	 */
-	public interface MergeCallback<W> {
+    /**
+     * Callback to be used in {@link #mergeWindows(Collection, MergeCallback)} for specifying which
+     * windows should be merged.
+     */
+    public interface MergeCallback<W> {
 
-		/**
-		 * Specifies that the given windows should be merged into the result window.
-		 *
-		 * @param toBeMerged The list of windows that should be merged into one window.
-		 * @param mergeResult The resulting merged window.
-		 */
-		void merge(Collection<W> toBeMerged, W mergeResult);
-	}
+        /**
+         * Specifies that the given windows should be merged into the result window.
+         *
+         * @param toBeMerged The list of windows that should be merged into one window.
+         * @param mergeResult The resulting merged window.
+         */
+        void merge(Collection<W> toBeMerged, W mergeResult);
+    }
 }

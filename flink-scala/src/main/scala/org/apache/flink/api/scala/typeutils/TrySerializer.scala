@@ -19,24 +19,34 @@ package org.apache.flink.api.scala.typeutils
 
 import org.apache.flink.annotation.Internal
 import org.apache.flink.api.common.ExecutionConfig
-import org.apache.flink.api.common.typeutils.TypeSerializer
+import org.apache.flink.api.common.typeutils._
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer
 import org.apache.flink.core.memory.{DataInputView, DataOutputView}
 
-import scala.util.{Success, Try, Failure}
+import scala.util.{Failure, Success, Try}
 
 /**
  * Serializer for [[scala.util.Try]].
  */
 @Internal
+@SerialVersionUID(-3052182891252564491L)
 class TrySerializer[A](
     private val elemSerializer: TypeSerializer[A],
-    private val executionConfig: ExecutionConfig)
+    private val throwableSerializer: TypeSerializer[Throwable])
   extends TypeSerializer[Try[A]] {
 
-  override def duplicate: TrySerializer[A] = this
+  private[typeutils] def this(elemSerializer: TypeSerializer[A],
+                              executionConfig: ExecutionConfig) = {
+    this(
+      elemSerializer,
+      new KryoSerializer[Throwable](classOf[Throwable], executionConfig)
+    )
+  }
 
-  val throwableSerializer = new KryoSerializer[Throwable](classOf[Throwable], executionConfig)
+  override def duplicate: TrySerializer[A] = new TrySerializer[A](
+    elemSerializer.duplicate(),
+    throwableSerializer.duplicate()
+  )
 
   override def createInstance: Try[A] = {
     Failure(new RuntimeException("Empty Failure"))
@@ -86,16 +96,52 @@ class TrySerializer[A](
   override def equals(obj: Any): Boolean = {
     obj match {
       case other: TrySerializer[_] =>
-        other.canEqual(this) && elemSerializer.equals(other.elemSerializer)
+        elemSerializer.equals(other.elemSerializer)
       case _ => false
     }
   }
 
-  override def canEqual(obj: Any): Boolean = {
-    obj.isInstanceOf[TrySerializer[_]]
+  override def hashCode(): Int = {
+    31 * elemSerializer.hashCode() + throwableSerializer.hashCode()
   }
 
-  override def hashCode(): Int = {
-    31 * elemSerializer.hashCode() + executionConfig.hashCode()
+  // --------------------------------------------------------------------------------------------
+  // Serializer configuration snapshotting & compatibility
+  // --------------------------------------------------------------------------------------------
+
+  private[typeutils] def getElementSerializer: TypeSerializer[A] = elemSerializer
+  private[typeutils] def getThrowableSerializer: TypeSerializer[Throwable] = throwableSerializer
+
+  override def snapshotConfiguration(): ScalaTrySerializerSnapshot[A] = {
+    new ScalaTrySerializerSnapshot[A](this)
   }
+}
+
+object TrySerializer {
+
+  /**
+    * We need to keep this to be compatible with snapshots taken in Flink 1.3.0.
+    * Once Flink 1.3.x is no longer supported, this can be removed.
+    */
+  @Deprecated
+  class TrySerializerConfigSnapshot[A]()
+      extends CompositeTypeSerializerConfigSnapshot[Try[A]]() {
+
+    override def getVersion: Int = TrySerializerConfigSnapshot.VERSION
+
+    override def resolveSchemaCompatibility(
+      newSerializer: TypeSerializer[Try[A]]
+    ): TypeSerializerSchemaCompatibility[Try[A]] =
+
+      CompositeTypeSerializerUtil.delegateCompatibilityCheckToNewSnapshot(
+        newSerializer,
+        new ScalaTrySerializerSnapshot[A](),
+        getNestedSerializersAndConfigs.get(0).f1,
+        getNestedSerializersAndConfigs.get(1).f1)
+  }
+
+  object TrySerializerConfigSnapshot {
+    val VERSION = 1
+  }
+
 }

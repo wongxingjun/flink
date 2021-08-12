@@ -18,12 +18,12 @@
 
 package org.apache.flink.graph.test.examples;
 
-import com.google.common.base.Charsets;
-import com.google.common.io.Files;
 import org.apache.flink.graph.examples.EuclideanGraphWeighing;
 import org.apache.flink.graph.examples.data.EuclideanGraphData;
 import org.apache.flink.test.util.MultipleProgramsTestBase;
 import org.apache.flink.test.util.TestBaseUtils;
+import org.apache.flink.util.FileUtils;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -34,45 +34,45 @@ import org.junit.runners.Parameterized;
 
 import java.io.File;
 
+/** Tests for {@link EuclideanGraphWeighing}. */
 @RunWith(Parameterized.class)
 public class EuclideanGraphWeighingITCase extends MultipleProgramsTestBase {
 
-	private String verticesPath;
+    private String verticesPath;
 
-	private String edgesPath;
+    private String edgesPath;
 
-	private String resultPath;
+    private String resultPath;
 
-	private String expected;
+    private String expected;
 
-	@Rule
-	public TemporaryFolder tempFolder = new TemporaryFolder();
+    @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
 
-	public EuclideanGraphWeighingITCase(TestExecutionMode mode) {
-		super(mode);
-	}
+    public EuclideanGraphWeighingITCase(TestExecutionMode mode) {
+        super(mode);
+    }
 
-	@Before
-	public void before() throws Exception {
-		resultPath = tempFolder.newFile().toURI().toString();
-		File verticesFile = tempFolder.newFile();
-		Files.write(EuclideanGraphData.VERTICES, verticesFile, Charsets.UTF_8);
+    @Before
+    public void before() throws Exception {
+        resultPath = tempFolder.newFile().toURI().toString();
+        File verticesFile = tempFolder.newFile();
+        FileUtils.writeFileUtf8(verticesFile, EuclideanGraphData.VERTICES);
 
-		File edgesFile = tempFolder.newFile();
-		Files.write(EuclideanGraphData.EDGES, edgesFile, Charsets.UTF_8);
+        File edgesFile = tempFolder.newFile();
+        FileUtils.writeFileUtf8(edgesFile, EuclideanGraphData.EDGES);
 
-		verticesPath = verticesFile.toURI().toString();
-		edgesPath = edgesFile.toURI().toString();
-	}
+        verticesPath = verticesFile.toURI().toString();
+        edgesPath = edgesFile.toURI().toString();
+    }
 
-	@Test
-	public void testGraphWeightingWeighing() throws Exception {
-		EuclideanGraphWeighing.main(new String[]{verticesPath, edgesPath, resultPath});
-		expected = EuclideanGraphData.RESULTED_WEIGHTED_EDGES;
-	}
+    @Test
+    public void testGraphWeightingWeighing() throws Exception {
+        EuclideanGraphWeighing.main(new String[] {verticesPath, edgesPath, resultPath});
+        expected = EuclideanGraphData.RESULTED_WEIGHTED_EDGES;
+    }
 
-	@After
-	public void after() throws Exception {
-		TestBaseUtils.compareResultsByLinesInMemory(expected, resultPath);
-	}
+    @After
+    public void after() throws Exception {
+        TestBaseUtils.compareResultsByLinesInMemory(expected, resultPath);
+    }
 }

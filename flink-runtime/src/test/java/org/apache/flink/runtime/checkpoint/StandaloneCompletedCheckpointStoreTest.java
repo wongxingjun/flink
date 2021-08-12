@@ -18,56 +18,162 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-import org.apache.flink.runtime.jobgraph.JobStatus;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.runtime.state.SharedStateRegistry;
+import org.apache.flink.runtime.state.testutils.TestCompletedCheckpointStorageLocation;
+import org.apache.flink.util.concurrent.Executors;
+
 import org.junit.Test;
 
+import java.util.Collection;
+import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
+
+import static org.apache.flink.runtime.checkpoint.CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION;
+import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-/**
- * Tests for basic {@link CompletedCheckpointStore} contract.
- */
+/** Tests for basic {@link CompletedCheckpointStore} contract. */
 public class StandaloneCompletedCheckpointStoreTest extends CompletedCheckpointStoreTest {
 
-	@Override
-	protected CompletedCheckpointStore createCompletedCheckpoints(
-			int maxNumberOfCheckpointsToRetain) throws Exception {
+    @Override
+    protected CompletedCheckpointStore createCompletedCheckpoints(
+            int maxNumberOfCheckpointsToRetain, Executor executor) throws Exception {
 
-		return new StandaloneCompletedCheckpointStore(maxNumberOfCheckpointsToRetain);
-	}
+        return new StandaloneCompletedCheckpointStore(maxNumberOfCheckpointsToRetain);
+    }
 
-	/**
-	 * Tests that shutdown discards all checkpoints.
-	 */
-	@Test
-	public void testShutdownDiscardsCheckpoints() throws Exception {
-		CompletedCheckpointStore store = createCompletedCheckpoints(1);
-		TestCompletedCheckpoint checkpoint = createCheckpoint(0);
+    /** Tests that shutdown discards all checkpoints. */
+    @Test
+    public void testShutdownDiscardsCheckpoints() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore store = createCompletedCheckpoints(1);
+        TestCompletedCheckpoint checkpoint = createCheckpoint(0, sharedStateRegistry);
+        Collection<OperatorState> operatorStates = checkpoint.getOperatorStates().values();
 
-		store.addCheckpoint(checkpoint);
-		assertEquals(1, store.getNumberOfRetainedCheckpoints());
+        store.addCheckpoint(checkpoint, new CheckpointsCleaner(), () -> {});
+        assertEquals(1, store.getNumberOfRetainedCheckpoints());
+        verifyCheckpointRegistered(operatorStates, sharedStateRegistry);
 
-		store.shutdown(JobStatus.FINISHED);
+        store.shutdown(JobStatus.FINISHED, new CheckpointsCleaner());
+        assertEquals(0, store.getNumberOfRetainedCheckpoints());
+        assertTrue(checkpoint.isDiscarded());
+        verifyCheckpointDiscarded(operatorStates);
+    }
 
-		assertEquals(0, store.getNumberOfRetainedCheckpoints());
-		assertTrue(checkpoint.isDiscarded());
-	}
+    /**
+     * Tests that suspends discards all checkpoints (as they cannot be recovered later in standalone
+     * recovery mode).
+     */
+    @Test
+    public void testSuspendDiscardsCheckpoints() throws Exception {
+        SharedStateRegistry sharedStateRegistry = new SharedStateRegistry();
+        CompletedCheckpointStore store = createCompletedCheckpoints(1);
+        TestCompletedCheckpoint checkpoint = createCheckpoint(0, sharedStateRegistry);
+        Collection<OperatorState> taskStates = checkpoint.getOperatorStates().values();
 
-	/**
-	 * Tests that suspends discards all checkpoints (as they cannot be
-	 * recovered later in standalone recovery mode).
-	 */
-	@Test
-	public void testSuspendDiscardsCheckpoints() throws Exception {
-		CompletedCheckpointStore store = createCompletedCheckpoints(1);
-		TestCompletedCheckpoint checkpoint = createCheckpoint(0);
+        store.addCheckpoint(checkpoint, new CheckpointsCleaner(), () -> {});
+        assertEquals(1, store.getNumberOfRetainedCheckpoints());
+        verifyCheckpointRegistered(taskStates, sharedStateRegistry);
 
-		store.addCheckpoint(checkpoint);
-		assertEquals(1, store.getNumberOfRetainedCheckpoints());
+        store.shutdown(JobStatus.SUSPENDED, new CheckpointsCleaner());
+        assertEquals(0, store.getNumberOfRetainedCheckpoints());
+        assertTrue(checkpoint.isDiscarded());
+        verifyCheckpointDiscarded(taskStates);
+    }
 
-		store.shutdown(JobStatus.SUSPENDED);
+    /**
+     * Tests that the checkpoint does not exist in the store when we fail to add it into the store
+     * (i.e., there exists an exception thrown by the method).
+     */
+    @Test
+    public void testAddCheckpointWithFailedRemove() throws Exception {
 
-		assertEquals(0, store.getNumberOfRetainedCheckpoints());
-		assertTrue(checkpoint.isDiscarded());
-	}
+        final int numCheckpointsToRetain = 1;
+        CompletedCheckpointStore store =
+                createCompletedCheckpoints(numCheckpointsToRetain, Executors.directExecutor());
+
+        CountDownLatch discardAttempted = new CountDownLatch(1);
+        for (long i = 0; i < numCheckpointsToRetain + 1; ++i) {
+            CompletedCheckpoint checkpointToAdd =
+                    new CompletedCheckpoint(
+                            new JobID(),
+                            i,
+                            i,
+                            i,
+                            Collections.emptyMap(),
+                            Collections.emptyList(),
+                            CheckpointProperties.forCheckpoint(NEVER_RETAIN_AFTER_TERMINATION),
+                            new TestCompletedCheckpointStorageLocation()) {
+                        @Override
+                        public boolean discardOnSubsume() {
+                            discardAttempted.countDown();
+                            throw new RuntimeException();
+                        }
+                    };
+            // should fail despite the exception
+            store.addCheckpoint(checkpointToAdd, new CheckpointsCleaner(), () -> {});
+        }
+        discardAttempted.await();
+    }
+
+    @Test
+    public void testPreferCheckpointWithoutSavepoint() throws Exception {
+        StandaloneCompletedCheckpointStore store = new StandaloneCompletedCheckpointStore(5);
+        JobID jobId = new JobID();
+        store.addCheckpoint(checkpoint(jobId, 1L), new CheckpointsCleaner(), () -> {});
+        store.addCheckpoint(checkpoint(jobId, 2L), new CheckpointsCleaner(), () -> {});
+        store.addCheckpoint(checkpoint(jobId, 3L), new CheckpointsCleaner(), () -> {});
+
+        CompletedCheckpoint latestCheckpoint = store.getLatestCheckpoint(true);
+
+        assertThat(latestCheckpoint.getCheckpointID(), equalTo(3L));
+    }
+
+    @Test
+    public void testPreferCheckpointWithSavepoint() throws Exception {
+        StandaloneCompletedCheckpointStore store = new StandaloneCompletedCheckpointStore(5);
+        JobID jobId = new JobID();
+        store.addCheckpoint(checkpoint(jobId, 1L), new CheckpointsCleaner(), () -> {});
+        store.addCheckpoint(savepoint(jobId, 2L), new CheckpointsCleaner(), () -> {});
+        store.addCheckpoint(savepoint(jobId, 3L), new CheckpointsCleaner(), () -> {});
+
+        CompletedCheckpoint latestCheckpoint = store.getLatestCheckpoint(true);
+
+        assertThat(latestCheckpoint.getCheckpointID(), equalTo(1L));
+    }
+
+    @Test
+    public void testPreferCheckpointWithOnlySavepoint() throws Exception {
+        StandaloneCompletedCheckpointStore store = new StandaloneCompletedCheckpointStore(5);
+        JobID jobId = new JobID();
+        store.addCheckpoint(savepoint(jobId, 1L), new CheckpointsCleaner(), () -> {});
+        store.addCheckpoint(savepoint(jobId, 2L), new CheckpointsCleaner(), () -> {});
+
+        CompletedCheckpoint latestCheckpoint = store.getLatestCheckpoint(true);
+
+        assertThat(latestCheckpoint.getCheckpointID(), equalTo(2L));
+    }
+
+    private static CompletedCheckpoint checkpoint(JobID jobId, long checkpointId) {
+        return new TestCompletedCheckpoint(
+                jobId,
+                checkpointId,
+                checkpointId,
+                Collections.emptyMap(),
+                CheckpointProperties.forCheckpoint(CheckpointRetentionPolicy.RETAIN_ON_FAILURE));
+    }
+
+    private static CompletedCheckpoint savepoint(JobID jobId, long checkpointId) {
+        return new TestCompletedCheckpoint(
+                jobId,
+                checkpointId,
+                checkpointId,
+                Collections.emptyMap(),
+                CheckpointProperties.forSavepoint(true));
+    }
 }

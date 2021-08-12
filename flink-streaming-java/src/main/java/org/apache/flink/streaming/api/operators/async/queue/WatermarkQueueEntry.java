@@ -19,31 +19,41 @@
 package org.apache.flink.streaming.api.operators.async.queue;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.runtime.concurrent.Future;
-import org.apache.flink.runtime.concurrent.impl.FlinkCompletableFuture;
+import org.apache.flink.streaming.api.operators.TimestampedCollector;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.util.Preconditions;
 
-/**
- * {@link StreamElementQueueEntry} implementation for the {@link Watermark}.
- */
+import javax.annotation.Nonnull;
+
+import java.util.Collection;
+
+/** {@link StreamElementQueueEntry} implementation for the {@link Watermark}. */
 @Internal
-public class WatermarkQueueEntry extends StreamElementQueueEntry<Watermark> implements AsyncWatermarkResult {
+class WatermarkQueueEntry<OUT> implements StreamElementQueueEntry<OUT> {
+    @Nonnull private final Watermark watermark;
 
-	private final Future<Watermark> future;
+    WatermarkQueueEntry(Watermark watermark) {
+        this.watermark = Preconditions.checkNotNull(watermark);
+    }
 
-	public WatermarkQueueEntry(Watermark watermark) {
-		super(watermark);
+    @Override
+    public void emitResult(TimestampedCollector<OUT> output) {
+        output.emitWatermark(watermark);
+    }
 
-		this.future = FlinkCompletableFuture.completed(watermark);
-	}
+    @Nonnull
+    @Override
+    public Watermark getInputElement() {
+        return watermark;
+    }
 
-	@Override
-	public Watermark getWatermark() {
-		return (Watermark) getStreamElement();
-	}
+    @Override
+    public boolean isDone() {
+        return true;
+    }
 
-	@Override
-	protected Future<Watermark> getFuture() {
-		return future;
-	}
+    @Override
+    public void complete(Collection result) {
+        throw new IllegalStateException("Cannot complete a watermark.");
+    }
 }

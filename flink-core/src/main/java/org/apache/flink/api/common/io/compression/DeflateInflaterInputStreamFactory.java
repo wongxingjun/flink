@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.apache.flink.api.common.io.compression;
 
 import org.apache.flink.annotation.Internal;
@@ -25,28 +26,25 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.zip.InflaterInputStream;
 
-/**
- * Factory for input streams that decompress the "deflate" compression format.
- */
+/** Factory for input streams that decompress the "deflate" compression format. */
 @Internal
-public class DeflateInflaterInputStreamFactory implements InflaterInputStreamFactory<InflaterInputStream> {
+public class DeflateInflaterInputStreamFactory
+        implements InflaterInputStreamFactory<InflaterInputStream> {
 
-	private static DeflateInflaterInputStreamFactory INSTANCE = null;
+    private static final DeflateInflaterInputStreamFactory INSTANCE =
+            new DeflateInflaterInputStreamFactory();
 
-	public static DeflateInflaterInputStreamFactory getInstance() {
-		if (INSTANCE == null) {
-			INSTANCE = new DeflateInflaterInputStreamFactory();
-		}
-		return INSTANCE;
-	}
+    public static DeflateInflaterInputStreamFactory getInstance() {
+        return INSTANCE;
+    }
 
-	@Override
-	public InflaterInputStream create(InputStream in) throws IOException {
-		return new InflaterInputStream(in);
-	}
+    @Override
+    public InflaterInputStream create(InputStream in) throws IOException {
+        return new InflaterInputStream(in);
+    }
 
-	@Override
-	public Collection<String> getCommonFileExtensions() {
-		return Collections.singleton("deflate");
-	}
+    @Override
+    public Collection<String> getCommonFileExtensions() {
+        return Collections.singleton("deflate");
+    }
 }

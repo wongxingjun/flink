@@ -24,45 +24,46 @@ import org.apache.flink.util.Collector;
 
 /**
  * A {@link Collector} to update the solution set of a workset iteration.
- * <p>
- * The records are written to a HashTable hash table to allow in-memory point updates.
- * <p>
- * Records will only be collected, if there is a match after probing the hash table. If the build side iterator is
- * already positioned for the update, use {@link SolutionSetFastUpdateOutputCollector} to the save re-probing.
- * 
+ *
+ * <p>The records are written to a HashTable hash table to allow in-memory point updates.
+ *
+ * <p>Records will only be collected, if there is a match after probing the hash table. If the build
+ * side iterator is already positioned for the update, use {@link
+ * SolutionSetFastUpdateOutputCollector} to the save re-probing.
+ *
  * @see SolutionSetFastUpdateOutputCollector
  */
 public class SolutionSetObjectsUpdateOutputCollector<T> implements Collector<T> {
 
-	private final Collector<T> delegate;
+    private final Collector<T> delegate;
 
-	private final JoinHashMap<T> hashMap;
-	
-	private final TypeSerializer<T> serializer;
-	
-	public SolutionSetObjectsUpdateOutputCollector(JoinHashMap<T> hashMap) {
-		this(hashMap, null);
-	}
+    private final JoinHashMap<T> hashMap;
 
-	public SolutionSetObjectsUpdateOutputCollector(JoinHashMap<T> hashMap, Collector<T> delegate) {
-		this.delegate = delegate;
-		this.hashMap = hashMap;
-		this.serializer = hashMap.getBuildSerializer();
-	}
+    private final TypeSerializer<T> serializer;
 
-	@Override
-	public void collect(T record) {
-		T copy = serializer.copy(record);
-		hashMap.insertOrReplace(copy);
-		if (delegate != null) {
-			delegate.collect(record);
-		}
-	}
+    public SolutionSetObjectsUpdateOutputCollector(JoinHashMap<T> hashMap) {
+        this(hashMap, null);
+    }
 
-	@Override
-	public void close() {
-		if (delegate != null) {
-			delegate.close();
-		}
-	}
+    public SolutionSetObjectsUpdateOutputCollector(JoinHashMap<T> hashMap, Collector<T> delegate) {
+        this.delegate = delegate;
+        this.hashMap = hashMap;
+        this.serializer = hashMap.getBuildSerializer();
+    }
+
+    @Override
+    public void collect(T record) {
+        T copy = serializer.copy(record);
+        hashMap.insertOrReplace(copy);
+        if (delegate != null) {
+            delegate.collect(record);
+        }
+    }
+
+    @Override
+    public void close() {
+        if (delegate != null) {
+            delegate.close();
+        }
+    }
 }

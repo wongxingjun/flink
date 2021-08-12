@@ -18,8 +18,6 @@
 
 package org.apache.flink.api.java;
 
-import org.apache.commons.lang3.StringUtils;
-
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.accumulators.Accumulator;
 import org.apache.flink.api.common.accumulators.SerializedListAccumulator;
@@ -31,274 +29,344 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.typeutils.GenericTypeInfo;
 import org.apache.flink.configuration.Configuration;
 
+import org.apache.commons.lang3.StringUtils;
+
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.Arrays;
+import java.util.Optional;
 import java.util.Random;
 
-import static org.apache.flink.api.java.functions.FunctionAnnotation.SkipCodeAnalysis;
-
-/**
- * Utility class that contains helper methods to work with Java APIs.
- */
+/** Utility class that contains helper methods to work with Java APIs. */
 @Internal
 public final class Utils {
-	
-	public static final Random RNG = new Random();
 
-	public static String getCallLocationName() {
-		return getCallLocationName(4);
-	}
+    public static final Random RNG = new Random();
 
-	public static String getCallLocationName(int depth) {
-		StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+    public static String getCallLocationName() {
+        return getCallLocationName(4);
+    }
 
-		if (stackTrace.length < depth) {
-			return "<unknown>";
-		}
+    public static String getCallLocationName(int depth) {
+        StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
 
-		StackTraceElement elem = stackTrace[depth];
+        if (stackTrace.length <= depth) {
+            return "<unknown>";
+        }
 
-		return String.format("%s(%s:%d)", elem.getMethodName(), elem.getFileName(), elem.getLineNumber());
-	}
+        StackTraceElement elem = stackTrace[depth];
 
-	// --------------------------------------------------------------------------------------------
-	
-	/**
-	 * Utility sink function that counts elements and writes the count into an accumulator,
-	 * from which it can be retrieved by the client. This sink is used by the
-	 * {@link DataSet#count()} function.
-	 * 
-	 * @param <T> Type of elements to count.
-	 */
-	@SkipCodeAnalysis
-	public static class CountHelper<T> extends RichOutputFormat<T> {
+        return String.format(
+                "%s(%s:%d)", elem.getMethodName(), elem.getFileName(), elem.getLineNumber());
+    }
 
-		private static final long serialVersionUID = 1L;
+    // --------------------------------------------------------------------------------------------
 
-		private final String id;
-		private long counter;
+    /**
+     * Utility sink function that counts elements and writes the count into an accumulator, from
+     * which it can be retrieved by the client. This sink is used by the {@link DataSet#count()}
+     * function.
+     *
+     * @param <T> Type of elements to count.
+     */
+    public static class CountHelper<T> extends RichOutputFormat<T> {
 
-		public CountHelper(String id) {
-			this.id = id;
-			this.counter = 0L;
-		}
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public void configure(Configuration parameters) {}
+        private final String id;
+        private long counter;
 
-		@Override
-		public void open(int taskNumber, int numTasks) {}
+        public CountHelper(String id) {
+            this.id = id;
+            this.counter = 0L;
+        }
 
-		@Override
-		public void writeRecord(T record) {
-			counter++;
-		}
+        @Override
+        public void configure(Configuration parameters) {}
 
-		@Override
-		public void close() {
-			getRuntimeContext().getLongCounter(id).add(counter);
-		}
-	}
+        @Override
+        public void open(int taskNumber, int numTasks) {}
 
-	/**
-	 * Utility sink function that collects elements into an accumulator,
-	 * from which it they can be retrieved by the client. This sink is used by the
-	 * {@link DataSet#collect()} function.
-	 *
-	 * @param <T> Type of elements to count.
-	 */
-	@SkipCodeAnalysis
-	public static class CollectHelper<T> extends RichOutputFormat<T> {
+        @Override
+        public void writeRecord(T record) {
+            counter++;
+        }
 
-		private static final long serialVersionUID = 1L;
+        @Override
+        public void close() {
+            getRuntimeContext().getLongCounter(id).add(counter);
+        }
+    }
 
-		private final String id;
-		private final TypeSerializer<T> serializer;
-		
-		private SerializedListAccumulator<T> accumulator;
+    /**
+     * Utility sink function that collects elements into an accumulator, from which it they can be
+     * retrieved by the client. This sink is used by the {@link DataSet#collect()} function.
+     *
+     * @param <T> Type of elements to count.
+     */
+    public static class CollectHelper<T> extends RichOutputFormat<T> {
 
-		public CollectHelper(String id, TypeSerializer<T> serializer) {
-			this.id = id;
-			this.serializer = serializer;
-		}
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public void configure(Configuration parameters) {}
+        private final String id;
+        private final TypeSerializer<T> serializer;
 
-		@Override
-		public void open(int taskNumber, int numTasks)  {
-			this.accumulator = new SerializedListAccumulator<>();
-		}
+        private SerializedListAccumulator<T> accumulator;
 
-		@Override
-		public void writeRecord(T record) throws IOException {
-			accumulator.add(record, serializer);
-		}
+        public CollectHelper(String id, TypeSerializer<T> serializer) {
+            this.id = id;
+            this.serializer = serializer;
+        }
 
-		@Override
-		public void close() {
-			// Important: should only be added in close method to minimize traffic of accumulators
-			getRuntimeContext().addAccumulator(id, accumulator);
-		}
-	}
+        @Override
+        public void configure(Configuration parameters) {}
 
-	public static class ChecksumHashCode implements SimpleAccumulator<ChecksumHashCode> {
+        @Override
+        public void open(int taskNumber, int numTasks) {
+            this.accumulator = new SerializedListAccumulator<>();
+        }
 
-		private static final long serialVersionUID = 1L;
+        @Override
+        public void writeRecord(T record) throws IOException {
+            accumulator.add(record, serializer);
+        }
 
-		private long count;
-		private long checksum;
+        @Override
+        public void close() {
+            // when the sink is up but not initialized and the job fails due to other operators,
+            // it is possible that close() is called when open() is not called,
+            // so we have to do this null check
+            if (accumulator != null) {
+                // Important: should only be added in close method to minimize traffic of
+                // accumulators
+                getRuntimeContext().addAccumulator(id, accumulator);
+            }
+        }
+    }
 
-		public ChecksumHashCode() {}
+    /** Accumulator of {@link ChecksumHashCode}. */
+    public static class ChecksumHashCode implements SimpleAccumulator<ChecksumHashCode> {
 
-		public ChecksumHashCode(long count, long checksum) {
-			this.count = count;
-			this.checksum = checksum;
-		}
+        private static final long serialVersionUID = 1L;
 
-		public long getCount() {
-			return count;
-		}
+        private long count;
+        private long checksum;
 
-		public long getChecksum() {
-			return checksum;
-		}
+        public ChecksumHashCode() {}
 
-		@Override
-		public void add(ChecksumHashCode value) {
-			this.count += value.count;
-			this.checksum += value.checksum;
-		}
+        public ChecksumHashCode(long count, long checksum) {
+            this.count = count;
+            this.checksum = checksum;
+        }
 
-		@Override
-		public ChecksumHashCode getLocalValue() {
-			return this;
-		}
+        public long getCount() {
+            return count;
+        }
 
-		@Override
-		public void resetLocal() {
-			this.count = 0;
-			this.checksum = 0;
-		}
+        public long getChecksum() {
+            return checksum;
+        }
 
-		@Override
-		public void merge(Accumulator<ChecksumHashCode, ChecksumHashCode> other) {
-			this.add(other.getLocalValue());
-		}
+        @Override
+        public void add(ChecksumHashCode value) {
+            this.count += value.count;
+            this.checksum += value.checksum;
+        }
 
-		@Override
-		public ChecksumHashCode clone() {
-			return new ChecksumHashCode(count, checksum);
-		}
+        @Override
+        public ChecksumHashCode getLocalValue() {
+            return this;
+        }
 
-		@Override
-		public boolean equals(Object obj) {
-			if (obj instanceof ChecksumHashCode) {
-				ChecksumHashCode other = (ChecksumHashCode) obj;
-				return this.count == other.count && this.checksum == other.checksum;
-			} else {
-				return false;
-			}
-		}
+        @Override
+        public void resetLocal() {
+            this.count = 0;
+            this.checksum = 0;
+        }
 
-		@Override
-		public int hashCode() {
-			return (int) (this.count + this.checksum);
-		}
+        @Override
+        public void merge(Accumulator<ChecksumHashCode, ChecksumHashCode> other) {
+            this.add(other.getLocalValue());
+        }
 
-		@Override
-		public String toString() {
-			return String.format("ChecksumHashCode 0x%016x, count %d", this.checksum, this.count);
-		}
-	}
+        @Override
+        public ChecksumHashCode clone() {
+            return new ChecksumHashCode(count, checksum);
+        }
 
-	@SkipCodeAnalysis
-	public static class ChecksumHashCodeHelper<T> extends RichOutputFormat<T> {
+        @Override
+        public boolean equals(Object obj) {
+            if (obj instanceof ChecksumHashCode) {
+                ChecksumHashCode other = (ChecksumHashCode) obj;
+                return this.count == other.count && this.checksum == other.checksum;
+            } else {
+                return false;
+            }
+        }
 
-		private static final long serialVersionUID = 1L;
+        @Override
+        public int hashCode() {
+            return (int) (this.count + this.checksum);
+        }
 
-		private final String id;
-		private long counter;
-		private long checksum;
+        @Override
+        public String toString() {
+            return String.format("ChecksumHashCode 0x%016x, count %d", this.checksum, this.count);
+        }
+    }
 
-		public ChecksumHashCodeHelper(String id) {
-			this.id = id;
-			this.counter = 0L;
-			this.checksum = 0L;
-		}
+    /**
+     * {@link RichOutputFormat} for {@link ChecksumHashCode}.
+     *
+     * @param <T>
+     */
+    public static class ChecksumHashCodeHelper<T> extends RichOutputFormat<T> {
 
-		@Override
-		public void configure(Configuration parameters) {}
+        private static final long serialVersionUID = 1L;
 
-		@Override
-		public void open(int taskNumber, int numTasks) {}
+        private final String id;
+        private long counter;
+        private long checksum;
 
-		@Override
-		public void writeRecord(T record) throws IOException {
-			counter++;
-			// convert 32-bit integer to non-negative long
-			checksum += record.hashCode() & 0xffffffffL;
-		}
+        public ChecksumHashCodeHelper(String id) {
+            this.id = id;
+            this.counter = 0L;
+            this.checksum = 0L;
+        }
 
-		@Override
-		public void close() throws IOException {
-			ChecksumHashCode update = new ChecksumHashCode(counter, checksum);
-			getRuntimeContext().addAccumulator(id, update);
-		}
-	}
+        @Override
+        public void configure(Configuration parameters) {}
 
+        @Override
+        public void open(int taskNumber, int numTasks) {}
 
-	// --------------------------------------------------------------------------------------------
+        @Override
+        public void writeRecord(T record) throws IOException {
+            counter++;
+            // convert 32-bit integer to non-negative long
+            checksum += record.hashCode() & 0xffffffffL;
+        }
 
-	/**
-	 * Debugging utility to understand the hierarchy of serializers created by the Java API.
-	 * Tested in GroupReduceITCase.testGroupByGenericType()
-	 */
-	public static <T> String getSerializerTree(TypeInformation<T> ti) {
-		return getSerializerTree(ti, 0);
-	}
+        @Override
+        public void close() throws IOException {
+            ChecksumHashCode update = new ChecksumHashCode(counter, checksum);
+            getRuntimeContext().addAccumulator(id, update);
+        }
+    }
 
-	private static <T> String getSerializerTree(TypeInformation<T> ti, int indent) {
-		String ret = "";
-		if (ti instanceof CompositeType) {
-			ret += StringUtils.repeat(' ', indent) + ti.getClass().getSimpleName()+"\n";
-			CompositeType<T> cti = (CompositeType<T>) ti;
-			String[] fieldNames = cti.getFieldNames();
-			for (int i = 0; i < cti.getArity(); i++) {
-				TypeInformation<?> fieldType = cti.getTypeAt(i);
-				ret += StringUtils.repeat(' ', indent + 2) + fieldNames[i]+":"+getSerializerTree(fieldType, indent);
-			}
-		} else {
-			if (ti instanceof GenericTypeInfo) {
-				ret += StringUtils.repeat(' ', indent) + "GenericTypeInfo ("+ti.getTypeClass().getSimpleName()+")\n";
-				ret += getGenericTypeTree(ti.getTypeClass(), indent + 4);
-			} else {
-				ret += StringUtils.repeat(' ', indent) + ti.toString()+"\n";
-			}
-		}
-		return ret;
-	}
+    // --------------------------------------------------------------------------------------------
 
-	private static String getGenericTypeTree(Class<?> type, int indent) {
-		String ret = "";
-		for (Field field : type.getDeclaredFields()) {
-			if (Modifier.isStatic(field.getModifiers()) || Modifier.isTransient(field.getModifiers())) {
-				continue;
-			}
-			ret += StringUtils.repeat(' ', indent) + field.getName() + ":" + field.getType().getName() + 
-				(field.getType().isEnum() ? " (is enum)" : "") + "\n";
-			if (!field.getType().isPrimitive()) {
-				ret += getGenericTypeTree(field.getType(), indent + 4);
-			}
-		}
-		return ret;
-	}
+    /**
+     * Debugging utility to understand the hierarchy of serializers created by the Java API. Tested
+     * in GroupReduceITCase.testGroupByGenericType()
+     */
+    public static <T> String getSerializerTree(TypeInformation<T> ti) {
+        return getSerializerTree(ti, 0);
+    }
 
-	/**
-	 * Private constructor to prevent instantiation.
-	 */
-	private Utils() {
-		throw new RuntimeException();
-	}
+    private static <T> String getSerializerTree(TypeInformation<T> ti, int indent) {
+        String ret = "";
+        if (ti instanceof CompositeType) {
+            ret += StringUtils.repeat(' ', indent) + ti.getClass().getSimpleName() + "\n";
+            CompositeType<T> cti = (CompositeType<T>) ti;
+            String[] fieldNames = cti.getFieldNames();
+            for (int i = 0; i < cti.getArity(); i++) {
+                TypeInformation<?> fieldType = cti.getTypeAt(i);
+                ret +=
+                        StringUtils.repeat(' ', indent + 2)
+                                + fieldNames[i]
+                                + ":"
+                                + getSerializerTree(fieldType, indent);
+            }
+        } else {
+            if (ti instanceof GenericTypeInfo) {
+                ret +=
+                        StringUtils.repeat(' ', indent)
+                                + "GenericTypeInfo ("
+                                + ti.getTypeClass().getSimpleName()
+                                + ")\n";
+                ret += getGenericTypeTree(ti.getTypeClass(), indent + 4);
+            } else {
+                ret += StringUtils.repeat(' ', indent) + ti.toString() + "\n";
+            }
+        }
+        return ret;
+    }
+
+    private static String getGenericTypeTree(Class<?> type, int indent) {
+        String ret = "";
+        for (Field field : type.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers())
+                    || Modifier.isTransient(field.getModifiers())) {
+                continue;
+            }
+            ret +=
+                    StringUtils.repeat(' ', indent)
+                            + field.getName()
+                            + ":"
+                            + field.getType().getName()
+                            + (field.getType().isEnum() ? " (is enum)" : "")
+                            + "\n";
+            if (!field.getType().isPrimitive()) {
+                ret += getGenericTypeTree(field.getType(), indent + 4);
+            }
+        }
+        return ret;
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    /**
+     * Resolves the given factories. The thread local factory has preference over the static
+     * factory. If none is set, the method returns {@link Optional#empty()}.
+     *
+     * @param threadLocalFactory containing the thread local factory
+     * @param staticFactory containing the global factory
+     * @param <T> type of factory
+     * @return Optional containing the resolved factory if it exists, otherwise it's empty
+     */
+    public static <T> Optional<T> resolveFactory(
+            ThreadLocal<T> threadLocalFactory, @Nullable T staticFactory) {
+        final T localFactory = threadLocalFactory.get();
+        final T factory = localFactory == null ? staticFactory : localFactory;
+
+        return Optional.ofNullable(factory);
+    }
+
+    /**
+     * Get the key from the given args. Keys have to start with '-' or '--'. For example, --key1
+     * value1 -key2 value2.
+     *
+     * @param args all given args.
+     * @param index the index of args to be parsed.
+     * @return the key of the given arg.
+     */
+    public static String getKeyFromArgs(String[] args, int index) {
+        String key;
+        if (args[index].startsWith("--")) {
+            key = args[index].substring(2);
+        } else if (args[index].startsWith("-")) {
+            key = args[index].substring(1);
+        } else {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "Error parsing arguments '%s' on '%s'. Please prefix keys with -- or -.",
+                            Arrays.toString(args), args[index]));
+        }
+
+        if (key.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "The input " + Arrays.toString(args) + " contains an empty argument");
+        }
+
+        return key;
+    }
+
+    /** Private constructor to prevent instantiation. */
+    private Utils() {
+        throw new RuntimeException();
+    }
 }

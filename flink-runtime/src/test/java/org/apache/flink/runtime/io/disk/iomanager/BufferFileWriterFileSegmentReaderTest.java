@@ -18,13 +18,16 @@
 
 package org.apache.flink.runtime.io.disk.iomanager;
 
-import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferRecycler;
-import org.apache.flink.runtime.testutils.DiscardingRecycler;
+import org.apache.flink.runtime.io.network.buffer.FreeingBufferRecycler;
+import org.apache.flink.runtime.io.network.buffer.NetworkBuffer;
 import org.apache.flink.runtime.util.event.NotificationListener;
+import org.apache.flink.util.IOUtils;
+
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -34,6 +37,8 @@ import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import static org.apache.flink.runtime.io.disk.iomanager.BufferFileWriterReaderTest.fillBufferWithAscendingNumbers;
+import static org.apache.flink.runtime.io.disk.iomanager.BufferFileWriterReaderTest.verifyBufferFilledWithAscendingNumbers;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -41,161 +46,145 @@ import static org.junit.Assert.fail;
 
 public class BufferFileWriterFileSegmentReaderTest {
 
-	private static final int BUFFER_SIZE = 32 * 1024;
+    private static final int BUFFER_SIZE = 32 * 1024;
 
-	private static final BufferRecycler BUFFER_RECYCLER = new DiscardingRecycler();
+    private static final BufferRecycler BUFFER_RECYCLER = FreeingBufferRecycler.INSTANCE;
 
-	private static final Random random = new Random();
+    private static final Random random = new Random();
 
-	private static final IOManager ioManager = new IOManagerAsync();
+    private static final IOManager ioManager = new IOManagerAsync();
 
-	private BufferFileWriter writer;
+    private BufferFileWriter writer;
 
-	private AsynchronousBufferFileSegmentReader reader;
+    private AsynchronousBufferFileSegmentReader reader;
 
-	private LinkedBlockingQueue<FileSegment> returnedFileSegments = new LinkedBlockingQueue<>();
+    private LinkedBlockingQueue<FileSegment> returnedFileSegments = new LinkedBlockingQueue<>();
 
-	@Before
-	public void setUpWriterAndReader() {
-		final FileIOChannel.ID channel = ioManager.createChannel();
+    @AfterClass
+    public static void shutdown() throws Exception {
+        ioManager.close();
+    }
 
-		try {
-			writer = ioManager.createBufferFileWriter(channel);
-			reader = (AsynchronousBufferFileSegmentReader) ioManager.createBufferFileSegmentReader(channel, new QueuingCallback<>(returnedFileSegments));
-		}
-		catch (IOException e) {
-			if (writer != null) {
-				writer.deleteChannel();
-			}
+    @Before
+    public void setUpWriterAndReader() {
+        final FileIOChannel.ID channel = ioManager.createChannel();
 
-			if (reader != null) {
-				reader.deleteChannel();
-			}
+        try {
+            writer = ioManager.createBufferFileWriter(channel);
+            reader =
+                    (AsynchronousBufferFileSegmentReader)
+                            ioManager.createBufferFileSegmentReader(
+                                    channel, new QueuingCallback<>(returnedFileSegments));
+        } catch (IOException e) {
+            tearDownWriterAndReader();
 
-			fail("Failed to setup writer and reader.");
-		}
-	}
+            fail("Failed to setup writer and reader.");
+        }
+    }
 
-	@After
-	public void tearDownWriterAndReader() {
-		if (writer != null) {
-			writer.deleteChannel();
-		}
+    @After
+    public void tearDownWriterAndReader() {
+        if (writer != null) {
+            if (!writer.isClosed()) {
+                IOUtils.closeQuietly(() -> writer.close());
+            }
+            writer.deleteChannel();
+        }
 
-		if (reader != null) {
-			reader.deleteChannel();
-		}
+        if (reader != null) {
+            if (!reader.isClosed()) {
+                IOUtils.closeQuietly(() -> reader.close());
+            }
+            reader.deleteChannel();
+        }
 
-		returnedFileSegments.clear();
-	}
+        returnedFileSegments.clear();
+    }
 
-	@Test
-	public void testWriteRead() throws IOException, InterruptedException {
-		int numBuffers = 1024;
-		int currentNumber = 0;
+    @Test
+    public void testWriteRead() throws IOException, InterruptedException {
+        int numBuffers = 1024;
+        int currentNumber = 0;
 
-		final int minBufferSize = BUFFER_SIZE / 4;
+        final int minBufferSize = BUFFER_SIZE / 4;
 
-		// Write buffers filled with ascending numbers...
-		for (int i = 0; i < numBuffers; i++) {
-			final Buffer buffer = createBuffer();
+        // Write buffers filled with ascending numbers...
+        for (int i = 0; i < numBuffers; i++) {
+            final Buffer buffer = createBuffer();
 
-			int size = getNextMultipleOf(getRandomNumberInRange(minBufferSize, BUFFER_SIZE), 4);
+            int size = getNextMultipleOf(getRandomNumberInRange(minBufferSize, BUFFER_SIZE), 4);
 
-			buffer.setSize(size);
+            currentNumber = fillBufferWithAscendingNumbers(buffer, currentNumber, size);
 
-			currentNumber = fillBufferWithAscendingNumbers(buffer, currentNumber);
+            writer.writeBlock(buffer);
+        }
 
-			writer.writeBlock(buffer);
-		}
+        // Make sure that the writes are finished
+        writer.close();
 
-		// Make sure that the writes are finished
-		writer.close();
+        // Read buffers back in...
+        for (int i = 0; i < numBuffers; i++) {
+            assertFalse(reader.hasReachedEndOfFile());
+            reader.read();
+        }
 
-		// Read buffers back in...
-		for (int i = 0; i < numBuffers; i++) {
-			assertFalse(reader.hasReachedEndOfFile());
-			reader.read();
-		}
+        // Wait for all requests to be finished
+        final CountDownLatch sync = new CountDownLatch(1);
+        final NotificationListener listener =
+                new NotificationListener() {
+                    @Override
+                    public void onNotification() {
+                        sync.countDown();
+                    }
+                };
 
-		// Wait for all requests to be finished
-		final CountDownLatch sync = new CountDownLatch(1);
-		final NotificationListener listener = new NotificationListener() {
-			@Override
-			public void onNotification() {
-				sync.countDown();
-			}
-		};
+        if (reader.registerAllRequestsProcessedListener(listener)) {
+            sync.await();
+        }
 
-		if (reader.registerAllRequestsProcessedListener(listener)) {
-			sync.await();
-		}
+        assertTrue(reader.hasReachedEndOfFile());
 
-		assertTrue(reader.hasReachedEndOfFile());
+        // Verify that the content is the same
+        assertEquals("Read less buffers than written.", numBuffers, returnedFileSegments.size());
 
-		// Verify that the content is the same
-		assertEquals("Read less buffers than written.", numBuffers, returnedFileSegments.size());
+        currentNumber = 0;
+        FileSegment fileSegment;
 
-		currentNumber = 0;
-		FileSegment fileSegment;
+        ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
 
-		ByteBuffer buffer = ByteBuffer.allocate(BUFFER_SIZE);
+        while ((fileSegment = returnedFileSegments.poll()) != null) {
+            buffer.position(0);
+            buffer.limit(fileSegment.getLength());
 
-		while ((fileSegment = returnedFileSegments.poll()) != null) {
-			buffer.position(0);
-			buffer.limit(fileSegment.getLength());
+            fileSegment.getFileChannel().read(buffer, fileSegment.getPosition());
 
-			fileSegment.getFileChannel().read(buffer, fileSegment.getPosition());
+            Buffer buffer1 =
+                    new NetworkBuffer(MemorySegmentFactory.wrap(buffer.array()), BUFFER_RECYCLER);
+            buffer1.setSize(fileSegment.getLength());
+            currentNumber = verifyBufferFilledWithAscendingNumbers(buffer1, currentNumber);
+        }
 
-			currentNumber = verifyBufferFilledWithAscendingNumbers(
-					new Buffer(MemorySegmentFactory.wrap(buffer.array()), BUFFER_RECYCLER), 
-					currentNumber, fileSegment.getLength());
-		}
+        reader.close();
+    }
 
-		reader.close();
-	}
+    // ------------------------------------------------------------------------
 
-	// ------------------------------------------------------------------------
+    private int getRandomNumberInRange(int min, int max) {
+        return random.nextInt((max - min) + 1) + min;
+    }
 
-	private int getRandomNumberInRange(int min, int max) {
-		return random.nextInt((max - min) + 1) + min;
-	}
+    private int getNextMultipleOf(int number, int multiple) {
+        final int mod = number % multiple;
 
-	private int getNextMultipleOf(int number, int multiple) {
-		final int mod = number % multiple;
+        if (mod == 0) {
+            return number;
+        }
 
-		if (mod == 0) {
-			return number;
-		}
+        return number + multiple - mod;
+    }
 
-		return number + multiple - mod;
-	}
-
-	private Buffer createBuffer() {
-		return new Buffer(MemorySegmentFactory.allocateUnpooledSegment(BUFFER_SIZE), BUFFER_RECYCLER);
-	}
-
-	public static int fillBufferWithAscendingNumbers(Buffer buffer, int currentNumber) {
-		MemorySegment segment = buffer.getMemorySegment();
-
-		final int size = buffer.getSize();
-
-		for (int i = 0; i < size; i += 4) {
-			segment.putInt(i, currentNumber++);
-		}
-
-		return currentNumber;
-	}
-
-	private int verifyBufferFilledWithAscendingNumbers(Buffer buffer, int currentNumber, int size) {
-		MemorySegment segment = buffer.getMemorySegment();
-
-		for (int i = 0; i < size; i += 4) {
-			if (segment.getInt(i) != currentNumber++) {
-				throw new IllegalStateException("Read unexpected number from buffer.");
-			}
-		}
-
-		return currentNumber;
-	}
+    private Buffer createBuffer() {
+        return new NetworkBuffer(
+                MemorySegmentFactory.allocateUnpooledSegment(BUFFER_SIZE), BUFFER_RECYCLER);
+    }
 }

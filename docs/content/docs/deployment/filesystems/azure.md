@@ -64,7 +64,7 @@ See below for how to use Azure Blob Storage in a Flink job:
 env.readTextFile("wasb://<your-container>@$<your-azure-account>.blob.core.windows.net/<object-path>");
 
 // Write to Azure Blob storage
-stream.writeAsText("wasb://<your-container>@$<your-azure-account>.blob.core.windows.net/<object-path>")
+stream.writeAsText("wasb://<your-container>@$<your-azure-account>.blob.core.windows.net/<object-path>");
 
 // Use Azure Blob Storage as checkpoint storage
 env.getCheckpointConfig().setCheckpointStorage("wasb://<your-container>@$<your-azure-account>.blob.core.windows.net/<object-path>");
@@ -88,7 +88,7 @@ cp ./opt/flink-azure-fs-hadoop-{{< version >}}.jar ./plugins/azure-fs-hadoop/
 Hadoop's WASB Azure Filesystem supports configuration of credentials via the Hadoop configuration as 
 outlined in the [Hadoop Azure Blob Storage documentation](https://hadoop.apache.org/docs/current/hadoop-azure/index.html#Configuring_Credentials).
 For convenience Flink forwards all Flink configurations with a key prefix of `fs.azure` to the 
-Hadoop configuration of the filesystem. Consequentially, the azure blob storage key can be configured 
+Hadoop configuration of the filesystem. Consequently, the azure blob storage key can be configured 
 in `flink-conf.yaml` via:
 
 ```yaml

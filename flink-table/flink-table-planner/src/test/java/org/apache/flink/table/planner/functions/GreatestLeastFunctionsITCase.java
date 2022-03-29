@@ -21,23 +21,20 @@ package org.apache.flink.table.planner.functions;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 
-import org.junit.runners.Parameterized;
-
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.Arrays;
-import java.util.List;
+import java.util.stream.Stream;
 
 import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.api.Expressions.call;
 
 /** Tests for GREATEST, LEAST functions {@link BuiltInFunctionDefinitions}. */
-public class GreatestLeastFunctionsITCase extends BuiltInFunctionTestBase {
+class GreatestLeastFunctionsITCase extends BuiltInFunctionTestBase {
 
-    @Parameterized.Parameters(name = "{index}: {0}")
-    public static List<TestSpec> testData() {
-        return Arrays.asList(
-                TestSpec.forFunction(BuiltInFunctionDefinitions.GREATEST)
+    @Override
+    Stream<TestSetSpec> getTestSetSpecs() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.GREATEST)
                         .onFieldsWithData(
                                 null,
                                 1,
@@ -60,7 +57,9 @@ public class GreatestLeastFunctionsITCase extends BuiltInFunctionTestBase {
                                 "GREATEST(f1, f4)",
                                 "SQL validation failed. Invalid function call:\n"
                                         + "GREATEST(INT NOT NULL, STRING NOT NULL)")
-                        .testSqlResult(
+                        .testResult(
+                                call("GREATEST", $("f1"), $("f3"), $("f2"))
+                                        .cast(DataTypes.DECIMAL(3, 2)),
                                 "CAST(GREATEST(f1, f3, f2) AS DECIMAL(3, 2))",
                                 BigDecimal.valueOf(3.14),
                                 DataTypes.DECIMAL(3, 2).notNull())
@@ -74,7 +73,8 @@ public class GreatestLeastFunctionsITCase extends BuiltInFunctionTestBase {
                                 "GREATEST(f4, f5)",
                                 "world",
                                 DataTypes.STRING().notNull())
-                        .testSqlResult(
+                        .testResult(
+                                call("GREATEST", $("f6"), $("f7")),
                                 "GREATEST(f6, f7)",
                                 LocalDateTime.parse("1970-01-01T00:00:03.001"),
                                 DataTypes.TIMESTAMP(3).notNull())
@@ -82,7 +82,7 @@ public class GreatestLeastFunctionsITCase extends BuiltInFunctionTestBase {
                                 "GREATEST(f5, f6)",
                                 "SQL validation failed. Invalid function call:\n"
                                         + "GREATEST(STRING NOT NULL, TIMESTAMP(3) NOT NULL)"),
-                TestSpec.forFunction(BuiltInFunctionDefinitions.LEAST)
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.LEAST)
                         .onFieldsWithData(null, 1, 2, 3.14, "hello", "world")
                         .andDataTypes(
                                 DataTypes.INT().nullable(),
@@ -95,13 +95,10 @@ public class GreatestLeastFunctionsITCase extends BuiltInFunctionTestBase {
                                 "LEAST(f1, f4)",
                                 "SQL validation failed. Invalid function call:\n"
                                         + "LEAST(INT NOT NULL, STRING NOT NULL)")
-                        .testSqlResult(
-                                "CAST(LEAST(f1, f3, f2) AS DECIMAL(3, 2))",
-                                BigDecimal.valueOf(100, 2),
-                                DataTypes.DECIMAL(3, 2).notNull())
-                        .testTableApiResult(
+                        .testResult(
                                 call("LEAST", $("f1"), $("f3"), $("f2"))
                                         .cast(DataTypes.DECIMAL(3, 2)),
+                                "CAST(LEAST(f1, f3, f2) AS DECIMAL(3, 2))",
                                 BigDecimal.valueOf(100, 2),
                                 DataTypes.DECIMAL(3, 2).notNull())
                         .testResult(

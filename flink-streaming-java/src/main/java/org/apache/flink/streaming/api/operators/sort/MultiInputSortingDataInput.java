@@ -17,6 +17,7 @@
 
 package org.apache.flink.streaming.api.operators.sort;
 
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeutils.TypeComparator;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
@@ -27,7 +28,7 @@ import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter;
 import org.apache.flink.runtime.io.AvailabilityProvider;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
+import org.apache.flink.runtime.jobgraph.tasks.TaskInvokable;
 import org.apache.flink.runtime.memory.MemoryAllocationException;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.operators.sort.ExternalSorter;
@@ -42,7 +43,7 @@ import org.apache.flink.streaming.runtime.io.StreamInputProcessor;
 import org.apache.flink.streaming.runtime.io.StreamTaskInput;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.MutableObjectIterator;
 
@@ -73,8 +74,8 @@ import java.util.stream.IntStream;
  * ordering. For the comparison it uses either {@link FixedLengthByteKeyComparator} if the length of
  * the serialized key is constant, or {@link VariableLengthByteKeyComparator} otherwise.
  *
- * <p>Watermarks, stream statuses, nor latency markers are propagated downstream as they do not make
- * sense with buffered records. The input emits the largest watermark seen after all records.
+ * <p>Watermarks, watermark statuses, nor latency markers are propagated downstream as they do not
+ * make sense with buffered records. The input emits the largest watermark seen after all records.
  */
 public final class MultiInputSortingDataInput<IN, K> implements StreamTaskInput<IN> {
     private final int idx;
@@ -139,7 +140,7 @@ public final class MultiInputSortingDataInput<IN, K> implements StreamTaskInput<
     }
 
     public static <K> SelectableSortingInputs wrapInputs(
-            AbstractInvokable containingTask,
+            TaskInvokable containingTask,
             StreamTaskInput<Object>[] sortingInputs,
             KeySelector<Object, K>[] keySelectors,
             TypeSerializer<Object>[] inputSerializers,
@@ -149,7 +150,8 @@ public final class MultiInputSortingDataInput<IN, K> implements StreamTaskInput<
             IOManager ioManager,
             boolean objectReuse,
             double managedMemoryFraction,
-            Configuration jobConfiguration) {
+            Configuration jobConfiguration,
+            ExecutionConfig executionConfig) {
         int keyLength = keySerializer.getLength();
         final TypeComparator<Tuple2<byte[], StreamRecord<Object>>> comparator;
         DataOutputSerializer dataOutputSerializer;
@@ -187,7 +189,8 @@ public final class MultiInputSortingDataInput<IN, K> implements StreamTaskInput<
                                                                 memoryManager,
                                                                 containingTask,
                                                                 keyAndValueSerializer,
-                                                                comparator)
+                                                                comparator,
+                                                                executionConfig)
                                                         .memoryFraction(
                                                                 managedMemoryFraction
                                                                         / numberOfInputs)
@@ -418,7 +421,7 @@ public final class MultiInputSortingDataInput<IN, K> implements StreamTaskInput<
         }
 
         @Override
-        public void emitStreamStatus(StreamStatus streamStatus) {}
+        public void emitWatermarkStatus(WatermarkStatus watermarkStatus) {}
 
         @Override
         public void emitLatencyMarker(LatencyMarker latencyMarker) {}

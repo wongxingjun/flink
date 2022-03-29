@@ -21,6 +21,7 @@ package org.apache.flink.runtime.rpc.akka;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.runtime.rpc.Local;
 import org.apache.flink.runtime.rpc.RpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcGateway;
 import org.apache.flink.runtime.rpc.RpcService;
@@ -95,7 +96,7 @@ public class MessageSerializationTest extends TestLogger {
 
     /**
      * Tests that a remote rpc call with a non-serializable argument fails with an {@link
-     * IOException} (or an {@link java.lang.reflect.UndeclaredThrowableException} if the the method
+     * IOException} (or an {@link java.lang.reflect.UndeclaredThrowableException} if the method
      * declaration does not include the {@link IOException} as throwable).
      */
     @Test(expected = IOException.class)
@@ -139,12 +140,9 @@ public class MessageSerializationTest extends TestLogger {
         assertThat(linkedBlockingQueue.take(), Is.<Object>is(expected));
     }
 
-    /**
-     * Tests that a message which exceeds the maximum frame size is detected and a corresponding
-     * exception is thrown.
-     */
-    @Test(expected = IOException.class)
-    public void testMaximumFramesizeRemoteMessageTransfer() throws Exception {
+    /** Tests that a message which exceeds the maximum frame size will cause timeout exception. */
+    @Test(expected = TimeoutException.class)
+    public void testMaximumFramesizeRemoteMessageTransfer() throws Throwable {
         LinkedBlockingQueue<Object> linkedBlockingQueue = new LinkedBlockingQueue<>();
 
         TestEndpoint testEndpoint = new TestEndpoint(akkaRpcService1, linkedBlockingQueue);
@@ -160,13 +158,20 @@ public class MessageSerializationTest extends TestLogger {
         int bufferSize = maxFrameSize + 1;
         byte[] buffer = new byte[bufferSize];
 
-        remoteGateway.foobar(buffer);
+        CompletableFuture<Void> completableFuture = remoteGateway.foobar(buffer);
+
+        try {
+            completableFuture.get();
+        } catch (ExecutionException e) {
+            throw e.getCause();
+        }
 
         fail("Should have failed due to exceeding the maximum framesize.");
     }
 
     private interface TestGateway extends RpcGateway {
-        void foobar(Object object) throws IOException, InterruptedException;
+        @Local
+        CompletableFuture<Void> foobar(Object object) throws IOException, InterruptedException;
     }
 
     private static class TestEndpoint extends RpcEndpoint implements TestGateway {
@@ -179,8 +184,9 @@ public class MessageSerializationTest extends TestLogger {
         }
 
         @Override
-        public void foobar(Object object) throws InterruptedException {
+        public CompletableFuture<Void> foobar(Object object) throws InterruptedException {
             queue.put(object);
+            return CompletableFuture.completedFuture(null);
         }
     }
 

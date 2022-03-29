@@ -32,23 +32,19 @@ import org.apache.flink.python.PythonFunctionRunner;
 import org.apache.flink.python.PythonOptions;
 import org.apache.flink.streaming.api.utils.ProtoUtils;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.table.connector.Projection;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.python.PythonAggregateFunctionInfo;
 import org.apache.flink.table.functions.python.PythonEnv;
-import org.apache.flink.table.planner.plan.utils.KeySelectorUtil;
-import org.apache.flink.table.planner.typeutils.DataViewUtils;
-import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
+import org.apache.flink.table.runtime.dataview.DataViewSpec;
 import org.apache.flink.table.runtime.operators.python.AbstractOneInputPythonFunctionOperator;
 import org.apache.flink.table.runtime.operators.python.utils.StreamRecordRowDataWrappingCollector;
 import org.apache.flink.table.runtime.runners.python.beam.BeamTablePythonFunctionRunner;
-import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.runtime.typeutils.PythonTypeUtils;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.streaming.api.utils.ProtoUtils.createRowTypeCoderInfoDescriptorProto;
@@ -70,16 +66,13 @@ public abstract class AbstractPythonStreamAggregateOperator
 
     private final PythonAggregateFunctionInfo[] aggregateFunctions;
 
-    private final DataViewUtils.DataViewSpec[][] dataViewSpecs;
+    private final DataViewSpec[][] dataViewSpecs;
 
     /** The input logical type. */
     protected final RowType inputType;
 
     /** The output logical type. */
     protected final RowType outputType;
-
-    /** The options used to configure the Python worker process. */
-    private final Map<String, String> jobOptions;
 
     /** The array of the key indexes. */
     private final int[] grouping;
@@ -132,7 +125,7 @@ public abstract class AbstractPythonStreamAggregateOperator
             RowType inputType,
             RowType outputType,
             PythonAggregateFunctionInfo[] aggregateFunctions,
-            DataViewUtils.DataViewSpec[][] dataViewSpecs,
+            DataViewSpec[][] dataViewSpecs,
             int[] grouping,
             int indexOfCountStar,
             boolean generateUpdateBefore) {
@@ -141,7 +134,6 @@ public abstract class AbstractPythonStreamAggregateOperator
         this.outputType = Preconditions.checkNotNull(outputType);
         this.aggregateFunctions = aggregateFunctions;
         this.dataViewSpecs = dataViewSpecs;
-        this.jobOptions = buildJobOptions(config);
         this.grouping = grouping;
         this.indexOfCountStar = indexOfCountStar;
         this.generateUpdateBefore = generateUpdateBefore;
@@ -164,6 +156,7 @@ public abstract class AbstractPythonStreamAggregateOperator
                 PythonTypeUtils.toInternalSerializer(userDefinedFunctionOutputType);
         rowDataWrapper = new StreamRecordRowDataWrappingCollector(output);
         super.open();
+        configJobOptions();
     }
 
     @Override
@@ -229,9 +222,7 @@ public abstract class AbstractPythonStreamAggregateOperator
     }
 
     protected RowType getKeyType() {
-        RowDataKeySelector selector =
-                KeySelectorUtil.getRowDataSelector(grouping, InternalTypeInfo.of(inputType));
-        return selector.getProducedType().toRowType();
+        return (RowType) Projection.of(grouping).project(inputType);
     }
 
     TypeSerializer getWindowSerializer() {
@@ -244,8 +235,8 @@ public abstract class AbstractPythonStreamAggregateOperator
     protected FlinkFnApi.UserDefinedAggregateFunctions getUserDefinedFunctionsProto() {
         FlinkFnApi.UserDefinedAggregateFunctions.Builder builder =
                 FlinkFnApi.UserDefinedAggregateFunctions.newBuilder();
-        builder.setMetricEnabled(getPythonConfig().isMetricEnabled());
-        builder.setProfileEnabled(getPythonConfig().isProfileEnabled());
+        builder.setMetricEnabled(pythonConfig.isMetricEnabled());
+        builder.setProfileEnabled(pythonConfig.isProfileEnabled());
         builder.addAllGrouping(Arrays.stream(grouping).boxed().collect(Collectors.toList()));
         builder.setGenerateUpdateBefore(generateUpdateBefore);
         builder.setIndexOfCountStar(indexOfCountStar);
@@ -254,7 +245,7 @@ public abstract class AbstractPythonStreamAggregateOperator
         builder.setMapStateReadCacheSize(mapStateReadCacheSize);
         builder.setMapStateWriteCacheSize(mapStateWriteCacheSize);
         for (int i = 0; i < aggregateFunctions.length; i++) {
-            DataViewUtils.DataViewSpec[] specs = null;
+            DataViewSpec[] specs = null;
             if (i < dataViewSpecs.length) {
                 specs = dataViewSpecs[i];
             }
@@ -272,18 +263,13 @@ public abstract class AbstractPythonStreamAggregateOperator
 
     public abstract RowType createUserDefinedFunctionOutputType();
 
-    private Map<String, String> buildJobOptions(Configuration config) {
-        Map<String, String> jobOptions = new HashMap<>();
-        if (config.containsKey("table.exec.timezone")) {
-            jobOptions.put("table.exec.timezone", config.getString("table.exec.timezone", null));
-        }
+    private void configJobOptions() {
         jobOptions.put(
                 PythonOptions.STATE_CACHE_SIZE.key(),
                 String.valueOf(config.get(PythonOptions.STATE_CACHE_SIZE)));
         jobOptions.put(
                 PythonOptions.MAP_STATE_ITERATE_RESPONSE_BATCH_SIZE.key(),
                 String.valueOf(config.get(PythonOptions.MAP_STATE_ITERATE_RESPONSE_BATCH_SIZE)));
-        return jobOptions;
     }
 
     public FlinkFnApi.CoderInfoDescriptor createInputCoderInfoDescriptor(RowType runnerInputType) {

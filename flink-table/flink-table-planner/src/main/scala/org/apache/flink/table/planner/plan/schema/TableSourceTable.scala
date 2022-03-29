@@ -18,16 +18,20 @@
 
 package org.apache.flink.table.planner.plan.schema
 
-import org.apache.flink.table.catalog.{ObjectIdentifier, ResolvedCatalogTable}
+import org.apache.flink.table.catalog.ContextResolvedTable
 import org.apache.flink.table.connector.source.DynamicTableSource
-import org.apache.flink.table.planner.plan.abilities.source.SourceAbilitySpec
+import org.apache.flink.table.planner.calcite.FlinkContext
+import org.apache.flink.table.planner.connectors.DynamicSourceUtils
+import org.apache.flink.table.planner.plan.abilities.source.{SourceAbilityContext, SourceAbilitySpec}
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic
+import org.apache.flink.table.planner.utils.JavaScalaConversionUtil.toScala
 
 import com.google.common.collect.ImmutableList
 import org.apache.calcite.plan.RelOptSchema
 import org.apache.calcite.rel.`type`.RelDataType
 
 import java.util
+import java.util.Collections
 
 /**
  * A [[FlinkPreparingTableBase]] implementation which defines the context variables
@@ -35,38 +39,46 @@ import java.util
  * relational expression with [[DynamicTableSource]].
  *
  * @param relOptSchema The RelOptSchema that this table comes from
- * @param tableIdentifier The full path of the table to retrieve.
  * @param rowType The table row type
  * @param statistic The table statistics
  * @param tableSource The [[DynamicTableSource]] for which is converted to a Calcite Table
  * @param isStreamingMode A flag that tells if the current table is in stream mode
- * @param catalogTable Resolved catalog table where this table source table comes from
- * @param extraDigests The extra digests which will be added into `getQualifiedName`
- *                     as a part of table digest
+ * @param contextResolvedTable Resolved catalog table where this table source table comes from
+ * @param flinkContext The flink context which is used to generate extra digests based on
+ *                     abilitySpecs
+ * @param abilitySpecs The abilitySpecs applied to the source
  */
 class TableSourceTable(
     relOptSchema: RelOptSchema,
-    val tableIdentifier: ObjectIdentifier,
     rowType: RelDataType,
     statistic: FlinkStatistic,
     val tableSource: DynamicTableSource,
     val isStreamingMode: Boolean,
-    val catalogTable: ResolvedCatalogTable,
-    val extraDigests: Array[String] = Array.empty,
+    val contextResolvedTable: ContextResolvedTable,
+    val flinkContext: FlinkContext,
     val abilitySpecs: Array[SourceAbilitySpec] = Array.empty)
   extends FlinkPreparingTableBase(
     relOptSchema,
     rowType,
-    util.Arrays.asList(
-      tableIdentifier.getCatalogName,
-      tableIdentifier.getDatabaseName,
-      tableIdentifier.getObjectName),
+    contextResolvedTable.getIdentifier.toList,
     statistic) {
 
   override def getQualifiedName: util.List[String] = {
     val builder = ImmutableList.builder[String]()
-        .addAll(super.getQualifiedName)
-    extraDigests.foreach(builder.add)
+      .addAll(super.getQualifiedName)
+
+    if(abilitySpecs != null && abilitySpecs.length != 0){
+      var newProducedType = DynamicSourceUtils.createProducedType(
+        contextResolvedTable.getResolvedSchema,
+        tableSource)
+
+      for (spec <- abilitySpecs) {
+        val sourceAbilityContext = new SourceAbilityContext(flinkContext, newProducedType)
+
+        builder.add(spec.getDigests(sourceAbilityContext))
+        newProducedType = spec.getProducedType.orElse(newProducedType)
+      }
+    }
     builder.build()
   }
 
@@ -80,17 +92,15 @@ class TableSourceTable(
   def copy(
       newTableSource: DynamicTableSource,
       newRowType: RelDataType,
-      newExtraDigests: Array[String],
       newAbilitySpecs: Array[SourceAbilitySpec]): TableSourceTable = {
     new TableSourceTable(
       relOptSchema,
-      tableIdentifier,
       newRowType,
       statistic,
       newTableSource,
       isStreamingMode,
-      catalogTable,
-      extraDigests ++ newExtraDigests,
+      contextResolvedTable,
+      flinkContext,
       abilitySpecs ++ newAbilitySpecs
     )
   }
@@ -105,17 +115,33 @@ class TableSourceTable(
   def copy(
       newTableSource: DynamicTableSource,
       newStatistic: FlinkStatistic,
-      newExtraDigests: Array[String],
       newAbilitySpecs: Array[SourceAbilitySpec]): TableSourceTable = {
     new TableSourceTable(
       relOptSchema,
-      tableIdentifier,
       rowType,
       newStatistic,
       newTableSource,
       isStreamingMode,
-      catalogTable,
-      extraDigests ++ newExtraDigests,
+      contextResolvedTable,
+      flinkContext,
       abilitySpecs ++ newAbilitySpecs)
+  }
+
+  /**
+   * Creates a copy of this table, changing the statistic
+   *
+   * @param newStatistic new table statistic
+   * @return New TableSourceTable instance with new statistic
+   */
+  def copy(newStatistic: FlinkStatistic): TableSourceTable = {
+    new TableSourceTable(
+      relOptSchema,
+      rowType,
+      newStatistic,
+      tableSource,
+      isStreamingMode,
+      contextResolvedTable,
+      flinkContext,
+      abilitySpecs)
   }
 }

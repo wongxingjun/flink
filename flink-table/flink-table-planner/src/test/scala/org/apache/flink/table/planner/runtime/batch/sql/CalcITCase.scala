@@ -40,7 +40,7 @@ import org.apache.flink.table.planner.runtime.utils.UserDefinedFunctionTestUtils
 import org.apache.flink.table.planner.runtime.utils.{BatchTableEnvUtil, BatchTestBase, TestData, UserDefinedFunctionTestUtils}
 import org.apache.flink.table.planner.utils.{DateTimeTestUtil, TestLegacyFilterableTableSource}
 import org.apache.flink.table.planner.utils.DateTimeTestUtil._
-import org.apache.flink.table.runtime.functions.SqlDateTimeUtils.unixTimestampToLocalDateTime
+import org.apache.flink.table.utils.DateTimeUtils.toLocalDateTime
 import org.apache.flink.types.Row
 
 import org.junit.Assert.assertEquals
@@ -617,9 +617,20 @@ class CalcITCase extends BatchTestBase {
 //  }
 
   @Test
+  def testInNonConstantValue(): Unit = {
+    checkResult(
+      "SELECT a FROM Table3 WHERE a IN (CAST(b AS INT), 21)",
+      Seq(row(1), row(2), row(21)))
+  }
+
+  @Test
   def testInSmallValues(): Unit = {
     checkResult(
       "SELECT a FROM Table3 WHERE a in (1, 2)",
+      Seq(row(1), row(2)))
+
+    checkResult(
+      "SELECT a FROM Table3 WHERE a in (1, 2, NULL)",
       Seq(row(1), row(2)))
 
     checkResult(
@@ -935,7 +946,7 @@ class CalcITCase extends BatchTestBase {
   }
 
   @Test
-  def testCast(): Unit = {
+  def testCastInWhere(): Unit = {
     checkResult(
       "SELECT CAST(a AS VARCHAR(10)) FROM Table3 WHERE CAST(a AS VARCHAR(10)) = '1'",
       Seq(row(1)))
@@ -1069,6 +1080,41 @@ class CalcITCase extends BatchTestBase {
   }
 
   @Test
+  def testTruncate(): Unit = {
+    checkResult(
+      "SELECT TRUNCATE(CAST(123.456 AS DOUBLE), 2)",
+      Seq(row(123.45)))
+
+    checkResult(
+      "SELECT TRUNCATE(CAST(123.456 AS DOUBLE))",
+      Seq(row(123.0)))
+
+    checkResult(
+      "SELECT TRUNCATE(CAST(123.456 AS FLOAT), 2)",
+      Seq(row(123.45f)))
+
+    checkResult(
+      "SELECT TRUNCATE(CAST(123.456 AS FLOAT))",
+      Seq(row(123.0f)))
+
+    checkResult(
+      "SELECT TRUNCATE(123, -1)",
+      Seq(row(120)))
+
+    checkResult(
+      "SELECT TRUNCATE(123, -2)",
+      Seq(row(100)))
+
+    checkResult(
+      "SELECT TRUNCATE(CAST(123.456 AS DECIMAL(6, 3)), 2)",
+      Seq(row(new java.math.BigDecimal("123.45"))))
+
+    checkResult(
+      "SELECT TRUNCATE(CAST(123.456 AS DECIMAL(6, 3)))",
+      Seq(row(new java.math.BigDecimal("123"))))
+  }
+
+  @Test
   def testStringUdf(): Unit = {
     registerFunction("myFunc", MyStringFunc)
     checkResult(
@@ -1092,7 +1138,7 @@ class CalcITCase extends BatchTestBase {
       Seq(row(true)))
 
     val d0 = LocalDateConverter.INSTANCE.toInternal(
-      unixTimestampToLocalDateTime(System.currentTimeMillis()).toLocalDate)
+      toLocalDateTime(System.currentTimeMillis()).toLocalDate)
 
     val table = parseQuery("SELECT CURRENT_DATE FROM testTable WHERE a = TRUE")
     val result = executeQuery(table)
@@ -1277,14 +1323,14 @@ class CalcITCase extends BatchTestBase {
   def testCalcBinary(): Unit = {
     registerCollection(
       "BinaryT",
-      nullData3.map((r) => row(r.getField(0), r.getField(1),
+      nullData3.map(r => row(r.getField(0), r.getField(1),
         r.getField(2).toString.getBytes(StandardCharsets.UTF_8))),
       new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, BYTE_PRIMITIVE_ARRAY_TYPE_INFO),
       "a, b, c",
       nullablesOfNullData3)
     checkResult(
       "select a, b, c from BinaryT where b < 1000",
-      nullData3.map((r) => row(r.getField(0), r.getField(1),
+      nullData3.map(r => row(r.getField(0), r.getField(1),
         r.getField(2).toString.getBytes(StandardCharsets.UTF_8)))
     )
   }
@@ -1293,19 +1339,17 @@ class CalcITCase extends BatchTestBase {
   def testOrderByBinary(): Unit = {
     registerCollection(
       "BinaryT",
-      nullData3.map((r) => row(r.getField(0), r.getField(1),
+      nullData3.map(r => row(r.getField(0), r.getField(1),
         r.getField(2).toString.getBytes(StandardCharsets.UTF_8))),
       new RowTypeInfo(INT_TYPE_INFO, LONG_TYPE_INFO, BYTE_PRIMITIVE_ARRAY_TYPE_INFO),
       "a, b, c",
       nullablesOfNullData3)
-    conf.getConfiguration.setInteger(
-      ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 1)
-    conf.getConfiguration.setBoolean(
-      BatchPhysicalSortRule.TABLE_EXEC_RANGE_SORT_ENABLED, true)
+    tableConfig.set(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, Int.box(1))
+    tableConfig.set(BatchPhysicalSortRule.TABLE_EXEC_RANGE_SORT_ENABLED, Boolean.box(true))
     checkResult(
       "select * from BinaryT order by c",
       nullData3.sortBy((x : Row) =>
-        x.getField(2).asInstanceOf[String]).map((r) =>
+        x.getField(2).asInstanceOf[String]).map(r =>
         row(r.getField(0), r.getField(1),
           r.getField(2).toString.getBytes(StandardCharsets.UTF_8))),
       isSorted = true
@@ -1316,7 +1360,7 @@ class CalcITCase extends BatchTestBase {
   def testGroupByBinary(): Unit = {
     registerCollection(
       "BinaryT2",
-      nullData3.map((r) => row(r.getField(0),
+      nullData3.map(r => row(r.getField(0),
         r.getField(1).toString.getBytes(StandardCharsets.UTF_8), r.getField(2))),
       new RowTypeInfo(INT_TYPE_INFO, BYTE_PRIMITIVE_ARRAY_TYPE_INFO, STRING_TYPE_INFO),
       "a, b, c",
@@ -1408,7 +1452,7 @@ class CalcITCase extends BatchTestBase {
 
     val query = """
                   |select * from myTable where f0 in (1.0, 2.0, 3.0)
-                  |""".stripMargin;
+                  |""".stripMargin
 
     checkResult(
       query,
@@ -1416,6 +1460,98 @@ class CalcITCase extends BatchTestBase {
         row(1.0f, 11.0f, 12.0f),
         row(2.0f, 21.0f, 22.0f),
         row(3.0f, 31.0f, 32.0f))
+    )
+  }
+
+  @Test
+  def testSearch(): Unit = {
+    val myTableDataId = TestValuesTableFactory.registerData(
+      Seq(row("HC809"), row("H389N     "))
+    )
+    val ddl =
+      s"""
+         |CREATE TABLE SimpleTable (
+         |  content STRING
+         |) WITH (
+         |  'connector' = 'values',
+         |  'data-id' = '$myTableDataId',
+         |  'bounded' = 'true'
+         |)
+         |""".stripMargin
+    tEnv.executeSql(ddl)
+    val sql =
+      """
+        |SELECT UPPER(content) from SimpleTable where UPPER(content) in (
+        |'CTNBSmokeSensor',
+        |'H388N',
+        |'H389N     ',
+        |'GHL-IRD',
+        |'JY-BF-20YN',
+        |'HC809',
+        |'DH-9908N-AEP',
+        |'DH-9908N'
+        |)
+        |""".stripMargin
+    checkResult(
+      sql,
+      Seq(row("HC809"), row("H389N     "))
+    )
+  }
+
+  @Test
+  def testSearchWithNull(): Unit = {
+    runQueryWithIn(
+      """
+        |'CTNBSmokeSensor',
+        |'H389N     ',
+        |'GHL-IRD',
+        |'JY-BF-20YN',
+        |'HC809',
+        |'DH-9908N-AEP',
+        |'DH-9908N',
+        | null""".stripMargin
+    )
+  }
+
+  @Test
+  def testSearchWithNull2(): Unit = {
+    runQueryWithIn(
+      """
+        | null,
+        |'CTNBSmokeSensor',
+        |'H389N     ',
+        |'GHL-IRD',
+        |'JY-BF-20YN',
+        |'HC809',
+        |'DH-9908N-AEP',
+        |'DH-9908N'
+        |""".stripMargin
+    )
+  }
+
+  private def runQueryWithIn(inParameter: String): Unit = {
+    val myTableDataId = TestValuesTableFactory.registerData(
+      Seq(row("HC809"), row(null)))
+    val ddl =
+      s"""
+         |CREATE TABLE SimpleTable (
+         |  content String
+         |) WITH (
+         |  'connector' = 'values',
+         |  'data-id' = '$myTableDataId',
+         |  'bounded' = 'true'
+         |)
+         |""".stripMargin
+    tEnv.executeSql(ddl)
+    val sql =
+      s"""
+         |SELECT content from SimpleTable where UPPER(content) in (
+         | $inParameter
+         |)
+         |""".stripMargin
+    checkResult(
+      sql,
+      Seq(row("HC809"))
     )
   }
 
@@ -1515,10 +1651,10 @@ class CalcITCase extends BatchTestBase {
     tEnv.executeSql(ddl)
 
     checkResult(
-      "select a from MyTable where cast(b as boolean)",
+      "select a from MyTable where try_cast(b as boolean)",
       Seq(row(1)))
     checkResult(
-      "select cast(b as boolean) from MyTable",
+      "select try_cast(b as boolean) from MyTable",
       Seq(row(true), row(false), row(null), row(null)))
   }
 
@@ -1579,6 +1715,120 @@ class CalcITCase extends BatchTestBase {
         |  timestampadd(hour, 1, f),
         |  timestampadd(minute, 1, f),
         |  timestampadd(second, 1, f)
+        |from MyTable
+        |""".stripMargin,
+      Seq(row(
+        LocalDateTime.of(2021, 7, 16, 16, 50, 0, 123000000),
+        LocalDateTime.of(2021, 7, 15, 17, 50, 0, 123000000),
+        LocalDateTime.of(2021, 7, 15, 16, 51, 0, 123000000),
+        LocalDateTime.of(2021, 7, 15, 16, 50, 1, 123000000),
+        LocalDateTime.of(2021, 7, 16, 16, 50, 0, 123456789),
+        LocalDateTime.of(2021, 7, 15, 17, 50, 0, 123456789),
+        LocalDateTime.of(2021, 7, 15, 16, 51, 0, 123456789),
+        LocalDateTime.of(2021, 7, 15, 16, 50, 1, 123456789),
+        Instant.ofEpochMilli(1626339000123L + 24 * 3600 * 1000L),
+        Instant.ofEpochMilli(1626339000123L + 3600 * 1000L),
+        Instant.ofEpochMilli(1626339000123L + 60 * 1000L),
+        Instant.ofEpochMilli(1626339000123L + 1000L),
+        Instant.ofEpochSecond(1626339000 + 24 * 3600, 123456789),
+        Instant.ofEpochSecond(1626339000 + 3600, 123456789),
+        Instant.ofEpochSecond(1626339000 + 60, 123456789),
+        Instant.ofEpochSecond(1626339000 + 1, 123456789),
+        LocalDate.of(2021, 7, 16),
+        LocalDateTime.of(2021, 7, 15, 1, 0, 0),
+        LocalDateTime.of(2021, 7, 15, 0, 1, 0),
+        LocalDateTime.of(2021, 7, 15, 0, 0, 1),
+        LocalTime.of(16, 50, 0, 123000000),
+        LocalTime.of(17, 50, 0, 123000000),
+        LocalTime.of(16, 51, 0, 123000000),
+        LocalTime.of(16, 50, 1, 123000000)
+      )))
+
+    // Tests for tinyint
+    checkResult(
+      """
+        |select
+        |  timestampadd(day, cast(1 as tinyint), a),
+        |  timestampadd(hour, cast(1 as tinyint), a),
+        |  timestampadd(minute, cast(1 as tinyint), a),
+        |  timestampadd(second, cast(1 as tinyint), a),
+        |  timestampadd(day, cast(1 as tinyint), b),
+        |  timestampadd(hour, cast(1 as tinyint), b),
+        |  timestampadd(minute, cast(1 as tinyint), b),
+        |  timestampadd(second, cast(1 as tinyint), b),
+        |  timestampadd(day, cast(1 as tinyint), c),
+        |  timestampadd(hour, cast(1 as tinyint), c),
+        |  timestampadd(minute, cast(1 as tinyint), c),
+        |  timestampadd(second, cast(1 as tinyint), c),
+        |  timestampadd(day, cast(1 as tinyint), d),
+        |  timestampadd(hour, cast(1 as tinyint), d),
+        |  timestampadd(minute, cast(1 as tinyint), d),
+        |  timestampadd(second, cast(1 as tinyint), d),
+        |  timestampadd(day, cast(1 as tinyint), e),
+        |  timestampadd(hour, cast(1 as tinyint), e),
+        |  timestampadd(minute, cast(1 as tinyint), e),
+        |  timestampadd(second, cast(1 as tinyint), e),
+        |  timestampadd(day, cast(1 as tinyint), f),
+        |  timestampadd(hour, cast(1 as tinyint), f),
+        |  timestampadd(minute, cast(1 as tinyint), f),
+        |  timestampadd(second, cast(1 as tinyint), f)
+        |from MyTable
+        |""".stripMargin,
+      Seq(row(
+        LocalDateTime.of(2021, 7, 16, 16, 50, 0, 123000000),
+        LocalDateTime.of(2021, 7, 15, 17, 50, 0, 123000000),
+        LocalDateTime.of(2021, 7, 15, 16, 51, 0, 123000000),
+        LocalDateTime.of(2021, 7, 15, 16, 50, 1, 123000000),
+        LocalDateTime.of(2021, 7, 16, 16, 50, 0, 123456789),
+        LocalDateTime.of(2021, 7, 15, 17, 50, 0, 123456789),
+        LocalDateTime.of(2021, 7, 15, 16, 51, 0, 123456789),
+        LocalDateTime.of(2021, 7, 15, 16, 50, 1, 123456789),
+        Instant.ofEpochMilli(1626339000123L + 24 * 3600 * 1000L),
+        Instant.ofEpochMilli(1626339000123L + 3600 * 1000L),
+        Instant.ofEpochMilli(1626339000123L + 60 * 1000L),
+        Instant.ofEpochMilli(1626339000123L + 1000L),
+        Instant.ofEpochSecond(1626339000 + 24 * 3600, 123456789),
+        Instant.ofEpochSecond(1626339000 + 3600, 123456789),
+        Instant.ofEpochSecond(1626339000 + 60, 123456789),
+        Instant.ofEpochSecond(1626339000 + 1, 123456789),
+        LocalDate.of(2021, 7, 16),
+        LocalDateTime.of(2021, 7, 15, 1, 0, 0),
+        LocalDateTime.of(2021, 7, 15, 0, 1, 0),
+        LocalDateTime.of(2021, 7, 15, 0, 0, 1),
+        LocalTime.of(16, 50, 0, 123000000),
+        LocalTime.of(17, 50, 0, 123000000),
+        LocalTime.of(16, 51, 0, 123000000),
+        LocalTime.of(16, 50, 1, 123000000)
+      )))
+
+    // Tests for smallint
+    checkResult(
+      """
+        |select
+        |  timestampadd(day, cast(1 as smallint), a),
+        |  timestampadd(hour, cast(1 as smallint), a),
+        |  timestampadd(minute, cast(1 as smallint), a),
+        |  timestampadd(second, cast(1 as smallint), a),
+        |  timestampadd(day, cast(1 as smallint), b),
+        |  timestampadd(hour, cast(1 as smallint), b),
+        |  timestampadd(minute, cast(1 as smallint), b),
+        |  timestampadd(second, cast(1 as smallint), b),
+        |  timestampadd(day, cast(1 as smallint), c),
+        |  timestampadd(hour, cast(1 as smallint), c),
+        |  timestampadd(minute, cast(1 as smallint), c),
+        |  timestampadd(second, cast(1 as smallint), c),
+        |  timestampadd(day, cast(1 as smallint), d),
+        |  timestampadd(hour, cast(1 as smallint), d),
+        |  timestampadd(minute, cast(1 as smallint), d),
+        |  timestampadd(second, cast(1 as smallint), d),
+        |  timestampadd(day, cast(1 as smallint), e),
+        |  timestampadd(hour, cast(1 as smallint), e),
+        |  timestampadd(minute, cast(1 as smallint), e),
+        |  timestampadd(second, cast(1 as smallint), e),
+        |  timestampadd(day, cast(1 as smallint), f),
+        |  timestampadd(hour, cast(1 as smallint), f),
+        |  timestampadd(minute, cast(1 as smallint), f),
+        |  timestampadd(second, cast(1 as smallint), f)
         |from MyTable
         |""".stripMargin,
       Seq(row(

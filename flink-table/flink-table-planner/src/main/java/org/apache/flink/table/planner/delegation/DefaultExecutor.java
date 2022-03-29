@@ -31,8 +31,9 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.delegation.Executor;
-import org.apache.flink.table.planner.utils.ExecutorUtils;
 import org.apache.flink.util.StringUtils;
+
+import javax.annotation.Nullable;
 
 import java.util.List;
 
@@ -60,28 +61,28 @@ public class DefaultExecutor implements Executor {
     @Override
     public Pipeline createPipeline(
             List<Transformation<?>> transformations,
-            ReadableConfig configuration,
-            String defaultJobName) {
+            ReadableConfig tableConfiguration,
+            @Nullable String defaultJobName) {
 
         // reconfigure before a stream graph is generated
-        executionEnvironment.configure(configuration);
+        executionEnvironment.configure(tableConfiguration);
 
         // create stream graph
-        final RuntimeExecutionMode mode = configuration.get(ExecutionOptions.RUNTIME_MODE);
-        final StreamGraph graph;
+        final RuntimeExecutionMode mode = getConfiguration().get(ExecutionOptions.RUNTIME_MODE);
         switch (mode) {
             case BATCH:
-                graph = createBatchGraph(transformations, configuration);
+                configureBatchSpecificProperties();
                 break;
             case STREAMING:
-                graph = createStreamingGraph(transformations);
                 break;
             case AUTOMATIC:
             default:
                 throw new TableException(String.format("Unsupported runtime mode: %s", mode));
         }
-        setJobName(graph, defaultJobName);
-        return graph;
+
+        final StreamGraph streamGraph = executionEnvironment.generateStreamGraph(transformations);
+        setJobName(streamGraph, defaultJobName);
+        return streamGraph;
     }
 
     @Override
@@ -94,20 +95,16 @@ public class DefaultExecutor implements Executor {
         return executionEnvironment.executeAsync((StreamGraph) pipeline);
     }
 
-    private StreamGraph createBatchGraph(
-            List<Transformation<?>> transformations, ReadableConfig configuration) {
-        ExecutorUtils.setBatchProperties(executionEnvironment);
-        StreamGraph graph =
-                ExecutorUtils.generateStreamGraph(executionEnvironment, transformations);
-        ExecutorUtils.setBatchProperties(graph, configuration);
-        return graph;
+    @Override
+    public boolean isCheckpointingEnabled() {
+        return executionEnvironment.getCheckpointConfig().isCheckpointingEnabled();
     }
 
-    private StreamGraph createStreamingGraph(List<Transformation<?>> transformations) {
-        return ExecutorUtils.generateStreamGraph(executionEnvironment, transformations);
+    private void configureBatchSpecificProperties() {
+        executionEnvironment.getConfig().enableObjectReuse();
     }
 
-    private void setJobName(StreamGraph streamGraph, String defaultJobName) {
+    private void setJobName(StreamGraph streamGraph, @Nullable String defaultJobName) {
         final String adjustedDefaultJobName =
                 StringUtils.isNullOrWhitespaceOnly(defaultJobName)
                         ? DEFAULT_JOB_NAME

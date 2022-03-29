@@ -31,6 +31,11 @@ import static org.apache.flink.configuration.description.TextElement.text;
 /** {@link ConfigOption}s specific for a single execution of a user program. */
 @PublicEvolving
 public class ExecutionOptions {
+    /** A special marker value for disabling buffer timeout. */
+    public static final long DISABLED_NETWORK_BUFFER_TIMEOUT = -1L;
+
+    /** A special marker value for flushing network buffers after each record. */
+    public static final long FLUSH_AFTER_EVERY_RECORD = 0L;
 
     public static final ConfigOption<RuntimeExecutionMode> RUNTIME_MODE =
             ConfigOptions.key("execution.runtime-mode")
@@ -92,14 +97,16 @@ public class ExecutionOptions {
                                             text(
                                                     "A positive value triggers flushing periodically by that interval"),
                                             text(
-                                                    "0 triggers flushing after every record thus minimizing latency"),
+                                                    FLUSH_AFTER_EVERY_RECORD
+                                                            + " triggers flushing after every record thus minimizing latency"),
                                             text(
-                                                    "-1 ms triggers flushing only when the output buffer is full thus maximizing "
+                                                    DISABLED_NETWORK_BUFFER_TIMEOUT
+                                                            + " ms triggers flushing only when the output buffer is full thus maximizing "
                                                             + "throughput"))
                                     .build());
 
     @Documentation.ExcludeFromDocumentation(
-            "This is an expert option, that we do not want to expose in" + " the documentation")
+            "This is an expert option, that we do not want to expose in the documentation")
     public static final ConfigOption<Boolean> SORT_INPUTS =
             ConfigOptions.key("execution.sorted-inputs.enabled")
                     .booleanType()
@@ -109,7 +116,21 @@ public class ExecutionOptions {
                                     + "NOTE: It takes effect only in the BATCH runtime mode.");
 
     @Documentation.ExcludeFromDocumentation(
-            "This is an expert option, that we do not want to expose in" + " the documentation")
+            "This is an expert option, that we do not want to expose in the documentation")
+    public static final ConfigOption<MemorySize> SORTED_INPUTS_MEMORY =
+            ConfigOptions.key("execution.sorted-inputs.memory")
+                    .memoryType()
+                    // in sync with other weights from Table API and DataStream API
+                    .defaultValue(MemorySize.ofMebiBytes(128))
+                    .withDescription(
+                            "Sets the managed memory size for sorting inputs of keyed operators in "
+                                    + "BATCH runtime mode. The memory size is only a weight hint. "
+                                    + "Thus, it will affect the operator's memory weight within a "
+                                    + "task, but the actual memory used depends on the running "
+                                    + "environment.");
+
+    @Documentation.ExcludeFromDocumentation(
+            "This is an expert option, that we do not want to expose in the documentation")
     public static final ConfigOption<Boolean> USE_BATCH_STATE_BACKEND =
             ConfigOptions.key("execution.batch-state-backend.enabled")
                     .booleanType()

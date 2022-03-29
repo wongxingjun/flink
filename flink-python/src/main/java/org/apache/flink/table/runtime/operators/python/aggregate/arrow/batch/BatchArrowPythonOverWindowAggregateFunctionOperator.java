@@ -29,6 +29,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
+import org.apache.flink.table.runtime.generated.GeneratedProjection;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -92,24 +93,26 @@ public class BatchArrowPythonOverWindowAggregateFunctionOperator
             Configuration config,
             PythonFunctionInfo[] pandasAggFunctions,
             RowType inputType,
-            RowType outputType,
+            RowType udfInputType,
+            RowType udfOutputType,
             long[] lowerBoundary,
             long[] upperBoundary,
             boolean[] isRangeWindows,
             int[] aggWindowIndex,
-            int[] groupKey,
-            int[] groupingSet,
-            int[] udafInputOffsets,
             int inputTimeFieldIndex,
-            boolean asc) {
+            boolean asc,
+            GeneratedProjection inputGeneratedProjection,
+            GeneratedProjection groupKeyGeneratedProjection,
+            GeneratedProjection groupSetGeneratedProjection) {
         super(
                 config,
                 pandasAggFunctions,
                 inputType,
-                outputType,
-                groupKey,
-                groupingSet,
-                udafInputOffsets);
+                udfInputType,
+                udfOutputType,
+                inputGeneratedProjection,
+                groupKeyGeneratedProjection,
+                groupSetGeneratedProjection);
         this.lowerBoundary = lowerBoundary;
         this.upperBoundary = upperBoundary;
         this.isRangeWindows = isRangeWindows;
@@ -256,8 +259,8 @@ public class BatchArrowPythonOverWindowAggregateFunctionOperator
             functionBuilder.setWindowIndex(aggWindowIndex[i]);
             builder.addUdfs(functionBuilder);
         }
-        builder.setMetricEnabled(getPythonConfig().isMetricEnabled());
-        builder.setProfileEnabled(getPythonConfig().isProfileEnabled());
+        builder.setMetricEnabled(pythonConfig.isMetricEnabled());
+        builder.setProfileEnabled(pythonConfig.isProfileEnabled());
         // add windows
         for (int i = 0; i < lowerBoundary.length; i++) {
             FlinkFnApi.OverWindow.Builder windowBuilder = FlinkFnApi.OverWindow.newBuilder();
@@ -316,14 +319,6 @@ public class BatchArrowPythonOverWindowAggregateFunctionOperator
     @Override
     public String getFunctionUrn() {
         return PANDAS_BATCH_OVER_WINDOW_AGG_FUNCTION_URN;
-    }
-
-    @Override
-    public RowType createUserDefinedFunctionOutputType() {
-        return new RowType(
-                outputType
-                        .getFields()
-                        .subList(inputType.getFieldCount(), outputType.getFieldCount()));
     }
 
     @Override

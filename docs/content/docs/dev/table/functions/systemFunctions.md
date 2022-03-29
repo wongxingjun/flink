@@ -106,7 +106,7 @@ Known Limitations:
 
 ### Auxiliary Functions
 
-{{< sql_functions "auxilary" >}}
+{{< sql_functions "auxiliary" >}}
 
 Aggregate Functions
 -------------------
@@ -126,6 +126,7 @@ For Table API, please use `_` for spaces (e.g., `DAY_TO_HOUR`).
 | :----------------------- | :----------------------------- |
 | `MILLENIUM` _(SQL-only)_ |                                |
 | `CENTURY` _(SQL-only)_   |                                |
+| `DECADE` _(SQL-only)_    |                                |
 | `YEAR`                   | `YEAR`                         |
 | `YEAR TO MONTH`          |                                |
 | `QUARTER`                | `QUARTER`                      |
@@ -145,6 +146,8 @@ For Table API, please use `_` for spaces (e.g., `DAY_TO_HOUR`).
 |                          | `MICROSECOND`                  |
 | `DOY` _(SQL-only)_       |                                |
 | `DOW` _(SQL-only)_       |                                |
+| `ISODOW` _(SQL-only)_    |                                |
+| `ISOYEAR` _(SQL-only)_   |                                |
 |                          | `SQL_TSI_YEAR` _(SQL-only)_    |
 |                          | `SQL_TSI_QUARTER` _(SQL-only)_ |
 |                          | `SQL_TSI_MONTH` _(SQL-only)_   |
@@ -206,7 +209,7 @@ The column functions can be used in all places where column fields are expected,
 ```java
 table
    .groupBy("withColumns(1 to 3)")
-   .select("withColumns(a to b), myUDAgg(myUDF(withColumns(5 to 20)))")
+   .select("withColumns(a to b), myUDAgg(myUDF(withColumns(5 to 20)))");
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}

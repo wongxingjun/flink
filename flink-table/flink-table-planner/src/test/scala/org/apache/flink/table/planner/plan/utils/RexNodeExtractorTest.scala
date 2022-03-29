@@ -19,10 +19,10 @@
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.api.common.typeinfo.Types
-import org.apache.flink.table.api.{DataTypes, TableConfig}
+import org.apache.flink.table.api._
 import org.apache.flink.table.catalog.{CatalogManager, FunctionCatalog}
 import org.apache.flink.table.expressions.ApiExpressionUtils.{unresolvedCall, unresolvedRef, valueLiteral}
-import org.apache.flink.table.expressions.{Expression, ExpressionParser}
+import org.apache.flink.table.expressions.Expression
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions.{EQUALS, GREATER_THAN, LESS_THAN, LESS_THAN_OR_EQUAL}
 import org.apache.flink.table.functions.{AggregateFunctionDefinition, FunctionIdentifier}
 import org.apache.flink.table.module.ModuleManager
@@ -38,7 +38,8 @@ import org.apache.calcite.rex.{RexBuilder, RexNode}
 import org.apache.calcite.sql.SqlPostfixOperator
 import org.apache.calcite.sql.`type`.SqlTypeName
 import org.apache.calcite.sql.fun.{SqlStdOperatorTable, SqlTrimFunction}
-import org.apache.calcite.util.{DateString, TimeString, TimestampString}
+import org.apache.calcite.util.{DateString, TimestampString, TimeString}
+
 import org.hamcrest.CoreMatchers.is
 import org.junit.Assert.{assertArrayEquals, assertEquals, assertThat, assertTrue}
 import org.junit.Test
@@ -112,8 +113,8 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     val builder: RexBuilder = new FlinkRexBuilder(typeFactory)
     val expr = buildConditionExpr()
 
-    val firstExp = ExpressionParser.parseExpression("id > 6")
-    val secondExp = ExpressionParser.parseExpression("amount * price < 100")
+    val firstExp = $"id" > 6
+    val secondExp = $"amount" * $"price" < 100
     val expected: Array[Expression] = Array(firstExp, secondExp)
 
     val (convertedExpressions, unconvertedRexNodes) =
@@ -147,7 +148,7 @@ class RexNodeExtractorTest extends RexNodeTestBase {
         relBuilder,
         functionCatalog)
 
-    val expected: Array[Expression] = Array(ExpressionParser.parseExpression("amount >= id"))
+    val expected: Array[Expression] = Array($"amount" >= $"id")
     assertExpressionArrayEquals(expected, convertedExpressions)
     assertEquals(0, unconvertedRexNodes.length)
   }
@@ -197,9 +198,10 @@ class RexNodeExtractorTest extends RexNodeTestBase {
         functionCatalog)
 
     val expected: Array[Expression] = Array(
-      ExpressionParser.parseExpression("amount < 100 || price == 100 || price === 200"),
-      ExpressionParser.parseExpression("id > 100 || price == 100 || price === 200"),
-      ExpressionParser.parseExpression("!(amount <= id)"))
+      $"amount" < 100 || $"price" === 100 || $"price" === 200,
+      $"id" > 100 || $"price" === 100 || $"price" === 200,
+      !($"amount" <= $"id")
+    )
     assertExpressionArrayEquals(expected, convertedExpressions)
     assertEquals(0, unconvertedRexNodes.length)
   }
@@ -237,10 +239,10 @@ class RexNodeExtractorTest extends RexNodeTestBase {
         functionCatalog)
 
     val expected: Array[Expression] = Array(
-      ExpressionParser.parseExpression("amount < 100"),
-      ExpressionParser.parseExpression("amount <= id"),
-      ExpressionParser.parseExpression("id > 100"),
-      ExpressionParser.parseExpression("price === 100")
+      $"amount" < 100,
+      $"amount" <= $"id",
+      $"id" > 100,
+      $"price" === 100
     )
 
     assertExpressionArrayEquals(expected, convertedExpressions)
@@ -393,16 +395,16 @@ class RexNodeExtractorTest extends RexNodeTestBase {
         functionCatalog)
 
     val expected: Array[Expression] = Array(
-      ExpressionParser.parseExpression("amount < id"),
-      ExpressionParser.parseExpression("amount <= id"),
-      ExpressionParser.parseExpression("amount <> id"),
-      ExpressionParser.parseExpression("amount == id"),
-      ExpressionParser.parseExpression("amount >= id"),
-      ExpressionParser.parseExpression("amount > id"),
-      ExpressionParser.parseExpression("amount + id == 100"),
-      ExpressionParser.parseExpression("amount - id == 100"),
-      ExpressionParser.parseExpression("amount * id == 100"),
-      ExpressionParser.parseExpression("amount / id == 100")
+      $"amount" < $"id",
+      $"amount" <= $"id",
+      $"amount" !== $"id",
+      $"amount" === $"id",
+      $"amount" >= $"id",
+      $"amount" > $"id",
+      $"amount" + $"id" === 100,
+      $"amount" - $"id" === 100,
+      $"amount" * $"id" === 100,
+      $"amount" / $"id" === 100
     )
     assertExpressionArrayEquals(expected, convertedExpressions)
     assertEquals(0, unconvertedRexNodes.length)
@@ -508,7 +510,7 @@ class RexNodeExtractorTest extends RexNodeTestBase {
     assertEquals(0, unconvertedRexNodes.length)
 
     assertExpressionArrayEquals(
-      Array(ExpressionParser.parseExpression("amount <= id")),
+      Array($"amount" <= $"id"),
       Array(convertedExpressions(1)))
   }
 

@@ -6,25 +6,38 @@ https://flink.apache.org/ is also generated from the files found here.
 
 # Requirements
 
-### Build the site locally
+### Build the documentation and serve it locally
 
-Make sure you have installed [Hugo](https://gohugo.io/getting-started/installing/) on your
-system. To build the Flink docs, you need the *extended version* of Hugo with Sass/SCSS support.
+The Flink documentation uses [Hugo](https://gohugo.io/getting-started/installing/) to generate HTML files.  More specifically, it uses the *extended version* of Hugo with Sass/SCSS support. 
 
-From the directory of this module (`docs`):
+To build the documentation, you can install Hugo locally or use a Docker image. 
+
+Both methods require you to execute commands in the directory of this module (`docs/`). The built site is served at http://localhost:1313/.
+
+#### Using Hugo Docker image:
 
 ```sh
-./build_docs.sh
+$ git submodule update --init --recursive
+$ docker run -v $(pwd):/src -p 1313:1313 jakejarvis/hugo-extended:latest server --buildDrafts --buildFuture --bind 0.0.0.0
+```
+
+#### Local Hugo installation:
+
+Make sure you have installed [Hugo](https://gohugo.io/getting-started/installing/) on your system.
+
+```sh
+$ git submodule update --init --recursive
+$ ./build_docs.sh
 ```
 
 The site can be viewed at http://localhost:1313/
 
 ## Generate configuration tables
 
-Configuration descriptions are auto generated from code. To trigger the generation you need to run:
+Configuration descriptions are auto generated from code. To trigger the generation you need to run in the project root:
 
 ```
-mvn -Pgenerate-config-docs install
+mvn -Pgenerate-config-docs install -Dfast -DskipTests
 ```
 
 The resulting html files will be written to `layouts/shortcodes/generated`. Tables are regenerated each time the command is invoked.
@@ -77,7 +90,7 @@ Please stick to the "logical order" when using the headlines, e.g. start with le
 #### Table of Contents
 
 Table of contents are added automatically to every page, based on heading levels 2 - 4. 
-The ToC can be ommitted by adding the following to the front matter of the page:
+The ToC can be omitted by adding the following to the front matter of the page:
 
     ---
     bookToc: false
@@ -90,14 +103,14 @@ to its documentation markdown. The following are available for use:
 
 #### Flink Artifact
 
-    {{< artfiact flink-streaming-java withScalaVersion >}}
+    {{< artifact flink-streaming-scala withScalaVersion >}}
 
-This will be replaced by the maven artifact for flink-streaming-java that users should copy into their pom.xml file. It will render out to:
+This will be replaced by the maven artifact for flink-streaming-scala that users should copy into their pom.xml file. It will render out to:
 
 ```xml
 <dependency>
-    <groupdId>org.apache.flink</groupId>
-    <artifactId>flink-streaming-java_2.11</artifactId>
+    <groupId>org.apache.flink</groupId>
+    <artifactId>flink-streaming-scala_2.12</artifactId>
     <version><!-- current flink version --></version>
 </dependency>
 ```
@@ -106,7 +119,12 @@ It includes a number of optional flags:
 
 * withScalaVersion: Includes the scala version suffix to the artifact id
 * withTestScope: Includes `<scope>test</scope>` to the module. Useful for marking test dependencies.
-* withTestClassifier: Includes `<classifier>tests</classifier>`. Useful when users should be pulling in Flinks tests dependencies. This is mostly for the test harnesses and probably not what you want. 
+* withTestClassifier: Includes `<classifier>tests</classifier>`. Useful when users should be pulling in Flink tests dependencies. This is mostly for the test harnesses and probably not what you want. 
+
+You can also use the shortcodes (with same flags) instead:
+
+* `artifact_gradle` to show the Gradle syntax
+* `artifact_tabs` to create a tabbed view, showing both Maven and Gradle syntax
 
 #### Back to Top
 
@@ -157,7 +175,7 @@ Interpolates the current Flink version
 
 #### Scala Version
 
-    {{< scala_verison >}}
+    {{< scala_version >}}
 
 Interpolates the default scala version
 

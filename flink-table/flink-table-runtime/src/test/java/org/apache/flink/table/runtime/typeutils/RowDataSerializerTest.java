@@ -41,7 +41,6 @@ import org.apache.flink.table.types.logical.RawType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.testutils.DeeplyEqualsChecker;
 
-import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -53,6 +52,7 @@ import java.util.Collection;
 import java.util.Objects;
 
 import static org.apache.flink.table.data.StringData.fromString;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link RowDataSerializer}. */
 @RunWith(Parameterized.class)
@@ -94,7 +94,7 @@ public class RowDataSerializerTest extends SerializerTestInstance<RowData> {
 
     private static Object[] testRowDataSerializer() {
         InternalTypeInfo<RowData> typeInfo =
-                InternalTypeInfo.ofFields(new IntType(), new VarCharType(VarCharType.MAX_LENGTH));
+                InternalTypeInfo.ofFields(new IntType(), VarCharType.STRING_TYPE);
         GenericRowData row1 = new GenericRowData(2);
         row1.setField(0, 1);
         row1.setField(1, fromString("a"));
@@ -122,7 +122,7 @@ public class RowDataSerializerTest extends SerializerTestInstance<RowData> {
                         new IntType(),
                         new IntType(),
                         new IntType(),
-                        new VarCharType(VarCharType.MAX_LENGTH));
+                        VarCharType.STRING_TYPE);
 
         GenericRowData row = new GenericRowData(13);
         row.setField(0, 2);
@@ -147,7 +147,7 @@ public class RowDataSerializerTest extends SerializerTestInstance<RowData> {
                 InternalTypeInfo.ofFields(
                         new IntType(),
                         new DoubleType(),
-                        new VarCharType(VarCharType.MAX_LENGTH),
+                        VarCharType.STRING_TYPE,
                         new ArrayType(new IntType()),
                         new MapType(new IntType(), new IntType()));
 
@@ -312,7 +312,7 @@ public class RowDataSerializerTest extends SerializerTestInstance<RowData> {
                         (RowDataSerializer) serializer.duplicate(),
                         (RowDataSerializer) serializer.duplicate(),
                         checkClass);
-        Assert.assertTrue(equals);
+        assertThat(equals).isTrue();
     }
 
     @Test

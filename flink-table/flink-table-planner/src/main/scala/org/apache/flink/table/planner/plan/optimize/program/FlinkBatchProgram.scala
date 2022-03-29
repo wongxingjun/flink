@@ -18,7 +18,7 @@
 
 package org.apache.flink.table.planner.plan.optimize.program
 
-import org.apache.flink.configuration.Configuration
+import org.apache.flink.configuration.ReadableConfig
 import org.apache.flink.table.api.config.OptimizerConfigOptions
 import org.apache.flink.table.planner.plan.nodes.FlinkConventions
 import org.apache.flink.table.planner.plan.rules.FlinkBatchRuleSets
@@ -44,7 +44,7 @@ object FlinkBatchProgram {
   val PHYSICAL = "physical"
   val PHYSICAL_REWRITE = "physical_rewrite"
 
-  def buildProgram(config: Configuration): FlinkChainedProgram[BatchOptimizeContext] = {
+  def buildProgram(tableConfig: ReadableConfig): FlinkChainedProgram[BatchOptimizeContext] = {
     val chainedProgram = new FlinkChainedProgram[BatchOptimizeContext]()
 
     chainedProgram.addLast(
@@ -126,10 +126,21 @@ object FlinkBatchProgram {
                 .build(), "other predicate rewrite")
             .setIterations(5).build(), "predicate rewrite")
         .addProgram(
-          FlinkHepRuleSetProgramBuilder.newBuilder
-            .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
-            .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-            .add(FlinkBatchRuleSets.FILTER_TABLESCAN_PUSHDOWN_RULES)
+          // PUSH_PARTITION_DOWN_RULES should always be in front of PUSH_FILTER_DOWN_RULES
+          // to prevent PUSH_FILTER_DOWN_RULES from consuming the predicates in partitions
+          FlinkGroupProgramBuilder.newBuilder[BatchOptimizeContext]
+             .addProgram(
+               FlinkHepRuleSetProgramBuilder.newBuilder
+                 .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
+                 .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
+                 .add(FlinkBatchRuleSets.PUSH_PARTITION_DOWN_RULES)
+                 .build(), "push down partitions into table scan")
+            .addProgram(
+              FlinkHepRuleSetProgramBuilder.newBuilder
+                .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
+                .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
+                .add(FlinkBatchRuleSets.PUSH_FILTER_DOWN_RULES)
+                .build(), "push down filters into table scan")
             .build(), "push predicate into table scan")
         .addProgram(
           FlinkHepRuleSetProgramBuilder.newBuilder
@@ -140,7 +151,7 @@ object FlinkBatchProgram {
         .build())
 
     // join reorder
-    if (config.getBoolean(OptimizerConfigOptions.TABLE_OPTIMIZER_JOIN_REORDER_ENABLED)) {
+    if (tableConfig.get(OptimizerConfigOptions.TABLE_OPTIMIZER_JOIN_REORDER_ENABLED)) {
       chainedProgram.addLast(
         JOIN_REORDER,
         FlinkGroupProgramBuilder.newBuilder[BatchOptimizeContext]

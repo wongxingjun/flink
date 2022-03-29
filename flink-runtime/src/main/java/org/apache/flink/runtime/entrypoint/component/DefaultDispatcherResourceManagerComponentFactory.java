@@ -22,8 +22,10 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.runtime.blob.BlobServer;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.dispatcher.DispatcherId;
+import org.apache.flink.runtime.dispatcher.DispatcherOperationCaches;
 import org.apache.flink.runtime.dispatcher.ExecutionGraphInfoStore;
 import org.apache.flink.runtime.dispatcher.HistoryServerArchivist;
 import org.apache.flink.runtime.dispatcher.PartialDispatcherServices;
@@ -34,7 +36,7 @@ import org.apache.flink.runtime.dispatcher.runner.DispatcherRunnerFactory;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
-import org.apache.flink.runtime.jobmanager.HaServicesJobGraphStoreFactory;
+import org.apache.flink.runtime.jobmanager.HaServicesJobPersistenceComponentFactory;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.metrics.MetricRegistry;
 import org.apache.flink.runtime.metrics.groups.JobManagerMetricGroup;
@@ -100,6 +102,7 @@ public class DefaultDispatcherResourceManagerComponentFactory
     @Override
     public DispatcherResourceManagerComponent create(
             Configuration configuration,
+            ResourceID resourceId,
             Executor ioExecutor,
             RpcService rpcService,
             HighAvailabilityServices highAvailabilityServices,
@@ -177,6 +180,7 @@ public class DefaultDispatcherResourceManagerComponentFactory
                     ResourceManagerServiceImpl.create(
                             resourceManagerFactory,
                             configuration,
+                            resourceId,
                             rpcService,
                             highAvailabilityServices,
                             heartbeatServices,
@@ -190,6 +194,10 @@ public class DefaultDispatcherResourceManagerComponentFactory
             final HistoryServerArchivist historyServerArchivist =
                     HistoryServerArchivist.createHistoryServerArchivist(
                             configuration, webMonitorEndpoint, ioExecutor);
+
+            final DispatcherOperationCaches dispatcherOperationCaches =
+                    new DispatcherOperationCaches(
+                            configuration.get(RestOptions.ASYNC_OPERATION_STORE_DURATION));
 
             final PartialDispatcherServices partialDispatcherServices =
                     new PartialDispatcherServices(
@@ -205,14 +213,15 @@ public class DefaultDispatcherResourceManagerComponentFactory
                             fatalErrorHandler,
                             historyServerArchivist,
                             metricRegistry.getMetricQueryServiceGatewayRpcAddress(),
-                            ioExecutor);
+                            ioExecutor,
+                            dispatcherOperationCaches);
 
             log.debug("Starting Dispatcher.");
             dispatcherRunner =
                     dispatcherRunnerFactory.createDispatcherRunner(
                             highAvailabilityServices.getDispatcherLeaderElectionService(),
                             fatalErrorHandler,
-                            new HaServicesJobGraphStoreFactory(highAvailabilityServices),
+                            new HaServicesJobPersistenceComponentFactory(highAvailabilityServices),
                             ioExecutor,
                             rpcService,
                             partialDispatcherServices);
@@ -229,7 +238,8 @@ public class DefaultDispatcherResourceManagerComponentFactory
                     dispatcherLeaderRetrievalService,
                     resourceManagerRetrievalService,
                     webMonitorEndpoint,
-                    fatalErrorHandler);
+                    fatalErrorHandler,
+                    dispatcherOperationCaches);
 
         } catch (Exception exception) {
             // clean up all started components

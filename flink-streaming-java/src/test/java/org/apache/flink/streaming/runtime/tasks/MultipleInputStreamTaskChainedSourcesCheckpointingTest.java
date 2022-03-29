@@ -25,13 +25,16 @@ import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.mocks.MockSource;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.SavepointType;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.io.network.api.CheckpointBarrier;
 import org.apache.flink.runtime.io.network.api.EndOfData;
 import org.apache.flink.runtime.io.network.api.EndOfPartitionEvent;
+import org.apache.flink.runtime.io.network.api.StopMode;
 import org.apache.flink.runtime.io.network.api.writer.RecordOrEventCollectingResultPartitionWriter;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.PartitionTestUtils;
@@ -39,20 +42,22 @@ import org.apache.flink.runtime.io.network.partition.ResultPartition;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
-import org.apache.flink.runtime.state.StateInitializationContext;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperatorFactory;
+import org.apache.flink.streaming.api.operators.Input;
+import org.apache.flink.streaming.api.operators.MultipleInputStreamOperator;
 import org.apache.flink.streaming.api.operators.SourceOperator;
 import org.apache.flink.streaming.api.operators.SourceOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorParameters;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElementSerializer;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.tasks.LifeCycleMonitor.LifeCyclePhase;
 import org.apache.flink.streaming.runtime.tasks.MultipleInputStreamTaskTest.MapToStringMultipleInputOperatorFactory;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.streaming.util.CompletingCheckpointResponder;
 
 import org.junit.Test;
@@ -73,15 +78,15 @@ import static org.apache.flink.streaming.runtime.tasks.MultipleInputStreamTaskTe
 import static org.apache.flink.streaming.runtime.tasks.MultipleInputStreamTaskTest.applyObjectReuse;
 import static org.apache.flink.streaming.runtime.tasks.MultipleInputStreamTaskTest.buildTestHarness;
 import static org.apache.flink.streaming.runtime.tasks.StreamTaskFinalCheckpointsTest.triggerCheckpoint;
-import static org.apache.flink.util.Preconditions.checkState;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
  * Tests for {@link MultipleInputStreamTask} combined with {@link
@@ -255,6 +260,7 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
         try (StreamTaskMailboxTestHarness<String> testHarness =
                 new StreamTaskMailboxTestHarnessBuilder<>(
                                 MultipleInputStreamTask::new, BasicTypeInfo.STRING_TYPE_INFO)
+                        .setCollectNetworkEvents()
                         .modifyExecutionConfig(applyObjectReuse(objectReuse))
                         .modifyStreamConfig(config -> config.setCheckpointingEnabled(true))
                         .addInput(BasicTypeInfo.STRING_TYPE_INFO)
@@ -277,10 +283,10 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
             CheckpointBarrier barrier = createStopWithSavepointDrainBarrier();
 
             testHarness.processElement(new StreamRecord<>("44", TimestampAssigner.NO_TIMESTAMP), 0);
-            testHarness.processEvent(EndOfData.INSTANCE, 0);
+            testHarness.processEvent(new EndOfData(StopMode.DRAIN), 0);
             testHarness.processEvent(barrier, 0);
             testHarness.processElement(new StreamRecord<>(47d, TimestampAssigner.NO_TIMESTAMP), 1);
-            testHarness.processEvent(EndOfData.INSTANCE, 1);
+            testHarness.processEvent(new EndOfData(StopMode.DRAIN), 1);
             testHarness.processEvent(barrier, 1);
 
             addSourceRecords(testHarness, 1, Boundedness.CONTINUOUS_UNBOUNDED, 1, 2);
@@ -306,8 +312,8 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
                     actualOutput.subList(0, expectedOutput.size()),
                     containsInAnyOrder(expectedOutput.toArray()));
             assertThat(
-                    actualOutput.subList(actualOutput.size() - 2, actualOutput.size()),
-                    contains(new StreamRecord<>("FINISH"), barrier));
+                    actualOutput.subList(actualOutput.size() - 3, actualOutput.size()),
+                    contains(new StreamRecord<>("FINISH"), new EndOfData(StopMode.DRAIN), barrier));
         }
     }
 
@@ -349,7 +355,35 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
     }
 
     @Test
-    public void testRpcTriggerCheckpointWithSourceChain() throws Exception {
+    public void testTriggerAlignedNoTimeoutCheckpointWithFinishedChannelsAndSourceChain()
+            throws Exception {
+        testTriggerCheckpointWithFinishedChannelsAndSourceChain(
+                CheckpointOptions.alignedNoTimeout(
+                        CheckpointType.CHECKPOINT,
+                        CheckpointStorageLocationReference.getDefault()));
+    }
+
+    @Test
+    public void testTriggerUnalignedCheckpointWithFinishedChannelsAndSourceChain()
+            throws Exception {
+        testTriggerCheckpointWithFinishedChannelsAndSourceChain(
+                CheckpointOptions.unaligned(
+                        CheckpointType.CHECKPOINT,
+                        CheckpointStorageLocationReference.getDefault()));
+    }
+
+    @Test
+    public void testTriggerAlignedWithTimeoutCheckpointWithFinishedChannelsAndSourceChain()
+            throws Exception {
+        testTriggerCheckpointWithFinishedChannelsAndSourceChain(
+                CheckpointOptions.alignedWithTimeout(
+                        CheckpointType.CHECKPOINT,
+                        CheckpointStorageLocationReference.getDefault(),
+                        10L));
+    }
+
+    private void testTriggerCheckpointWithFinishedChannelsAndSourceChain(
+            CheckpointOptions checkpointOptions) throws Exception {
         ResultPartition[] partitionWriters = new ResultPartition[2];
         try {
             for (int i = 0; i < partitionWriters.length; ++i) {
@@ -365,11 +399,9 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
                             .modifyStreamConfig(
                                     config -> {
                                         config.setCheckpointingEnabled(true);
-                                        config.getConfiguration()
-                                                .set(
-                                                        ExecutionCheckpointingOptions
-                                                                .ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH,
-                                                        true);
+                                        config.setUnalignedCheckpointsEnabled(
+                                                checkpointOptions.isUnalignedCheckpoint()
+                                                        || checkpointOptions.isTimeoutable());
                                     })
                             .modifyExecutionConfig(applyObjectReuse(objectReuse))
                             .setCheckpointResponder(checkpointResponder)
@@ -399,32 +431,29 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
                         testHarness.streamTask::notifyCheckpointAbortAsync);
                 testHarness.getStreamTask().getCheckpointBarrierHandler().get();
 
-                Future<Boolean> checkpointFuture = triggerCheckpoint(testHarness, 2);
+                CompletableFuture<Boolean> checkpointFuture =
+                        triggerCheckpoint(testHarness, 2, checkpointOptions);
                 testHarness.processAll();
 
                 // The checkpoint 2 would be aligned after received all the EndOfPartitionEvent.
-                testHarness.processEvent(EndOfData.INSTANCE, 0, 0);
-                testHarness.processEvent(EndOfData.INSTANCE, 1, 0);
+                testHarness.processEvent(new EndOfData(StopMode.DRAIN), 0, 0);
+                testHarness.processEvent(new EndOfData(StopMode.DRAIN), 1, 0);
                 testHarness.processEvent(EndOfPartitionEvent.INSTANCE, 0, 0);
                 testHarness.processEvent(EndOfPartitionEvent.INSTANCE, 1, 0);
                 testHarness.getTaskStateManager().getWaitForReportLatch().await();
                 assertEquals(2, testHarness.getTaskStateManager().getReportedCheckpointId());
 
                 // Tests triggering checkpoint after all the inputs have received EndOfPartition.
-                checkpointFuture = triggerCheckpoint(testHarness, 4);
+                checkpointFuture = triggerCheckpoint(testHarness, 4, checkpointOptions);
 
                 // Notifies the result partition that all records are processed after the
                 // last checkpoint is triggered.
-                checkState(
-                        checkpointFuture instanceof CompletableFuture,
-                        "The trigger future should " + " be also CompletableFuture.");
-                ((CompletableFuture<?>) checkpointFuture)
-                        .thenAccept(
-                                (ignored) -> {
-                                    for (ResultPartition resultPartition : partitionWriters) {
-                                        resultPartition.onSubpartitionAllDataProcessed(0);
-                                    }
-                                });
+                checkpointFuture.thenAccept(
+                        (ignored) -> {
+                            for (ResultPartition resultPartition : partitionWriters) {
+                                resultPartition.onSubpartitionAllDataProcessed(0);
+                            }
+                        });
 
                 // The checkpoint 4 would be triggered successfully.
                 testHarness.processAll();
@@ -465,8 +494,8 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
                                         output,
                                         new StreamElementSerializer<>(IntSerializer.INSTANCE)) {
                                     @Override
-                                    public void notifyEndOfData() throws IOException {
-                                        broadcastEvent(EndOfData.INSTANCE, false);
+                                    public void notifyEndOfData(StopMode mode) throws IOException {
+                                        broadcastEvent(new EndOfData(mode), false);
                                     }
                                 })
                         .addSourceInput(
@@ -487,15 +516,14 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
                         .setupOperatorChain(
                                 nonSourceOperatorId,
                                 new LifeCycleMonitorMultipleInputOperatorFactory())
-                        .finishForSingletonOperatorChain(StringSerializer.INSTANCE)
+                        .chain(new TestFinishedOnRestoreStreamOperator(), StringSerializer.INSTANCE)
+                        .finish()
                         .build()) {
 
-            testHarness.processElement(Watermark.MAX_WATERMARK, 0, 0);
-            testHarness.processEvent(EndOfData.INSTANCE, 0, 0);
-            testHarness.processEvent(EndOfPartitionEvent.INSTANCE, 0, 0);
-
-            testHarness.processAll();
-            assertThat(output, contains(Watermark.MAX_WATERMARK, EndOfData.INSTANCE));
+            testHarness.processElement(Watermark.MAX_WATERMARK);
+            assertThat(output, is(empty()));
+            testHarness.waitForTaskCompletion();
+            assertThat(output, contains(Watermark.MAX_WATERMARK, new EndOfData(StopMode.DRAIN)));
 
             for (StreamOperatorWrapper<?, ?> wrapper :
                     testHarness.getStreamTask().operatorChain.getAllOperators()) {
@@ -505,13 +533,6 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
                                     ((SourceOperator<?, ?>) wrapper.getStreamOperator())
                                             .getSourceReader();
                     sourceReader.getLifeCycleMonitor().assertCallTimes(0, LifeCyclePhase.values());
-                } else if (wrapper.getStreamOperator()
-                        instanceof LifeCycleMonitorMultipleInputOperator) {
-                    ((LifeCycleMonitorMultipleInputOperator) wrapper.getStreamOperator())
-                            .getLifeCycleMonitor()
-                            .assertCallTimes(0, LifeCyclePhase.values());
-                } else {
-                    fail("Unexpected operator type for " + wrapper.getStreamOperator());
                 }
             }
         }
@@ -527,7 +548,7 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
     private CheckpointBarrier createStopWithSavepointDrainBarrier() {
         CheckpointOptions checkpointOptions =
                 CheckpointOptions.alignedNoTimeout(
-                        CheckpointType.SAVEPOINT_TERMINATE,
+                        SavepointType.terminate(SavepointFormatType.CANONICAL),
                         CheckpointStorageLocationReference.getDefault());
 
         return new CheckpointBarrier(
@@ -578,41 +599,45 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
         assertTrue(condition.get());
     }
 
-    static class LifeCycleMonitorMultipleInputOperator
-            extends MultipleInputStreamTaskTest.MapToStringMultipleInputOperator {
+    static class LifeCycleMonitorMultipleInputOperator extends TestFinishedOnRestoreStreamOperator
+            implements MultipleInputStreamOperator<String> {
 
-        private final LifeCycleMonitor lifeCycleMonitor = new LifeCycleMonitor();
-
-        public LifeCycleMonitorMultipleInputOperator(StreamOperatorParameters<String> parameters) {
-            super(parameters, 3);
-        }
+        public LifeCycleMonitorMultipleInputOperator() {}
 
         @Override
-        public void open() throws Exception {
-            super.open();
-            lifeCycleMonitor.incrementCallTime(LifeCyclePhase.OPEN);
+        public List<Input> getInputs() {
+            ArrayList<Input> inputs = new ArrayList<>();
+            inputs.add(new TestFinishedOnRestoreInput());
+            inputs.add(new TestFinishedOnRestoreInput());
+            inputs.add(new TestFinishedOnRestoreInput());
+            return inputs;
         }
 
-        @Override
-        public void initializeState(StateInitializationContext context) throws Exception {
-            super.initializeState(context);
-            lifeCycleMonitor.incrementCallTime(LifeCyclePhase.INITIALIZE_STATE);
-        }
+        private static class TestFinishedOnRestoreInput implements Input {
+            @Override
+            public void processElement(StreamRecord element) throws Exception {
+                throw new IllegalStateException(MESSAGE);
+            }
 
-        @Override
-        public void finish() throws Exception {
-            super.finish();
-            lifeCycleMonitor.incrementCallTime(LifeCyclePhase.FINISH);
-        }
+            @Override
+            public void processWatermark(Watermark mark) throws Exception {
+                throw new IllegalStateException(MESSAGE);
+            }
 
-        @Override
-        public void close() throws Exception {
-            super.close();
-            lifeCycleMonitor.incrementCallTime(LifeCyclePhase.CLOSE);
-        }
+            @Override
+            public void processWatermarkStatus(WatermarkStatus watermarkStatus) throws Exception {
+                throw new IllegalStateException(MESSAGE);
+            }
 
-        public LifeCycleMonitor getLifeCycleMonitor() {
-            return lifeCycleMonitor;
+            @Override
+            public void processLatencyMarker(LatencyMarker latencyMarker) throws Exception {
+                throw new IllegalStateException(MESSAGE);
+            }
+
+            @Override
+            public void setKeyContextElement(StreamRecord record) throws Exception {
+                throw new IllegalStateException(MESSAGE);
+            }
         }
     }
 
@@ -621,7 +646,7 @@ public class MultipleInputStreamTaskChainedSourcesCheckpointingTest {
         @Override
         public <T extends StreamOperator<String>> T createStreamOperator(
                 StreamOperatorParameters<String> parameters) {
-            return (T) new LifeCycleMonitorMultipleInputOperator(parameters);
+            return (T) new LifeCycleMonitorMultipleInputOperator();
         }
 
         @Override

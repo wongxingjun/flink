@@ -22,7 +22,7 @@ from typing import List, Any, Optional
 
 from py4j.java_gateway import JavaObject
 
-from pyflink.common import WatermarkStrategy
+from pyflink.common import Configuration, WatermarkStrategy
 from pyflink.common.execution_config import ExecutionConfig
 from pyflink.common.job_client import JobClient
 from pyflink.common.job_execution_result import JobExecutionResult
@@ -39,7 +39,8 @@ from pyflink.datastream.state_backend import _from_j_state_backend, StateBackend
 from pyflink.datastream.time_characteristic import TimeCharacteristic
 from pyflink.java_gateway import get_gateway
 from pyflink.serializers import PickleSerializer
-from pyflink.util.java_utils import load_java_class, add_jars_to_context_class_loader, invoke_method
+from pyflink.util.java_utils import load_java_class, add_jars_to_context_class_loader, \
+    invoke_method, get_field_value, is_local_deployment, get_j_env_configuration
 
 __all__ = ['StreamExecutionEnvironment']
 
@@ -58,6 +59,7 @@ class StreamExecutionEnvironment(object):
     def __init__(self, j_stream_execution_environment, serializer=PickleSerializer()):
         self._j_stream_execution_environment = j_stream_execution_environment
         self.serializer = serializer
+        self._open()
 
     def get_config(self) -> ExecutionConfig:
         """
@@ -298,7 +300,7 @@ class StreamExecutionEnvironment(object):
 
         In contrast, the :class:`~pyflink.datastream.FsStateBackend` stores checkpoints of the state
         (also maintained as heap objects) in files. When using a replicated file system (like HDFS,
-        S3, MapR FS, Alluxio, etc) this will guarantee that state is not lost upon failures of
+        S3, Alluxio, etc) this will guarantee that state is not lost upon failures of
         individual nodes and that streaming program can be executed highly available and strongly
         consistent(assuming that Flink is run in high-availability mode).
 
@@ -510,6 +512,25 @@ class StreamExecutionEnvironment(object):
         """
         j_characteristic = self._j_stream_execution_environment.getStreamTimeCharacteristic()
         return TimeCharacteristic._from_j_time_characteristic(j_characteristic)
+
+    def configure(self, configuration: Configuration):
+        """
+        Sets all relevant options contained in the :class:`~pyflink.common.Configuration`. such as
+        e.g. `pipeline.time-characteristic`. It will reconfigure
+        :class:`~pyflink.datastream.StreamExecutionEnvironment`,
+        :class:`~pyflink.common.ExecutionConfig` and :class:`~pyflink.datastream.CheckpointConfig`.
+
+        It will change the value of a setting only if a corresponding option was set in the
+        `configuration`. If a key is not present, the current value of a field will remain
+        untouched.
+
+        :param configuration: a configuration to read the values from.
+
+        .. versionadded:: 1.15.0
+        """
+        self._j_stream_execution_environment.configure(configuration._j_configuration,
+                                                       get_gateway().jvm.Thread.currentThread()
+                                                       .getContextClassLoader())
 
     def add_python_file(self, file_path: str):
         """
@@ -769,6 +790,22 @@ class StreamExecutionEnvironment(object):
         j_stream_graph = self._generate_stream_graph(False)
         return j_stream_graph.getStreamingPlanAsJSON()
 
+    def register_cached_file(self, file_path: str, name: str, executable: bool = False):
+        """
+        Registers a file at the distributed cache under the given name. The file will be accessible
+        from any user-defined function in the (distributed) runtime under a local path. Files may be
+        local files (which will be distributed via BlobServer), or files in a distributed file
+        system. The runtime will copy the files temporarily to a local cache, if needed.
+
+        :param file_path: The path of the file, as a URI (e.g. "file:///some/path" or
+                         hdfs://host:port/and/path").
+        :param name: The name under which the file is registered.
+        :param executable: Flag indicating whether the file should be executable.
+
+        .. versionadded:: 1.16.0
+        """
+        self._j_stream_execution_environment.registerCachedFile(file_path, name, executable)
+
     @staticmethod
     def get_execution_environment() -> 'StreamExecutionEnvironment':
         """
@@ -886,7 +923,7 @@ class StreamExecutionEnvironment(object):
             # Since flink python module depends on table module, we can make use of utils of it when
             # implementing python DataStream API.
             PythonTableUtils = gateway.jvm\
-                .org.apache.flink.table.planner.utils.python.PythonTableUtils
+                .org.apache.flink.table.utils.python.PythonTableUtils
             execution_config = self._j_stream_execution_environment.getConfig()
             j_input_format = PythonTableUtils.getCollectionInputFormat(
                 j_objs,
@@ -918,16 +955,48 @@ class StreamExecutionEnvironment(object):
     def _generate_stream_graph(self, clear_transformations: bool = False, job_name: str = None) \
             -> JavaObject:
         gateway = get_gateway()
+        JPythonConfigUtil = gateway.jvm.org.apache.flink.python.util.PythonConfigUtil
+
+        JPythonConfigUtil.configPythonOperator(self._j_stream_execution_environment)
+
         gateway.jvm.org.apache.flink.python.chain.PythonOperatorChainingOptimizer.apply(
             self._j_stream_execution_environment)
-        j_stream_graph = gateway.jvm \
-            .org.apache.flink.python.util.PythonConfigUtil.generateStreamGraphWithDependencies(
-                self._j_stream_execution_environment, clear_transformations)
 
+        JPythonConfigUtil.setPartitionCustomOperatorNumPartitions(
+            get_field_value(self._j_stream_execution_environment, "transformations"))
+
+        j_stream_graph = self._j_stream_execution_environment.getStreamGraph(clear_transformations)
         if job_name is not None:
             j_stream_graph.setJobName(job_name)
-
         return j_stream_graph
+
+    def _open(self):
+        # start BeamFnLoopbackWorkerPoolServicer when executed in MiniCluster
+        j_configuration = get_j_env_configuration(self._j_stream_execution_environment)
+
+        def startup_loopback_server():
+            from pyflink.common import Configuration
+            from pyflink.fn_execution.beam.beam_worker_pool_service import \
+                BeamFnLoopbackWorkerPoolServicer
+            config = Configuration(j_configuration=j_configuration)
+            config.set_string(
+                "PYFLINK_LOOPBACK_SERVER_ADDRESS", BeamFnLoopbackWorkerPoolServicer().start())
+
+        python_worker_execution_mode = os.environ.get('_python_worker_execution_mode')
+
+        if python_worker_execution_mode is None:
+            if is_local_deployment(j_configuration):
+                startup_loopback_server()
+        elif python_worker_execution_mode == 'loopback':
+            if is_local_deployment(j_configuration):
+                startup_loopback_server()
+            else:
+                raise ValueError("Loopback mode is enabled, however the job wasn't configured to "
+                                 "run in local deployment mode")
+        elif python_worker_execution_mode != 'process':
+            raise ValueError(
+                "It only supports to execute the Python worker in 'loopback' mode and 'process' "
+                "mode, unknown mode '%s' is configured" % python_worker_execution_mode)
 
     def is_unaligned_checkpoints_enabled(self):
         """

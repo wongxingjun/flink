@@ -405,8 +405,8 @@ public class CreditBasedPartitionRequestClientHandlerTest {
             inputGate.setBufferPool(bufferPool);
             inputGate.setupChannels();
 
-            inputChannels[0].requestSubpartition(0);
-            inputChannels[1].requestSubpartition(0);
+            inputChannels[0].requestSubpartition();
+            inputChannels[1].requestSubpartition();
 
             // The two input channels should send partition requests
             assertTrue(channel.isWritable());
@@ -532,7 +532,7 @@ public class CreditBasedPartitionRequestClientHandlerTest {
             inputGate.setBufferPool(bufferPool);
             inputGate.setupChannels();
 
-            inputChannel.requestSubpartition(0);
+            inputChannel.requestSubpartition();
 
             // This should send the partition request
             Object readFromOutbound = channel.readOutbound();
@@ -602,7 +602,7 @@ public class CreditBasedPartitionRequestClientHandlerTest {
 
         try {
             inputGate.setInputChannels(inputChannel);
-            inputGate.setupChannels();
+            inputGate.setup();
             inputGate.requestPartitions();
             handler.addInputChannel(inputChannel);
 
@@ -699,8 +699,8 @@ public class CreditBasedPartitionRequestClientHandlerTest {
             inputGate.setBufferPool(bufferPool);
             inputGate.setupChannels();
 
-            inputChannels[0].requestSubpartition(0);
-            inputChannels[1].requestSubpartition(0);
+            inputChannels[0].requestSubpartition();
+            inputChannels[1].requestSubpartition();
             channel.readOutbound();
             channel.readOutbound();
 
@@ -732,7 +732,7 @@ public class CreditBasedPartitionRequestClientHandlerTest {
         SingleInputGate inputGate = createSingleInputGate(1, networkBufferPool);
         RemoteInputChannel inputChannel = new InputChannelBuilder().buildRemoteChannel(inputGate);
         inputGate.setInputChannels(inputChannel);
-        inputGate.setupChannels();
+        inputGate.setup();
 
         CreditBasedPartitionRequestClientHandler handler =
                 new CreditBasedPartitionRequestClientHandler();
@@ -827,6 +827,7 @@ public class CreditBasedPartitionRequestClientHandlerTest {
                     inputGate,
                     0,
                     new ResultPartitionID(),
+                    0,
                     InputChannelBuilder.STUB_CONNECTION_ID,
                     new TestingConnectionManager(),
                     0,

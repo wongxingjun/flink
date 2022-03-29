@@ -20,16 +20,17 @@ package org.apache.flink.table.planner.plan.rules.logical
 
 import org.apache.flink.table.api.TableException
 import org.apache.flink.table.api.config.OptimizerConfigOptions
-import org.apache.flink.table.planner.calcite.{FlinkContext, FlinkLogicalRelFactories, FlinkRelBuilder}
+import org.apache.flink.table.planner.calcite.{FlinkLogicalRelFactories, FlinkRelBuilder}
 import org.apache.flink.table.planner.functions.sql.{FlinkSqlOperatorTable, SqlFirstLastValueAggFunction}
-import org.apache.flink.table.planner.plan.logical.SessionWindowSpec
 import org.apache.flink.table.planner.plan.PartialFinalType
 import org.apache.flink.table.planner.plan.metadata.FlinkRelMetadataQuery
 import org.apache.flink.table.planner.plan.nodes.FlinkRelNode
 import org.apache.flink.table.planner.plan.nodes.logical.FlinkLogicalAggregate
 import org.apache.flink.table.planner.plan.utils.AggregateUtil.doAllAggSupportSplit
 import org.apache.flink.table.planner.plan.utils.{AggregateUtil, ExpandUtil, WindowUtil}
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
+import com.google.common.collect.ImmutableList
 import org.apache.calcite.plan.RelOptRule.{any, operand}
 import org.apache.calcite.plan.{RelOptRule, RelOptRuleCall}
 import org.apache.calcite.rel.core.AggregateCall
@@ -38,8 +39,6 @@ import org.apache.calcite.sql.fun.SqlStdOperatorTable._
 import org.apache.calcite.sql.fun.{SqlMinMaxAggFunction, SqlStdOperatorTable}
 import org.apache.calcite.sql.{SqlAggFunction, SqlKind}
 import org.apache.calcite.util.{ImmutableBitSet, ImmutableIntList}
-
-import com.google.common.collect.ImmutableList
 
 import java.math.{BigDecimal => JBigDecimal}
 import java.util
@@ -126,10 +125,10 @@ class SplitAggregateRule extends RelOptRule(
   "SplitAggregateRule") {
 
   override def matches(call: RelOptRuleCall): Boolean = {
-    val tableConfig = call.getPlanner.getContext.unwrap(classOf[FlinkContext]).getTableConfig
+    val tableConfig = unwrapTableConfig(call)
     val agg: FlinkLogicalAggregate = call.rel(0)
 
-    val splitDistinctAggEnabled = tableConfig.getConfiguration.getBoolean(
+    val splitDistinctAggEnabled = tableConfig.get(
       OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED)
     val isAllAggSplittable = doAllAggSupportSplit(agg.getAggCallList)
 
@@ -139,22 +138,15 @@ class SplitAggregateRule extends RelOptRule(
     val windowProps = fmq.getRelWindowProperties(agg.getInput)
     val isWindowAgg = WindowUtil.groupingContainsWindowStartEnd(agg.getGroupSet, windowProps)
     val isProctimeWindowAgg = isWindowAgg && !windowProps.isRowtime
-
-    // disable distinct split for session window,
-    // otherwise window assigner results may be different
-    val isSessionWindowAgg = isWindowAgg &&
-      windowProps.getWindowSpec.isInstanceOf[SessionWindowSpec]
-
     // TableAggregate is not supported. see also FLINK-21923.
     val isTableAgg = AggregateUtil.isTableAggregate(agg.getAggCallList)
 
     agg.partialFinalType == PartialFinalType.NONE && agg.containsDistinctCall() &&
-      splitDistinctAggEnabled && isAllAggSplittable && !isProctimeWindowAgg &&
-      !isTableAgg && !isSessionWindowAgg
+      splitDistinctAggEnabled && isAllAggSplittable && !isProctimeWindowAgg && !isTableAgg
   }
 
   override def onMatch(call: RelOptRuleCall): Unit = {
-    val tableConfig = call.getPlanner.getContext.unwrap(classOf[FlinkContext]).getTableConfig
+    val tableConfig = unwrapTableConfig(call)
     val originalAggregate: FlinkLogicalAggregate = call.rel(0)
     val aggCalls = originalAggregate.getAggCallList
     val input: FlinkRelNode = call.rel(1)
@@ -173,7 +165,7 @@ class SplitAggregateRule extends RelOptRule(
     }.distinct.diff(aggGroupSet).sorted.toArray
 
     val hashFieldsMap: util.Map[Int, Int] = new util.HashMap()
-    val buckets = tableConfig.getConfiguration.getInteger(
+    val buckets = tableConfig.get(
       OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_BUCKET_NUM)
 
     if (hashFieldIndexes.nonEmpty) {

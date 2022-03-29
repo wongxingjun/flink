@@ -34,18 +34,24 @@ class OutputProcessor(abc.ABC):
     def process_outputs(self, windowed_value: WindowedValue, results: Iterable[Any]):
         pass
 
+    def close(self):
+        pass
+
 
 class NetworkOutputProcessor(OutputProcessor):
 
     def __init__(self, consumer):
         assert isinstance(consumer, DataOutputOperation)
         self._consumer = consumer
-        self._value_coder_impl = consumer.windowed_coder.wrapped_value_coder.get_impl()
+        self._value_coder_impl = consumer.windowed_coder.wrapped_value_coder.get_impl()._value_coder
 
     def process_outputs(self, windowed_value: WindowedValue, results: Iterable[Any]):
         output_stream = self._consumer.output_stream
         self._value_coder_impl.encode_to_stream(results, output_stream, True)
-        output_stream.maybe_flush()
+        self._value_coder_impl._output_stream.maybe_flush()
+
+    def close(self):
+        self._value_coder_impl._output_stream.close()
 
 
 class IntermediateOutputProcessor(OutputProcessor):
@@ -104,6 +110,7 @@ class FunctionOperation(Operation):
     def teardown(self):
         with self.scoped_finish_state:
             self.operation.close()
+            self._output_processor.close()
 
     def progress_metrics(self):
         metrics = super(FunctionOperation, self).progress_metrics()
@@ -142,7 +149,7 @@ class StatelessFunctionOperation(FunctionOperation):
             name, spec, counter_factory, sampler, consumers, operation_cls)
 
     def generate_operation(self):
-        return self.operation_cls(self.spec)
+        return self.operation_cls(self.spec.serialized_fn)
 
 
 class StatefulFunctionOperation(FunctionOperation):
@@ -154,7 +161,7 @@ class StatefulFunctionOperation(FunctionOperation):
             name, spec, counter_factory, sampler, consumers, operation_cls)
 
     def generate_operation(self):
-        return self.operation_cls(self.spec, self._keyed_state_backend)
+        return self.operation_cls(self.spec.serialized_fn, self._keyed_state_backend)
 
     def add_timer_info(self, timer_family_id: str, timer_info: TimerInfo):
         # ignore timer_family_id

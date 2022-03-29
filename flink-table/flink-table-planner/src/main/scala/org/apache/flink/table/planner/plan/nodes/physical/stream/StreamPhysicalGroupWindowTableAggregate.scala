@@ -20,11 +20,12 @@ package org.apache.flink.table.planner.plan.nodes.physical.stream
 
 import org.apache.flink.table.api.TableException
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
-import org.apache.flink.table.planner.expressions.PlannerNamedWindowProperty
 import org.apache.flink.table.planner.plan.logical._
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecGroupWindowAggregate
 import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
 import org.apache.flink.table.planner.plan.utils.{ChangelogPlanUtils, WindowEmitStrategy}
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
+import org.apache.flink.table.runtime.groupwindow.NamedWindowProperty
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
 import org.apache.calcite.rel.RelNode
@@ -42,7 +43,7 @@ class StreamPhysicalGroupWindowTableAggregate(
     grouping: Array[Int],
     aggCalls: Seq[AggregateCall],
     window: LogicalWindow,
-    namedWindowProperties: Seq[PlannerNamedWindowProperty],
+    namedWindowProperties: Seq[NamedWindowProperty],
     emitStrategy: WindowEmitStrategy)
   extends StreamPhysicalGroupWindowAggregateBase(
     cluster,
@@ -75,6 +76,7 @@ class StreamPhysicalGroupWindowTableAggregate(
   override def translateToExecNode(): ExecNode[_] = {
     val needRetraction = !ChangelogPlanUtils.inputInsertOnly(this)
     new StreamExecGroupWindowAggregate(
+      unwrapTableConfig(this),
       grouping,
       aggCalls.toArray,
       window,
@@ -82,7 +84,6 @@ class StreamPhysicalGroupWindowTableAggregate(
       needRetraction,
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),
-      getRelDetailedDescription
-    )
+      getRelDetailedDescription)
   }
 }

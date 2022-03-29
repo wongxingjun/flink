@@ -19,27 +19,32 @@
 package org.apache.flink.state.changelog;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
+import org.apache.flink.runtime.state.CheckpointBoundKeyedStateHandle;
 import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
 import org.apache.flink.runtime.state.ConfigurableStateBackend;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateBackend;
 import org.apache.flink.runtime.state.OperatorStateHandle;
+import org.apache.flink.runtime.state.SavepointKeyedStateHandle;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.changelog.ChangelogStateBackendHandle;
 import org.apache.flink.runtime.state.changelog.ChangelogStateBackendHandle.ChangelogStateBackendHandleImpl;
 import org.apache.flink.runtime.state.changelog.StateChangelogStorage;
 import org.apache.flink.runtime.state.delegate.DelegatingStateBackend;
 import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
+import org.apache.flink.runtime.taskmanager.AsynchronousException;
 import org.apache.flink.state.changelog.restore.ChangelogBackendRestoreOperation;
 import org.apache.flink.state.changelog.restore.ChangelogBackendRestoreOperation.BaseBackendBuilder;
 import org.apache.flink.util.Preconditions;
@@ -55,6 +60,7 @@ import java.util.stream.Collectors;
 
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
+import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
  * This state backend holds the working state in the underlying delegatedStateBackend, and forwards
@@ -210,20 +216,51 @@ public class ChangelogStateBackend implements DelegatingStateBackend, Configurab
                         env.getTaskStateManager().getStateChangelogStorage(),
                         "Changelog storage is null when creating and restoring"
                                 + " the ChangelogKeyedStateBackend.");
-        return ChangelogBackendRestoreOperation.restore(
-                changelogStorage.createReader(),
-                env.getUserCodeClassLoader().asClassLoader(),
-                castHandles(stateHandles),
-                baseBackendBuilder,
-                (baseBackend, baseState) ->
-                        new ChangelogKeyedStateBackend(
-                                baseBackend,
-                                env.getExecutionConfig(),
-                                ttlTimeProvider,
-                                changelogStorage.createWriter(operatorIdentifier, keyGroupRange),
-                                baseState,
-                                env.getMainMailboxExecutor(),
-                                env.getAsyncOperationsThreadPool()));
+
+        String subtaskName = env.getTaskInfo().getTaskNameWithSubtasks();
+        ExecutionConfig executionConfig = env.getExecutionConfig();
+
+        Collection<ChangelogStateBackendHandle> stateBackendHandles = castHandles(stateHandles);
+        ChangelogKeyedStateBackend<K> keyedStateBackend =
+                ChangelogBackendRestoreOperation.restore(
+                        changelogStorage.createReader(),
+                        env.getUserCodeClassLoader().asClassLoader(),
+                        stateBackendHandles,
+                        baseBackendBuilder,
+                        (baseBackend, baseState) ->
+                                new ChangelogKeyedStateBackend(
+                                        baseBackend,
+                                        subtaskName,
+                                        executionConfig,
+                                        ttlTimeProvider,
+                                        changelogStorage.createWriter(
+                                                operatorIdentifier,
+                                                keyGroupRange,
+                                                env.getMainMailboxExecutor()),
+                                        baseState,
+                                        env.getCheckpointStorageAccess()));
+
+        PeriodicMaterializationManager periodicMaterializationManager =
+                new PeriodicMaterializationManager(
+                        checkNotNull(env.getMainMailboxExecutor()),
+                        checkNotNull(env.getAsyncOperationsThreadPool()),
+                        subtaskName,
+                        (message, exception) ->
+                                env.failExternally(new AsynchronousException(message, exception)),
+                        keyedStateBackend,
+                        executionConfig.getPeriodicMaterializeIntervalMillis(),
+                        executionConfig.getMaterializationMaxAllowedFailures(),
+                        operatorIdentifier);
+
+        // keyedStateBackend is responsible to close periodicMaterializationManager
+        // This indicates periodicMaterializationManager binds to the keyedStateBackend
+        // However PeriodicMaterializationManager can not be part of keyedStateBackend
+        // because of cyclic reference
+        keyedStateBackend.registerCloseable(periodicMaterializationManager);
+
+        periodicMaterializationManager.start();
+
+        return keyedStateBackend;
     }
 
     private Collection<ChangelogStateBackendHandle> castHandles(
@@ -235,14 +272,34 @@ public class ChangelogStateBackend implements DelegatingStateBackend, Configurab
         }
         return stateHandles.stream()
                 .filter(Objects::nonNull)
-                .map(
-                        keyedStateHandle ->
-                                keyedStateHandle instanceof ChangelogStateBackendHandle
-                                        ? (ChangelogStateBackendHandle) keyedStateHandle
-                                        : new ChangelogStateBackendHandleImpl(
-                                                singletonList(keyedStateHandle),
-                                                emptyList(),
-                                                keyedStateHandle.getKeyGroupRange()))
+                .map(this::getChangelogStateBackendHandle)
                 .collect(Collectors.toList());
+    }
+
+    private ChangelogStateBackendHandle getChangelogStateBackendHandle(
+            KeyedStateHandle keyedStateHandle) {
+        if (keyedStateHandle instanceof ChangelogStateBackendHandle) {
+            return (ChangelogStateBackendHandle) keyedStateHandle;
+        } else if (keyedStateHandle instanceof SavepointKeyedStateHandle) {
+            return new ChangelogStateBackendHandleImpl(
+                    singletonList(keyedStateHandle),
+                    emptyList(),
+                    keyedStateHandle.getKeyGroupRange(),
+                    getMaterializationID(keyedStateHandle),
+                    0L);
+        } else {
+            throw new IllegalStateException(
+                    String.format(
+                            "Recovery not supported from %s with Changelog enabled. Consider taking a savepoint in %s format.",
+                            keyedStateHandle.getClass(), SavepointFormatType.CANONICAL));
+        }
+    }
+
+    private long getMaterializationID(KeyedStateHandle keyedStateHandle) {
+        if (keyedStateHandle instanceof CheckpointBoundKeyedStateHandle) {
+            return ((CheckpointBoundKeyedStateHandle) keyedStateHandle).getCheckpointId();
+        } else {
+            return 0L;
+        }
     }
 }

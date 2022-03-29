@@ -22,7 +22,6 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.runtime.io.network.NetworkSequenceViewReader;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.netty.NettyMessage.ErrorResponse;
-import org.apache.flink.runtime.io.network.partition.ProducerFailedException;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel.BufferAndAvailability;
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannelID;
@@ -185,7 +184,14 @@ class PartitionRequestQueue extends ChannelInboundHandlerAdapter {
             return;
         }
 
-        obtainReader(receiverId).notifyNewBufferSize(newBufferSize);
+        // It is possible to receive new buffer size before the reader would be created since the
+        // downstream task could calculate buffer size even using the data from one channel but it
+        // sends new buffer size into all upstream even if they don't ready yet. In this case, just
+        // ignore the new buffer size.
+        NetworkSequenceViewReader reader = allReaders.get(receiverId);
+        if (reader != null) {
+            reader.notifyNewBufferSize(newBufferSize);
+        }
     }
 
     NetworkSequenceViewReader obtainReader(InputChannelID receiverId) {
@@ -275,9 +281,7 @@ class PartitionRequestQueue extends ChannelInboundHandlerAdapter {
 
                     Throwable cause = reader.getFailureCause();
                     if (cause != null) {
-                        ErrorResponse msg =
-                                new ErrorResponse(
-                                        new ProducerFailedException(cause), reader.getReceiverId());
+                        ErrorResponse msg = new ErrorResponse(cause, reader.getReceiverId());
 
                         ctx.writeAndFlush(msg);
                     }

@@ -17,10 +17,10 @@
  */
 package org.apache.flink.table.planner.plan.utils
 
-import org.apache.flink.table.api.TableConfig
 import org.apache.flink.table.planner.JBoolean
-import org.apache.flink.table.planner.calcite.{FlinkContext, FlinkPlannerImpl, FlinkTypeFactory}
+import org.apache.flink.table.planner.calcite.{FlinkPlannerImpl, FlinkTypeFactory}
 import org.apache.flink.table.planner.plan.`trait`.{MiniBatchInterval, MiniBatchMode}
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.config.NullCollation
 import org.apache.calcite.plan.RelOptUtil
@@ -63,7 +63,7 @@ object FlinkRelOptUtil {
     */
   def toString(
       rel: RelNode,
-      detailLevel: SqlExplainLevel = SqlExplainLevel.EXPPLAN_ATTRIBUTES,
+      detailLevel: SqlExplainLevel = SqlExplainLevel.DIGEST_ATTRIBUTES,
       withIdPrefix: Boolean = false,
       withChangelogTraits: Boolean = false,
       withRowType: Boolean = false): String = {
@@ -194,14 +194,9 @@ object FlinkRelOptUtil {
     new RelFieldCollation(fieldIndex, direction, nullDirection)
   }
 
-  def getTableConfigFromContext(rel: RelNode): TableConfig = {
-    rel.getCluster.getPlanner.getContext.unwrap(classOf[FlinkContext]).getTableConfig
-  }
-
   /** Get max cnf node limit by context of rel */
   def getMaxCnfNodeCount(rel: RelNode): Int = {
-    val tableConfig = getTableConfigFromContext(rel)
-    tableConfig.getConfiguration.getInteger(FlinkRexUtil.TABLE_OPTIMIZER_CNF_NODES_LIMIT)
+    unwrapTableConfig(rel).get(FlinkRexUtil.TABLE_OPTIMIZER_CNF_NODES_LIMIT)
   }
 
   /**

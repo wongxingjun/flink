@@ -22,7 +22,6 @@ from abc import ABC, abstractmethod
 from typing import List
 
 import cloudpickle
-import pyarrow as pa
 
 from pyflink.common import Row, RowKind
 from pyflink.common.time import Instant
@@ -281,6 +280,8 @@ class ArrowCoderImpl(FieldCoderImpl):
         self._batch_reader = ArrowCoderImpl._load_from_stream(self._resettable_io)
 
     def encode_to_stream(self, cols, out_stream: OutputStream):
+        import pyarrow as pa
+
         self._resettable_io.set_output_stream(out_stream)
         batch_writer = pa.RecordBatchStreamWriter(self._resettable_io, self._schema)
         batch_writer.write_batch(
@@ -289,16 +290,18 @@ class ArrowCoderImpl(FieldCoderImpl):
     def decode_from_stream(self, in_stream: InputStream, length=0):
         return self.decode_one_batch_from_stream(in_stream, length)
 
-    @staticmethod
-    def _load_from_stream(stream):
-        while stream.readable():
-            reader = pa.ipc.open_stream(stream)
-            yield reader.read_next_batch()
-
     def decode_one_batch_from_stream(self, in_stream: InputStream, size: int) -> List:
         self._resettable_io.set_input_bytes(in_stream.read(size))
         # there is only one arrow batch in the underlying input stream
         return arrow_to_pandas(self._timezone, self._field_types, [next(self._batch_reader)])
+
+    @staticmethod
+    def _load_from_stream(stream):
+        import pyarrow as pa
+
+        while stream.readable():
+            reader = pa.ipc.open_stream(stream)
+            yield reader.read_next_batch()
 
     def __repr__(self):
         return 'ArrowCoderImpl[%s]' % self._schema

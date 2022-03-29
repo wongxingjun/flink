@@ -20,7 +20,6 @@ package org.apache.flink.table.planner.expressions.validation
 
 import org.apache.flink.table.api._
 import org.apache.flink.table.expressions.TimePointUnit
-import org.apache.flink.table.planner.codegen.CodeGenException
 import org.apache.flink.table.planner.expressions.utils.ScalarTypesTestBase
 
 import org.apache.calcite.avatica.util.TimeUnit
@@ -31,22 +30,6 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
   // ----------------------------------------------------------------------------------------------
   // Math functions
   // ----------------------------------------------------------------------------------------------
-
-  @Test
-  def testInvalidLog1(): Unit = {
-    testSqlApi(
-      "LOG(1, 100)",
-      "Infinity"
-    )
-  }
-
-  @Test
-  def testInvalidLog2(): Unit ={
-    testSqlApi(
-      "LOG(-1)",
-      "NaN"
-    )
-  }
 
   @Test(expected = classOf[ValidationException])
   def testInvalidBin1(): Unit = {
@@ -94,7 +77,7 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
 
   @Test
   def testInvalidTruncate2(): Unit = {
-    thrown.expect(classOf[CodeGenException])
+    thrown.expect(classOf[ValidationException])
     // The one argument is of type String
     testSqlApi(
       "TRUNCATE('abc')",
@@ -108,13 +91,13 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
   @Test(expected = classOf[ValidationException])
   def testInvalidSubstring1(): Unit = {
     // Must fail. Parameter of substring must be an Integer not a Double.
-    testTableApi("test".substring(2.0.toExpr), "FAIL", "FAIL")
+    testTableApi("test".substring(2.0.toExpr), "FAIL")
   }
 
   @Test(expected = classOf[ValidationException])
   def testInvalidSubstring2(): Unit = {
     // Must fail. Parameter of substring must be an Integer not a String.
-    testTableApi("test".substring("test".toExpr), "FAIL", "FAIL")
+    testTableApi("test".substring("test".toExpr), "FAIL")
   }
 
   // ----------------------------------------------------------------------------------------------
@@ -122,17 +105,17 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
   // ----------------------------------------------------------------------------------------------
 
   @Test(expected = classOf[SqlParserException])
-  def testTimestampAddWithWrongTimestampInterval(): Unit ={
+  def testTimestampAddWithWrongTimestampInterval(): Unit = {
     testSqlApi("TIMESTAMPADD(XXX, 1, timestamp '2016-02-24'))", "2016-06-16")
   }
 
   @Test(expected = classOf[SqlParserException])
-  def testTimestampAddWithWrongTimestampFormat(): Unit ={
+  def testTimestampAddWithWrongTimestampFormat(): Unit = {
     testSqlApi("TIMESTAMPADD(YEAR, 1, timestamp '2016-02-24'))", "2016-06-16")
   }
 
   @Test(expected = classOf[ValidationException])
-  def testTimestampAddWithWrongQuantity(): Unit ={
+  def testTimestampAddWithWrongQuantity(): Unit = {
     testSqlApi("TIMESTAMPADD(YEAR, 1.0, timestamp '2016-02-24 12:42:25')", "2016-06-16")
   }
 
@@ -142,46 +125,23 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
 
   @Test(expected = classOf[ValidationException])
   def testInValidationExceptionMoreThanOneTypes(): Unit = {
-    testTableApi(
-      'f2.in('f3, 'f8),
-      "f2.in(f3, f8)",
-      "true"
-    )
-    testTableApi(
-      'f2.in('f3, 'f4, 4),
-      "f2.in(f3, f4, 4)",
-      "false"  // OK if all numeric
-    )
+    testTableApi('f2.in('f3, 'f8), "TRUE")
+    testTableApi('f2.in('f3, 'f4, 4), "FALSE")
   }
 
   @Test(expected = classOf[ValidationException])
   def scalaInValidationExceptionDifferentOperandsTest(): Unit = {
-    testTableApi(
-      'f1.in("Hi", "Hello world", "Comment#1"),
-      "true",
-      "true"
-    )
-  }
-
-  @Test(expected = classOf[ValidationException])
-  def javaInValidationExceptionDifferentOperandsTest(): Unit = {
-    testTableApi(
-      true,
-      "f1.in('Hi','Hello world','Comment#1')",
-      "true"
-    )
+    testTableApi('f1.in("Hi", "Hello world", "Comment#1"), "TRUE")
   }
 
   @Test(expected = classOf[ValidationException])
   def testTimestampDiffWithWrongTime(): Unit = {
-    testTableApi(
-      timestampDiff(TimePointUnit.DAY, "2016-02-24", "2016-02-27"), "FAIL", "FAIL")
+    testTableApi(timestampDiff(TimePointUnit.DAY, "2016-02-24", "2016-02-27"), "FAIL")
   }
 
   @Test(expected = classOf[ValidationException])
   def testTimestampDiffWithWrongTimeAndUnit(): Unit = {
-    testTableApi(
-      timestampDiff(TimePointUnit.MINUTE, "2016-02-24", "2016-02-27"), "FAIL", "FAIL")
+    testTableApi(timestampDiff(TimePointUnit.MINUTE, "2016-02-24", "2016-02-27"), "FAIL")
   }
 
   @Test
@@ -194,6 +154,18 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
   def testDOYWithTimeWhichIsUnsupported(): Unit = {
     thrown.expect(classOf[ValidationException])
     testSqlApi("EXTRACT(DOY FROM TIME '12:42:25')", "0")
+  }
+
+  @Test
+  def testISODOWWithTimeWhichIsUnsupported(): Unit = {
+    thrown.expect(classOf[ValidationException])
+    testSqlApi("EXTRACT(ISODOW FROM TIME '12:42:25')", "0")
+  }
+
+  @Test
+  def testISOYEARWithTimeWhichIsUnsupported(): Unit = {
+    thrown.expect(classOf[ValidationException])
+    testSqlApi("EXTRACT(ISOYEAR FROM TIME '12:42:25')", "0")
   }
 
   private def testExtractFromTimeZeroResult(unit: TimeUnit): Unit = {
@@ -211,6 +183,12 @@ class ScalarFunctionsValidationTest extends ScalarTypesTestBase {
   def testCenturyWithTime(): Unit = {
     thrown.expect(classOf[ValidationException])
     testExtractFromTimeZeroResult(TimeUnit.CENTURY)
+  }
+
+  @Test
+  def testDecadeWithTime(): Unit = {
+    thrown.expect(classOf[ValidationException])
+    testExtractFromTimeZeroResult(TimeUnit.DECADE)
   }
 
   @Test

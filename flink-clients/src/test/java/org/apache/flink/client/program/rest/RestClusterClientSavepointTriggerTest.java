@@ -24,6 +24,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.UnmodifiableConfiguration;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.rest.RestClient;
 import org.apache.flink.runtime.rest.RestServerEndpoint;
@@ -70,11 +71,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 
@@ -87,7 +88,7 @@ import static org.junit.Assert.assertTrue;
 public class RestClusterClientSavepointTriggerTest extends TestLogger {
 
     private static final DispatcherGateway mockRestfulGateway =
-            new TestingDispatcherGateway.Builder().build();
+            TestingDispatcherGateway.newBuilder().build();
 
     private static final GatewayRetriever<DispatcherGateway> mockGatewayRetriever =
             () -> CompletableFuture.completedFuture(mockRestfulGateway);
@@ -129,7 +130,7 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
         try (final RestServerEndpoint restServerEndpoint =
                 createRestServerEndpoint(
                         request -> {
-                            assertNull(request.getTargetDirectory());
+                            assertThat(request.getTargetDirectory().isPresent(), is(false));
                             assertFalse(request.isCancelJob());
                             return triggerId;
                         },
@@ -142,7 +143,9 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
                     createRestClusterClient(restServerEndpoint.getServerAddress().getPort());
 
             final String savepointPath =
-                    restClusterClient.triggerSavepoint(new JobID(), null).get();
+                    restClusterClient
+                            .triggerSavepoint(new JobID(), null, SavepointFormatType.CANONICAL)
+                            .get();
             assertEquals(expectedReturnedSavepointDir, savepointPath);
         }
     }
@@ -158,7 +161,7 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
                         triggerRequestBody -> {
                             assertEquals(
                                     expectedSubmittedSavepointDir,
-                                    triggerRequestBody.getTargetDirectory());
+                                    triggerRequestBody.getTargetDirectory().get());
                             assertFalse(triggerRequestBody.isCancelJob());
                             return triggerId;
                         },
@@ -172,7 +175,10 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
 
             final String savepointPath =
                     restClusterClient
-                            .triggerSavepoint(new JobID(), expectedSubmittedSavepointDir)
+                            .triggerSavepoint(
+                                    new JobID(),
+                                    expectedSubmittedSavepointDir,
+                                    SavepointFormatType.CANONICAL)
                             .get();
             assertEquals(expectedReturnedSavepointDir, savepointPath);
         }
@@ -198,7 +204,9 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
                     createRestClusterClient(restServerEndpoint.getServerAddress().getPort());
 
             final String savepointPath =
-                    restClusterClient.cancelWithSavepoint(new JobID(), null).get();
+                    restClusterClient
+                            .cancelWithSavepoint(new JobID(), null, SavepointFormatType.CANONICAL)
+                            .get();
             assertEquals(expectedSavepointDir, savepointPath);
         }
     }
@@ -220,7 +228,9 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
                     createRestClusterClient(restServerEndpoint.getServerAddress().getPort());
 
             try {
-                restClusterClient.triggerSavepoint(new JobID(), null).get();
+                restClusterClient
+                        .triggerSavepoint(new JobID(), null, SavepointFormatType.CANONICAL)
+                        .get();
             } catch (ExecutionException e) {
                 final Throwable cause = e.getCause();
                 assertThat(cause, instanceOf(SerializedThrowable.class));
@@ -255,7 +265,9 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
                     createRestClusterClient(restServerEndpoint.getServerAddress().getPort());
 
             final String savepointPath =
-                    restClusterClient.triggerSavepoint(new JobID(), null).get();
+                    restClusterClient
+                            .triggerSavepoint(new JobID(), null, SavepointFormatType.CANONICAL)
+                            .get();
             assertEquals(expectedSavepointDir, savepointPath);
         }
     }
@@ -293,11 +305,7 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
 
         @Override
         protected CompletableFuture<TriggerResponse> handleRequest(
-                @Nonnull
-                        HandlerRequest<
-                                        SavepointTriggerRequestBody,
-                                        SavepointTriggerMessageParameters>
-                                request,
+                @Nonnull HandlerRequest<SavepointTriggerRequestBody> request,
                 @Nonnull DispatcherGateway gateway)
                 throws RestHandlerException {
 
@@ -324,7 +332,7 @@ public class RestClusterClientSavepointTriggerTest extends TestLogger {
 
         @Override
         protected CompletableFuture<AsynchronousOperationResult<SavepointInfo>> handleRequest(
-                @Nonnull HandlerRequest<EmptyRequestBody, SavepointStatusMessageParameters> request,
+                @Nonnull HandlerRequest<EmptyRequestBody> request,
                 @Nonnull DispatcherGateway gateway)
                 throws RestHandlerException {
 

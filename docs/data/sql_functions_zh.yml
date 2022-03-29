@@ -127,7 +127,7 @@ logical:
       如果 boolean1 和 boolean2 都为 `TRUE` 返回 `TRUE`。支持三值逻辑。
       例如 `true && Null(BOOLEAN)` 返回 `UNKNOWN`。
   - sql: NOT boolean
-    table: '!BOOLEAN'
+    table: BOOLEAN.not(), not(BOOLEAN), or '!BOOLEAN' (Scala only)
     description: |
       如果布尔值为 `FALSE` 返回 `TRUE`；如果布尔值为 `TRUE` 返回 `FALSE`；如果布尔值为 `UNKNOWN`
       返回 `UNKNOWN`。
@@ -271,11 +271,11 @@ arithmetic:
       如果两个 RAND 函数具有相同的初始种子，它们将返回相同的数字序列。
   - sql: RAND_INTEGER(INT)
     table: randInteger(INT)
-    description: 返回 [0.0, INT) 范围内的伪随机双精度值。
+    description: 返回 [0, INT) 范围内的伪随机整数。
   - sql: RAND_INTEGER(INT1, INT2)
     table: randInteger(INT1, INT2)
     description: |
-      返回范围为 [0.0, INT2) 的伪随机双精度值，初始种子为 INT1。
+      返回范围为 [0, INT2) 的伪随机整数，初始种子为 INT1。
       如果两个 RAND_INTGER 函数具有相同的初始种子和边界，它们将返回相同的数字序列。
   - sql: UUID()
     table: uuid()
@@ -457,9 +457,10 @@ string:
     description: |
       通过分隔符 string2 拆分 string1，返回拆分字符串的第 integer（从零开始）个字符串。如果整数为负，则返回 `NULL`。
       如果有任一参数为 `NULL`，则返回 `NULL`。
-  - sql: STR_TO_MAP(string1[, string2, string3]])
+  - sql: STR_TO_MAP(string1[, string2, string3])
     description: |
       使用分隔符将 string1 拆分为键值对后返回一个 map。string2 是 pair 分隔符，默认为 ','。string3 是键值分隔符，默认为 '='。
+      pair 分隔符与键值分隔符均为正则表达式，当使用特殊字符作为分隔符时请提前进行转义，例如 `<([{\^-=$!|]})?*+.>`。
   - sql: SUBSTR(string[, integer1[, integer2]])
     description: 返回字符串的子字符串，从位置 integer1 开始，长度为 integer2（默认到末尾）。
 
@@ -479,8 +480,7 @@ temporal:
       是 DAY，MINUTE，DAY TO HOUR 或 DAY TO SECOND，以毫秒为间隔；YEAR 或 YEAR TO MONTH 表示几个月的间隔。例
       如 `INTERVAL '10 00:00:00.004' DAY TO SECOND，INTERVAL '10' DAY` 或 `INTERVAL '2-10' YEAR TO
       MONTH` 返回间隔。
-  - sql: YEAR(date)
-    table: numeric.year | numeric.years
+  - table: numeric.year | numeric.years
     description: 创建 numeric 年的月间隔。
   - table: numeric.quarter | numeric.quarters
     description: 为 numeric 季度创建月间隔。例如 `2.quarters` 返回 `6`。
@@ -704,28 +704,252 @@ collection:
     description: 返回 map 中指定 key 对应的值。
 
 json:
+  - sql: IS JSON [ { VALUE | SCALAR | ARRAY | OBJECT } ]
+    table: STRING.isJson([JsonType type])
+    description: |
+      判定给定字符串是否为有效的 JSON。
+
+      指定可选类型参数将会限制 JSON 对象所允许的类型。
+      如果字符串是有效的 JSON，但不是指定的类型，则返回 `false`。默认值为 `VALUE`。
+
+      ```
+      -- TRUE
+      '1' IS JSON
+      '[]' IS JSON
+      '{}' IS JSON
+
+      -- TRUE
+      '"abc"' IS JSON
+      -- FALSE
+      'abc' IS JSON
+      NULL IS JSON
+
+      -- TRUE
+      '1' IS JSON SCALAR
+      -- FALSE
+      '1' IS JSON ARRAY
+      -- FALSE
+      '1' IS JSON OBJECT
+
+      -- FALSE
+      '{}' IS JSON SCALAR
+      -- FALSE
+      '{}' IS JSON ARRAY
+      -- TRUE
+      '{}' IS JSON OBJECT
+      ```
   - sql: JSON_EXISTS(jsonValue, path [ { TRUE | FALSE | UNKNOWN | ERROR } ON ERROR ])
     table: STRING.jsonExists(STRING path [, JsonExistsOnError onError])
     description: |
-      Determines whether a JSON string satisfies a given path search criterion.
+      判定 JSON 字符串是否满足给定的路径搜索条件。
 
-      If the error behavior is omitted, `FALSE ON ERROR` is assumed as the default.
+      如果要忽略错误行为，那么将 `FALSE ON ERROR` 设为默认值。
 
       ```
-      // TRUE
+      -- TRUE
       SELECT JSON_EXISTS('{"a": true}', '$.a');
-      // FALSE
+      -- FALSE
       SELECT JSON_EXISTS('{"a": true}', '$.b');
-      // TRUE
+      -- TRUE
       SELECT JSON_EXISTS('{"a": [{ "b": 1 }]}',
         '$.a[0].b');
 
-      // TRUE
+      -- TRUE
       SELECT JSON_EXISTS('{"a": true}',
         'strict $.b' TRUE ON ERROR);
-      // FALSE
+      -- FALSE
       SELECT JSON_EXISTS('{"a": true}',
         'strict $.b' FALSE ON ERROR);
+      ```
+  - sql: JSON_STRING(value)
+    table: jsonString(value)
+    description: |
+      将值序列化为 JSON。
+
+      此函数返回一个包含序列化值的 JSON 字符串。如果值为 `NULL`，函数返回 `NULL`。
+
+      ```
+      -- NULL
+      JSON_STRING(CAST(NULL AS INT))
+
+      -- '1'
+      JSON_STRING(1)
+      -- 'true'
+      JSON_STRING(TRUE)
+      -- '"Hello, World!"'
+      JSON_STRING('Hello, World!')
+      -- '[1,2]'
+      JSON_STRING(ARRAY[1, 2])
+      ```
+  - sql: JSON_VALUE(jsonValue, path [RETURNING <dataType>] [ { NULL | ERROR | DEFAULT <defaultExpr> } ON EMPTY ] [ { NULL | ERROR | DEFAULT <defaultExpr> } ON ERROR ])
+    table: STRING.jsonValue(STRING path [, returnType, onEmpty, defaultOnEmpty, onError, defaultOnError])
+    description: |
+      从 JSON 字符串中提取标量。
+
+      此方法搜索给定路径表达式的 JSON 字符串，如果该路径上的值是标量则返回该值。不能返回非标量值。默认情况下返回值类型为 `STRING`。
+      可以使用 `returnsType` 设置不同的类型，如下所示:
+
+      * `VARCHAR` / `STRING`
+      * `BOOLEAN`
+      * `INTEGER`
+      * `DOUBLE`
+
+      对于空路径表达式或错误，可以将行为定义为返回 `null`、引发错误或返回定义的默认值。当省略时，默认为 `NULL ON EMPTY` 或
+      `NULL ON ERROR`。默认值可以是文字或表达式。如果默认值本身引发错误，通过错误就会造成 `ON EMPTY` 的行为，并引发 `ON ERROR` 的错误。
+
+      ```
+      -- "true"
+      JSON_VALUE('{"a": true}', '$.a')
+
+      -- TRUE
+      JSON_VALUE('{"a": true}', '$.a' RETURNING BOOLEAN)
+
+      -- "false"
+      JSON_VALUE('{"a": true}', 'lax $.b'
+          DEFAULT FALSE ON EMPTY)
+
+      -- "false"
+      JSON_VALUE('{"a": true}', 'strict $.b'
+          DEFAULT FALSE ON ERROR)
+
+      -- 0.998D
+      JSON_VALUE('{"a.b": [0.998,0.996]}','$.["a.b"][0]'
+          RETURNING DOUBLE)
+      ```
+  - sql: JSON_QUERY(jsonValue, path [ { WITHOUT | WITH CONDITIONAL | WITH UNCONDITIONAL } [ ARRAY ] WRAPPER ] [ { NULL | EMPTY ARRAY | EMPTY OBJECT | ERROR } ON EMPTY ] [ { NULL | EMPTY ARRAY | EMPTY OBJECT | ERROR } ON ERROR ])
+    table: STRING.jsonQuery(path [, JsonQueryWrapper [, JsonQueryOnEmptyOrError, JsonQueryOnEmptyOrError ] ])
+    description: |
+      从 JSON 字符串中提取 JSON 值。
+
+      结果总是以 `STRING` 的形式返回。目前尚不支持 `RETURNING` 子句。
+
+      `wrappingBehavior` 决定是否将提取的值包装到一个数组中，以及是否无条件地这样做，还是只有当值本身不是数组时才这样做。
+
+      `onEmpty` 和 `onError` 分别决定路径表达式为空或引发错误时的行为。默认情况下，这两种情况都会返回 `null`。其他选择是
+      使用空数组、空对象或引发错误。
+
+      ```
+      -- '{ "b": 1 }'
+      JSON_QUERY('{ "a": { "b": 1 } }', '$.a')
+      -- '[1, 2]'
+      JSON_QUERY('[1, 2]', '$')
+      -- NULL
+      JSON_QUERY(CAST(NULL AS STRING), '$')
+      -- '["c1","c2"]'
+      JSON_QUERY('{"a":[{"c":"c1"},{"c":"c2"}]}',
+          'lax $.a[*].c')
+
+      -- 将结果包装到数组中
+      -- '[{}]'
+      JSON_QUERY('{}', '$' WITH CONDITIONAL ARRAY WRAPPER)
+      -- '[1, 2]'
+      JSON_QUERY('[1, 2]', '$' WITH CONDITIONAL ARRAY WRAPPER)
+      -- '[[1, 2]]'
+      JSON_QUERY('[1, 2]', '$' WITH UNCONDITIONAL ARRAY WRAPPER)
+
+      -- 必须包装标量才能返回
+      -- NULL
+      JSON_QUERY(1, '$')
+      -- '[1]'
+      JSON_QUERY(1, '$' WITH CONDITIONAL ARRAY WRAPPER)
+
+      -- 路径表达式为空/存在错误时的行为
+      -- '{}'
+      JSON_QUERY('{}', 'lax $.invalid' EMPTY OBJECT ON EMPTY)
+      -- '[]'
+      JSON_QUERY('{}', 'strict $.invalid' EMPTY ARRAY ON ERROR)
+      ```
+  - sql: JSON_OBJECT([[KEY] key VALUE value]* [ { NULL | ABSENT } ON NULL ])
+    table: jsonObject(JsonOnNull, keyValues...)
+    description: |
+      将键值对列表构建为 JSON 对象字符串。
+
+      注意，键必须是非 `NULL` 字符串自变量，而值可以是任意表达式。
+
+      这个函数返回一个 JSON 字符串。`ON NULL` 行为定义了如何处理 `NULL` 值。如果省略，则默认为 `NULL ON NULL`。
+
+      值是由另一个 JSON 构造函数调用 (`JSON_OBJECT`，`JSON_ARRAY`) 直接插入所创建，而不是作为一个字符串。它允许构建嵌套的 JSON 结构。
+
+      ```
+      -- '{}'
+      JSON_OBJECT()
+
+      -- '{"K1":"V1","K2":"V2"}'
+      JSON_OBJECT('K1' VALUE 'V1', 'K2' VALUE 'V2')
+
+      -- 表达式作为值
+      JSON_OBJECT('orderNo' VALUE orders.orderId)
+
+      -- ON NULL
+      JSON_OBJECT(KEY 'K1' VALUE CAST(NULL AS STRING) NULL ON NULL)   -- '{"K1":null}'
+      JSON_OBJECT(KEY 'K1' VALUE CAST(NULL AS STRING) ABSENT ON NULL) -- '{}'
+
+      -- '{"K1":{"K2":"V"}}'
+      JSON_OBJECT(
+        KEY 'K1'
+        VALUE JSON_OBJECT(
+          KEY 'K2'
+          VALUE 'V'
+        )
+      )
+      ```
+  - sql: JSON_OBJECTAGG([KEY] key VALUE value [ { NULL | ABSENT } ON NULL ])
+    table: jsonObjectAgg(JsonOnNull, keyExpression, valueExpression)
+    description: |
+      通过将 key-value 聚合到单个 JSON 对象中，构建 JSON 对象字符串。
+
+      键表达式必须返回不为空的字符串。值表达式可以是任意的，包括其他 JSON 函数。
+      如果值为 `NULL`，则 `ON NULL` 行为定义了要执行的操作。如果省略，默认情况下假定为 `NULL ON NULL`。
+
+      请注意，键必须是唯一的。如果一个键出现多次，将抛出一个错误。
+
+      目前在 `OVER` windows 中不支持此函数。
+
+      ```
+      -- '{"Apple":2,"Banana":17,"Orange":0}'
+      SELECT
+        JSON_OBJECTAGG(KEY product VALUE cnt)
+      FROM orders
+      ```
+  - sql: JSON_ARRAY([value]* [ { NULL | ABSENT } ON NULL ])
+    table: jsonArray(JsonOnNull, values...)
+    description: |
+      将数值列表构建为 JSON 数组字符串。
+
+      这个函数返回一个 JSON 字符串，值可以是任意表达式。`ON NULL` 行为定义了如何处理 `NULL` 值。如果省略，则假定 `ABSENT ON NULL` 为默认值。
+
+      元素是由另一个 JSON 构造函数调用 (`JSON_OBJECT`，`JSON_ARRAY`) 直接插入所创建，而不是作为一个字符串。它允许构建嵌套的 JSON 结构。
+
+      ```
+      -- '[]'
+      JSON_ARRAY()
+      -- '[1,"2"]'
+      JSON_ARRAY(1, '2')
+
+      -- 表达式作为值
+      JSON_ARRAY(orders.orderId)
+
+      -- ON NULL
+      JSON_ARRAY(CAST(NULL AS STRING) NULL ON NULL) -- '[null]'
+      JSON_ARRAY(CAST(NULL AS STRING) ABSENT ON NULL) -- '[]'
+
+      -- '[[1]]'
+      JSON_ARRAY(JSON_ARRAY(1))
+      ```
+  - sql: JSON_ARRAYAGG(items [ { NULL | ABSENT } ON NULL ])
+    table: jsonArrayAgg(JsonOnNull, itemExpression)
+    description: |
+      通过将字段聚合到数组中构建 JSON 对象字符串。
+
+      项目表达式可以是任意的，包括其他 JSON 函数。如果值为 `NULL`，则 `ON NULL` 行为定义了要执行的操作。如果省略，默认情况下假定为 `ABSENT ON NULL`。
+
+      此函数目前不支持 `OVER` windows、未绑定的 session windows 或 hop windows。
+
+      ```
+      -- '["Apple","Banana","Orange"]'
+      SELECT
+        JSON_ARRAYAGG(product)
+      FROM orders
       ```
 
 valueconstruction:
@@ -767,7 +991,7 @@ hashfunctions:
     description: 以 32 个十六进制数字的字符串形式返回 string 的 MD5 哈希值；如果字符串为 `NULL`，则返回 `NULL`。
   - sql: SHA1(string)
     table: STRING.sha1()
-    description: 以 56 个十六进制数字的字符串形式返回 string 的 SHA-224 哈希值；如果字符串为 `NULL`，则返回 `NULL`。
+    description: 以 40 个十六进制数字的字符串形式返回 string 的 SHA-1 哈希值；如果字符串为 `NULL`，则返回 `NULL`。
   - sql: SHA224(string)
     table: STRING.sha224()
     description: 以 56 个十六进制数字的字符串形式返回 string 的 SHA-224 哈希值；如果字符串为 `NULL`，则返回 `NULL`。

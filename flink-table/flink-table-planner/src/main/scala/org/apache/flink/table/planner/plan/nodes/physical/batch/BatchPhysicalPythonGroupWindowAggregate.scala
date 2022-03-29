@@ -20,11 +20,12 @@ package org.apache.flink.table.planner.plan.nodes.physical.batch
 
 import org.apache.flink.table.functions.UserDefinedFunction
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
-import org.apache.flink.table.planner.expressions.PlannerNamedWindowProperty
 import org.apache.flink.table.planner.plan.cost.{FlinkCost, FlinkCostFactory}
 import org.apache.flink.table.planner.plan.logical.LogicalWindow
 import org.apache.flink.table.planner.plan.nodes.exec.batch.BatchExecPythonGroupWindowAggregate
 import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
+import org.apache.flink.table.runtime.groupwindow.NamedWindowProperty
 
 import org.apache.calcite.plan.{RelOptCluster, RelOptCost, RelOptPlanner, RelTraitSet}
 import org.apache.calcite.rel.RelNode
@@ -50,7 +51,7 @@ class BatchPhysicalPythonGroupWindowAggregate(
     window: LogicalWindow,
     inputTimeFieldIndex: Int,
     inputTimeIsDate: Boolean,
-    namedWindowProperties: Seq[PlannerNamedWindowProperty])
+    namedWindowProperties: Seq[NamedWindowProperty])
   extends BatchPhysicalWindowAggregateBase(
     cluster,
     traitSet,
@@ -98,16 +99,21 @@ class BatchPhysicalPythonGroupWindowAggregate(
   }
 
   override def translateToExecNode(): ExecNode[_] = {
+    val requiredDistribution = if (grouping.length == 0) {
+      InputProperty.SINGLETON_DISTRIBUTION
+    } else {
+      InputProperty.hashDistribution(grouping)
+    }
     new BatchExecPythonGroupWindowAggregate(
+      unwrapTableConfig(this),
       grouping,
       grouping ++ auxGrouping,
       aggCalls.toArray,
       window,
       inputTimeFieldIndex,
       namedWindowProperties.toArray,
-      InputProperty.DEFAULT,
+      InputProperty.builder().requiredDistribution(requiredDistribution).build(),
       FlinkTypeFactory.toLogicalRowType(getRowType),
-      getRelDetailedDescription
-    )
+      getRelDetailedDescription)
   }
 }

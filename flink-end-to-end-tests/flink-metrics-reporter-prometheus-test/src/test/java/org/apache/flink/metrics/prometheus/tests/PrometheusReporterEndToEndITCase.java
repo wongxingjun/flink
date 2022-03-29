@@ -20,12 +20,12 @@ package org.apache.flink.metrics.prometheus.tests;
 
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.metrics.prometheus.PrometheusReporter;
 import org.apache.flink.metrics.prometheus.PrometheusReporterFactory;
 import org.apache.flink.tests.util.AutoClosableProcess;
 import org.apache.flink.tests.util.CommandLineWrapper;
 import org.apache.flink.tests.util.cache.DownloadCache;
-import org.apache.flink.tests.util.categories.TravisGroup1;
 import org.apache.flink.tests.util.flink.ClusterController;
 import org.apache.flink.tests.util.flink.FlinkResource;
 import org.apache.flink.tests.util.flink.FlinkResourceSetup;
@@ -45,7 +45,6 @@ import org.junit.Assume;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.experimental.categories.Category;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -67,7 +66,6 @@ import static org.apache.flink.tests.util.AutoClosableProcess.runBlocking;
 import static org.apache.flink.tests.util.AutoClosableProcess.runNonBlocking;
 
 /** End-to-end test for the PrometheusReporter. */
-@Category(TravisGroup1.class)
 @RunWith(Parameterized.class)
 public class PrometheusReporterEndToEndITCase extends TestLogger {
 
@@ -182,14 +180,14 @@ public class PrometheusReporterEndToEndITCase extends TestLogger {
                 config.setString(
                         ConfigConstants.METRICS_REPORTER_PREFIX
                                 + "prom."
-                                + ConfigConstants.METRICS_REPORTER_FACTORY_CLASS_SUFFIX,
+                                + MetricOptions.REPORTER_FACTORY_CLASS.key(),
                         PrometheusReporterFactory.class.getName());
                 break;
             case REFLECTION:
                 config.setString(
                         ConfigConstants.METRICS_REPORTER_PREFIX
                                 + "prom."
-                                + ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX,
+                                + MetricOptions.REPORTER_CLASS.key(),
                         PrometheusReporter.class.getCanonicalName());
         }
 

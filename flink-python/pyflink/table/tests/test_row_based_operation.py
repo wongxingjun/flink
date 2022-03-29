@@ -158,7 +158,7 @@ class BatchRowBasedOperationITTests(RowBasedOperationTests, PyFlinkBatchTableTes
         t.select(t.a, t.b) \
             .group_by(t.a) \
             .aggregate(pandas_udaf) \
-            .select("*") \
+            .select(expr.col("*")) \
             .execute_insert("Results") \
             .wait()
         actual = source_sink_utils.results()
@@ -183,7 +183,7 @@ class BatchRowBasedOperationITTests(RowBasedOperationTests, PyFlinkBatchTableTes
                            func_type="pandas")
         t.select(t.b) \
             .aggregate(pandas_udaf.alias("a", "b")) \
-            .select("a, b") \
+            .select(t.a, t.b) \
             .execute_insert("Results") \
             .wait()
         actual = source_sink_utils.results()
@@ -225,9 +225,9 @@ class BatchRowBasedOperationITTests(RowBasedOperationTests, PyFlinkBatchTableTes
             .alias("w")
         t.select(t.b, t.rowtime) \
             .window(tumble_window) \
-            .group_by("w") \
+            .group_by(expr.col("w")) \
             .aggregate(pandas_udaf.alias("d", "e")) \
-            .select("w.rowtime, d, e") \
+            .select(expr.col("w").rowtime, expr.col("d"), expr.col("e")) \
             .execute_insert("Results") \
             .wait()
 
@@ -254,7 +254,7 @@ class StreamRowBasedOperationITTests(RowBasedOperationTests, PyFlinkStreamTableT
                    name=str(function.__class__.__name__))
         result = t.group_by(t.a) \
             .aggregate(agg.alias("c", "d")) \
-            .select("a, c, d") \
+            .select(t.a, t.c, expr.col("d")) \
             .to_pandas()
         assert_frame_equal(result.sort_values('a').reset_index(drop=True),
                            pd.DataFrame([[1, 3, 15], [2, 2, 4]], columns=['a', 'c', 'd']))
@@ -272,7 +272,7 @@ class StreamRowBasedOperationITTests(RowBasedOperationTests, PyFlinkStreamTableT
             .flat_aggregate(mytop.alias('a')) \
             .select(t.a) \
             .flat_aggregate(mytop.alias("b")) \
-            .select("b") \
+            .select(t.b) \
             .to_pandas()
 
         assert_frame_equal(result, pd.DataFrame([[7], [5]], columns=['b']))
@@ -280,10 +280,10 @@ class StreamRowBasedOperationITTests(RowBasedOperationTests, PyFlinkStreamTableT
     def test_flat_aggregate_list_view(self):
         import pandas as pd
         my_concat = udtaf(ListViewConcatTableAggregateFunction())
-        self.t_env.get_config().get_configuration().set_string(
+        self.t_env.get_config().set(
             "python.fn-execution.bundle.size", "2")
         # trigger the cache eviction in a bundle.
-        self.t_env.get_config().get_configuration().set_string(
+        self.t_env.get_config().set(
             "python.state.cache-size", "2")
         t = self.t_env.from_elements([(1, 'Hi', 'Hello'),
                                       (3, 'Hi', 'hi'),
@@ -298,7 +298,7 @@ class StreamRowBasedOperationITTests(RowBasedOperationTests, PyFlinkStreamTableT
         result = t.group_by(t.c) \
             .flat_aggregate(my_concat(t.b, ',').alias("b")) \
             .select(t.b, t.c) \
-            .alias("a, c")
+            .alias("a", "c")
         assert_frame_equal(result.to_pandas().sort_values('c').reset_index(drop=True),
                            pd.DataFrame([["Hi,Hi,Hi2,Hi2,Hi3", "Hello"],
                                          ["Hi,Hi,Hi2,Hi2,Hi3", "Hello"],
@@ -344,27 +344,22 @@ class CountAndSumAggregateFunction(AggregateFunction):
 class Top2(TableAggregateFunction):
 
     def emit_value(self, accumulator):
-        yield accumulator[0]
-        yield accumulator[1]
+        accumulator.sort()
+        accumulator.reverse()
+        size = len(accumulator)
+        if size > 1:
+            yield accumulator[0]
+        if size > 2:
+            yield accumulator[1]
 
     def create_accumulator(self):
-        return [None, None]
+        return []
 
     def accumulate(self, accumulator, row: Row):
-        if row.a is not None:
-            if accumulator[0] is None or row.a > accumulator[0]:
-                accumulator[1] = accumulator[0]
-                accumulator[0] = row.a
-            elif accumulator[1] is None or row.a > accumulator[1]:
-                accumulator[1] = row.a
+        accumulator.append(row.a)
 
-    def retract(self, accumulator, *args):
-        accumulator[0] = accumulator[0] - 1
-
-    def merge(self, accumulator, accumulators):
-        for other_acc in accumulators:
-            self.accumulate(accumulator, other_acc[0])
-            self.accumulate(accumulator, other_acc[1])
+    def retract(self, accumulator, row: Row):
+        accumulator.remove(row.a)
 
     def get_accumulator_type(self):
         return DataTypes.ARRAY(DataTypes.BIGINT())

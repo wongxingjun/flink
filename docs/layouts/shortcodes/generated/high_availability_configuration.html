@@ -33,6 +33,12 @@
             <td>File system path (URI) where Flink persists metadata in high-availability setups.</td>
         </tr>
         <tr>
+            <td><h5>high-availability.use-old-ha-services</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Use this option to disable the new HA service implementations for ZooKeeper and K8s. This is a safety hatch in case that the new ha services are buggy.</td>
+        </tr>
+        <tr>
             <td><h5>high-availability.zookeeper.client.acl</h5></td>
             <td style="word-wrap: break-word;">"open"</td>
             <td>String</td>
@@ -61,6 +67,12 @@
             <td style="word-wrap: break-word;">60000</td>
             <td>Integer</td>
             <td>Defines the session timeout for the ZooKeeper session in ms.</td>
+        </tr>
+        <tr>
+            <td><h5>high-availability.zookeeper.client.tolerate-suspended-connections</h5></td>
+            <td style="word-wrap: break-word;">false</td>
+            <td>Boolean</td>
+            <td>Defines whether a suspended ZooKeeper connection will be treated as an error that causes the leader information to be invalidated or not. In case you set this option to <code class="highlighter-rouge">true</code>, Flink will wait until a ZooKeeper connection is marked as lost before it revokes the leadership of components. This has the effect that Flink is more resilient against temporary connection instabilities at the cost of running more likely into timing issues with ZooKeeper.</td>
         </tr>
         <tr>
             <td><h5>high-availability.zookeeper.path.jobgraphs</h5></td>

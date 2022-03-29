@@ -308,8 +308,6 @@ class TableSourceITCase extends BatchTestBase {
 
   @Test
   def testTableHint(): Unit = {
-    tEnv.getConfig.getConfiguration.setBoolean(
-      TableConfigOptions.TABLE_DYNAMIC_TABLE_OPTIONS_ENABLED, true)
     val resultPath = TEMPORARY_FOLDER.newFolder().getAbsolutePath
     tEnv.executeSql(
       s"""
@@ -344,10 +342,9 @@ class TableSourceITCase extends BatchTestBase {
 
   @Test
   def testTableHintWithLogicalTableScanReuse(): Unit = {
-    tEnv.getConfig.getConfiguration.setBoolean(
-      TableConfigOptions.TABLE_DYNAMIC_TABLE_OPTIONS_ENABLED, true)
-    tEnv.getConfig.getConfiguration.setBoolean(
-      RelNodeBlockPlanBuilder.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED, true)
+    tEnv.getConfig.set(
+      RelNodeBlockPlanBuilder.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED,
+      Boolean.box(true))
     val resultPath = TEMPORARY_FOLDER.newFolder().getAbsolutePath
     tEnv.executeSql(
       s"""

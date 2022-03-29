@@ -104,7 +104,6 @@ public class ArchivedExecutionGraphTest extends TestLogger {
                         CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
                         true,
                         false,
-                        false,
                         0,
                         0);
         JobCheckpointingSettings checkpointingSettings =
@@ -153,7 +152,7 @@ public class ArchivedExecutionGraphTest extends TestLogger {
     @Test
     public void testCreateFromInitializingJobForSuspendedJob() {
         final ArchivedExecutionGraph suspendedExecutionGraph =
-                ArchivedExecutionGraph.createFromInitializingJob(
+                ArchivedExecutionGraph.createSparseArchivedExecutionGraph(
                         new JobID(),
                         "TestJob",
                         JobStatus.SUSPENDED,
@@ -171,7 +170,7 @@ public class ArchivedExecutionGraphTest extends TestLogger {
                 CheckpointCoordinatorConfiguration.builder().build();
 
         final ArchivedExecutionGraph archivedGraph =
-                ArchivedExecutionGraph.createFromInitializingJob(
+                ArchivedExecutionGraph.createSparseArchivedExecutionGraph(
                         new JobID(),
                         "TestJob",
                         JobStatus.INITIALIZING,

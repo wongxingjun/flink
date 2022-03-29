@@ -24,17 +24,20 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.abilities.SupportsPartitioning;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.apache.flink.table.factories.utils.FactoryMocks.createTableSink;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link PrintTableSinkFactory}. */
-public class PrintSinkFactoryTest {
+class PrintSinkFactoryTest {
 
     private static final ResolvedSchema SCHEMA =
             ResolvedSchema.of(
@@ -43,13 +46,16 @@ public class PrintSinkFactoryTest {
                     Column.physical("f2", DataTypes.BIGINT()));
 
     @Test
-    public void testPrint() {
+    void testPrint() {
         Map<String, String> properties = new HashMap<>();
         properties.put("connector", "print");
         properties.put(PrintConnectorOptions.PRINT_IDENTIFIER.key(), "my_print");
         properties.put(PrintConnectorOptions.STANDARD_ERROR.key(), "true");
 
-        DynamicTableSink sink = createTableSink(SCHEMA, properties);
-        Assert.assertEquals("Print to System.err", sink.asSummaryString());
+        List<String> partitionKeys = Arrays.asList("f0", "f1");
+        DynamicTableSink sink = createTableSink(SCHEMA, partitionKeys, properties);
+
+        assertThat(sink.asSummaryString()).isEqualTo("Print to System.err");
+        assertThat(sink).isInstanceOf(SupportsPartitioning.class);
     }
 }

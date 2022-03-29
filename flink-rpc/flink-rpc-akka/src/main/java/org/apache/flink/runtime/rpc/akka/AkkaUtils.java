@@ -83,7 +83,7 @@ class AkkaUtils {
                 .add("  loggers = [\"akka.event.slf4j.Slf4jLogger\"]")
                 .add("  logging-filter = \"akka.event.slf4j.Slf4jLoggingFilter\"")
                 .add("  log-config-on-start = off")
-                .add("  logger-startup-timeout = 30s")
+                .add("  logger-startup-timeout = 50s")
                 .add("  loglevel = " + getLogLevel())
                 .add("  stdout-loglevel = OFF")
                 .add("  log-dead-letters = " + logLifecycleEvents)
@@ -112,7 +112,8 @@ class AkkaUtils {
 
     private static String getLogLevel() {
         if (LOG.isTraceEnabled()) {
-            return "TRACE";
+            // TRACE is not supported by akka
+            return "DEBUG";
         }
         if (LOG.isDebugEnabled()) {
             return "DEBUG";
@@ -121,7 +122,7 @@ class AkkaUtils {
             return "INFO";
         }
         if (LOG.isWarnEnabled()) {
-            return "WARN";
+            return "WARNING";
         }
         if (LOG.isErrorEnabled()) {
             return "ERROR";
@@ -246,6 +247,8 @@ class AkkaUtils {
                 .add("  }")
                 .add("  remote.artery.enabled = false")
                 .add("  remote.startup-timeout = " + startupTimeout)
+                .add("  remote.warn-about-direct-use = off")
+                .add("  remote.use-unsafe-remote-features-outside-cluster = on")
                 .add("  remote.classic {")
                 .add("    # disable the transport failure detector by setting very high values")
                 .add("    transport-failure-detector{")

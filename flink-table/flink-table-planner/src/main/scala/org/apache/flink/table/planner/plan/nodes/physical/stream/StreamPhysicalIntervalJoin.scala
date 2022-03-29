@@ -27,6 +27,7 @@ import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
 import org.apache.flink.table.planner.plan.nodes.physical.common.CommonPhysicalJoin
 import org.apache.flink.table.planner.plan.utils.PythonUtil.containsPythonCall
 import org.apache.flink.table.planner.plan.utils.RelExplainUtil.preferExpressionFormat
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan._
 import org.apache.calcite.rel.core.{Join, JoinRelType}
@@ -82,16 +83,21 @@ class StreamPhysicalIntervalJoin(
       .item("joinType", joinSpec.getJoinType)
       .item("windowBounds", windowBoundsDesc)
       .item("where", getExpressionString(
-          originalCondition, getRowType.getFieldNames.toList, None, preferExpressionFormat(pw)))
+        originalCondition,
+        getRowType.getFieldNames.toList,
+        None,
+        preferExpressionFormat(pw),
+        pw.getDetailLevel))
       .item("select", getRowType.getFieldNames.mkString(", "))
   }
 
   override def translateToExecNode(): ExecNode[_] = {
     new StreamExecIntervalJoin(
-        new IntervalJoinSpec(joinSpec, windowBounds),
-        InputProperty.DEFAULT,
-        InputProperty.DEFAULT,
-        FlinkTypeFactory.toLogicalRowType(getRowType),
-        getRelDetailedDescription)
+      unwrapTableConfig(this),
+      new IntervalJoinSpec(joinSpec, windowBounds),
+      InputProperty.DEFAULT,
+      InputProperty.DEFAULT,
+      FlinkTypeFactory.toLogicalRowType(getRowType),
+      getRelDetailedDescription)
   }
 }

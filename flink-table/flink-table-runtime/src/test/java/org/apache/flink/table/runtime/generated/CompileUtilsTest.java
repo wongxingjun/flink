@@ -20,6 +20,7 @@ package org.apache.flink.table.runtime.generated;
 
 import org.apache.flink.util.FlinkRuntimeException;
 
+import org.codehaus.janino.ExpressionEvaluator;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -27,9 +28,9 @@ import org.junit.rules.ExpectedException;
 
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.Arrays;
 
-import static org.junit.Assert.assertNotSame;
-import static org.junit.Assert.assertSame;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link CompileUtils}. */
 public class CompileUtilsTest {
@@ -39,7 +40,8 @@ public class CompileUtilsTest {
     @Before
     public void before() {
         // cleanup cached class before tests
-        CompileUtils.COMPILED_CACHE.invalidateAll();
+        CompileUtils.COMPILED_CLASS_CACHE.invalidateAll();
+        CompileUtils.COMPILED_EXPRESSION_CACHE.invalidateAll();
     }
 
     @Test
@@ -49,8 +51,34 @@ public class CompileUtilsTest {
         Class<?> class1 = CompileUtils.compile(this.getClass().getClassLoader(), "Main", code);
         Class<?> class2 = CompileUtils.compile(this.getClass().getClassLoader(), "Main", code);
         Class<?> class3 = CompileUtils.compile(new TestClassLoader(), "Main", code);
-        assertSame(class1, class2);
-        assertNotSame(class1, class3);
+        assertThat(class2).isSameAs(class1);
+        assertThat(class3).isNotSameAs(class1);
+    }
+
+    @Test
+    public void testExpressionCacheReuse() {
+        String code = "a + b";
+
+        ExpressionEvaluator evaluator1 =
+                CompileUtils.compileExpression(
+                        code,
+                        Arrays.asList("a", "b"),
+                        Arrays.asList(Integer.class, Integer.class),
+                        Integer.class);
+        ExpressionEvaluator evaluator2 =
+                CompileUtils.compileExpression(
+                        code,
+                        Arrays.asList("a", "b"),
+                        Arrays.asList(Integer.class, Integer.class),
+                        Integer.class);
+        ExpressionEvaluator evaluator3 =
+                CompileUtils.compileExpression(
+                        code,
+                        Arrays.asList("a", "b"),
+                        Arrays.asList(String.class, String.class),
+                        String.class);
+        assertThat(evaluator2).isSameAs(evaluator1);
+        assertThat(evaluator3).isNotSameAs(evaluator1);
     }
 
     @Test

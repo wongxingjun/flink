@@ -38,12 +38,12 @@ FlinkCEP是在Flink上层实现的复杂事件处理库。
 
 ## 开始
 
-如果你想现在开始尝试，[创建一个Flink程序]({{< ref "docs/dev/datastream/project-configuration" >}})，
-添加FlinkCEP的依赖到项目的`pom.xml`文件中。
+如果你想现在开始尝试，[创建一个 Flink 程序]({{< ref "docs/dev/configuration/overview" >}})，
+添加 FlinkCEP 的依赖到项目的`pom.xml`文件中。
 
 {{< tabs "722d55a5-7f12-4bcc-b080-b28d5e8860ac" >}}
 {{< tab "Java" >}}
-{{< artifact flink-cep withScalaVersion >}}
+{{< artifact flink-cep >}}
 {{< /tab >}}
 {{< tab "Scala" >}}
 {{< artifact flink-cep-scala withScalaVersion >}}
@@ -51,7 +51,7 @@ FlinkCEP是在Flink上层实现的复杂事件处理库。
 {{< /tabs >}}
 
 {{< hint info >}}
-FlinkCEP不是二进制发布包的一部分。在集群上执行如何链接它可以看[这里]({{< ref "docs/dev/datastream/project-configuration" >}})。
+FlinkCEP 不是二进制发布包的一部分。在集群上执行如何链接它可以看[这里]({{< ref "docs/dev/configuration/overview" >}})。
 {{< /hint >}}
 
 现在可以开始使用Pattern API写你的第一个CEP程序了。
@@ -64,7 +64,7 @@ FlinkCEP不是二进制发布包的一部分。在集群上执行如何链接它
 {{< tabs "4fef83d9-e4c5-4073-9607-4c8cde1ebf1e" >}}
 {{< tab "Java" >}}
 ```java
-DataStream<Event> input = ...
+DataStream<Event> input = ...;
 
 Pattern<Event, ?> pattern = Pattern.<Event>begin("start").where(
         new SimpleCondition<Event>() {
@@ -337,7 +337,7 @@ start.where(event => event.getName.startsWith("foo"))
 start.subtype(SubEvent.class).where(new SimpleCondition<SubEvent>() {
     @Override
     public boolean filter(SubEvent value) {
-        return ... // 一些判断条件
+        return ...; // 一些判断条件
     }
 });
 ```
@@ -358,12 +358,12 @@ start.subtype(classOf[SubEvent]).where(subEvent => ... /* 一些判断条件 */)
 pattern.where(new SimpleCondition<Event>() {
     @Override
     public boolean filter(Event value) {
-        return ... // 一些判断条件
+        return ...; // 一些判断条件
     }
 }).or(new SimpleCondition<Event>() {
     @Override
     public boolean filter(Event value) {
-        return ... // 一些判断条件
+        return ...; // 一些判断条件
     }
 });
 ```
@@ -1378,7 +1378,7 @@ pattern.within(Time.seconds(10))
 {{< tabs "e7240356-0fda-4a20-8b5a-7e4136753eca" >}}
 {{< tab "Java" >}}
 ```java
-AfterMatchSkipStrategy skipStrategy = ...
+AfterMatchSkipStrategy skipStrategy = ...;
 Pattern.begin("patternName", skipStrategy);
 ```
 {{< /tab >}}
@@ -1399,7 +1399,7 @@ Pattern.begin("patternName", skipStrategy)
 {{< tabs "48a6f23b-1861-4350-894d-0404d070cfb2" >}}
 {{< tab "Java" >}}
 ```java
-AfterMatchSkipStrategy.skipToFirst(patternName).throwExceptionOnMiss()
+AfterMatchSkipStrategy.skipToFirst(patternName).throwExceptionOnMiss();
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
@@ -1418,9 +1418,9 @@ AfterMatchSkipStrategy.skipToFirst(patternName).throwExceptionOnMiss()
 {{< tabs "c412e6ab-033c-496c-b72f-b351c056e365" >}}
 {{< tab "Java" >}}
 ```java
-DataStream<Event> input = ...
-Pattern<Event, ?> pattern = ...
-EventComparator<Event> comparator = ... // 可选的
+DataStream<Event> input = ...;
+Pattern<Event, ?> pattern = ...;
+EventComparator<Event> comparator = ...; // 可选的
 
 PatternStream<Event> patternStream = CEP.pattern(input, pattern, comparator);
 ```
@@ -1635,6 +1635,14 @@ public interface TimeContext {
 使用`ProcessingTime`时，这个值等于事件进入CEP算子的时间点（在`PatternProcessFunction`中是匹配产生的时间）。
 这意味着多次调用这个方法得到的值是一致的。
 
+## 可选的参数设置
+
+用于配置 Flink CEP 的 `SharedBuffer` 缓存容量的选项。它可以加快 CEP 算子的处理速度，并限制内存中缓存的元素数量。
+
+<span class="label label-info">Note</span> 仅当 `state.backend` 设置为 `rocksdb` 时限制内存使用才有效，这会将超过缓存数量的元素传输到 `rocksdb` 状态存储而不是内存状态存储。当 `state.backend` 设置为 `rocksdb` 时，这些配置项有助于限制内存。相比之下，当 `state.backend` 设置为非 `rocksdb` 时，缓存会导致性能下降。与使用 `Map` 实现的旧缓存相比，状态部分将包含更多从 `guava-cache` 换出的元素，这将使得 `copy on write` 时的状态处理增加一些开销。
+
+{{< generated/cep_cache_configuration >}}
+
 ## 例子
 
 下面的例子在一个分片的`Events`流上检测模式`start, middle(name = "error") -> end(name = "critical")`。
@@ -1643,9 +1651,9 @@ public interface TimeContext {
 {{< tabs "01929551-b785-41f4-ab0d-b6369ce3cc41" >}}
 {{< tab "Java" >}}
 ```java
-StreamExecutionEnvironment env = ...
+StreamExecutionEnvironment env = ...;
 
-DataStream<Event> input = ...
+DataStream<Event> input = ...;
 
 DataStream<Event> partitionedInput = input.keyBy(new KeySelector<Event, Integer>() {
 	@Override

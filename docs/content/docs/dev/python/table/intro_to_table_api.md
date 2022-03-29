@@ -29,7 +29,7 @@ under the License.
 This document is a short introduction to the PyFlink Table API, which is used to help novice users quickly understand the basic usage of PyFlink Table API.
 For advanced usage, please refer to other documents in this user guide.
 
-Common Structure of Python Table API Program 
+Common Structure of Python Table API Program
 --------------------------------------------
 
 All Table API and SQL programs, both batch and streaming, follow the same pattern. The following code example shows the common structure of Table API and SQL programs.
@@ -64,7 +64,7 @@ table_env.execute_sql("""
     )
 """)
 
-# 4. query from source table and perform caculations
+# 4. query from source table and perform calculations
 # create a Table from a Table API query:
 source_table = table_env.from_path("datagen")
 # or create a Table from a SQL query:

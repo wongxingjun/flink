@@ -18,19 +18,24 @@
 
 package org.apache.flink.table.planner.plan.utils
 
+import org.apache.flink.configuration.ReadableConfig
 import org.apache.flink.table.api.TableConfig
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.codegen._
 import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable
 import org.apache.flink.table.planner.plan.nodes.exec.spec.IntervalJoinSpec.WindowBounds
+import org.apache.flink.table.planner.plan.nodes.logical.FlinkLogicalJoin
 import org.apache.flink.table.planner.plan.schema.TimeIndicatorRelDataType
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan.RelOptUtil
-import org.apache.calcite.sql.`type`.SqlTypeName
-import org.apache.calcite.sql.fun.SqlStdOperatorTable
+import org.apache.calcite.rel.RelNode
 import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rex._
 import org.apache.calcite.sql.SqlKind
+import org.apache.calcite.sql.`type`.SqlTypeName
+import org.apache.calcite.sql.fun.SqlStdOperatorTable
+import org.apache.calcite.sql.validate.SqlValidatorUtil
 
 import java.util
 
@@ -53,24 +58,6 @@ object IntervalJoinUtil {
   protected case class TimeAttributeAccess(isEventTime: Boolean, isLeftInput: Boolean, idx: Int)
 
   /**
-    * Checks if an expression accesses a time attribute.
-    *
-    * @param expr      The expression to check.
-    * @param inputType The input type of the expression.
-    * @return True, if the expression accesses a time attribute. False otherwise.
-    */
-  def accessesTimeAttribute(expr: RexNode, inputType: RelDataType): Boolean = {
-    expr match {
-      case ref: RexInputRef =>
-        val accessedType = inputType.getFieldList.get(ref.getIndex).getType
-        FlinkTypeFactory.isTimeIndicatorType(accessedType)
-      case c: RexCall =>
-        c.operands.exists(accessesTimeAttribute(_, inputType))
-      case _ => false
-    }
-  }
-
-  /**
     * Extracts the window bounds from a join predicate.
     *
     * @param  predicate           join predicate
@@ -85,12 +72,11 @@ object IntervalJoinUtil {
       leftLogicalFieldCnt: Int,
       joinRowType: RelDataType,
       rexBuilder: RexBuilder,
-      config: TableConfig): (Option[WindowBounds], Option[RexNode]) = {
+      tableConfig: TableConfig): (Option[WindowBounds], Option[RexNode]) = {
 
     // Converts the condition to conjunctive normal form (CNF)
     val cnfCondition = FlinkRexUtil.toCnf(rexBuilder,
-      config.getConfiguration.getInteger(FlinkRexUtil.TABLE_OPTIMIZER_CNF_NODES_LIMIT),
-      predicate)
+      tableConfig.get(FlinkRexUtil.TABLE_OPTIMIZER_CNF_NODES_LIMIT), predicate)
 
     // split the condition into time predicates and other predicates
     // We need two range predicates or an equality predicate for a properly bounded window join.
@@ -134,7 +120,8 @@ object IntervalJoinUtil {
     }
 
     // assemble window bounds from predicates
-    val streamTimeOffsets = timePreds.map(computeWindowBoundFromPredicate(_, rexBuilder, config))
+    val streamTimeOffsets = timePreds.map(
+      computeWindowBoundFromPredicate(_, rexBuilder, tableConfig))
     val (leftLowerBound, leftUpperBound) =
       streamTimeOffsets match {
         case Seq(Some(x: WindowBound), Some(y: WindowBound)) if x.isLeftLower && !y.isLeftLower =>
@@ -338,7 +325,7 @@ object IntervalJoinUtil {
   private def computeWindowBoundFromPredicate(
       timePred: TimePredicate,
       rexBuilder: RexBuilder,
-      config: TableConfig): Option[WindowBound] = {
+      tableConfig: TableConfig): Option[WindowBound] = {
 
     val isLeftLowerBound: Boolean =
       timePred.pred.getKind match {
@@ -353,7 +340,7 @@ object IntervalJoinUtil {
       }
 
     // reduce predicate to constants to compute bounds
-    val (leftLiteral, rightLiteral) = reduceTimeExpression(timePred, rexBuilder, config)
+    val (leftLiteral, rightLiteral) = reduceTimeExpression(timePred, rexBuilder, tableConfig)
 
     if (leftLiteral.isEmpty || rightLiteral.isEmpty) {
       return None
@@ -385,15 +372,15 @@ object IntervalJoinUtil {
     * Replaces the time attributes on both sides of a time predicate by a zero literal and
     * reduces the expressions on both sides to a long literal.
     *
-    * @param timePred   The time predicate which both sides are reduced.
-    * @param rexBuilder A RexBuilder
-    * @param config     A TableConfig.
+    * @param timePred    The time predicate which both sides are reduced.
+    * @param rexBuilder  A RexBuilder
+    * @param tableConfig A TableConfig.
     * @return The values of the reduced literals on both sides of the time comparison predicate.
     */
   private def reduceTimeExpression(
       timePred: TimePredicate,
       rexBuilder: RexBuilder,
-      config: TableConfig): (Option[Long], Option[Long]) = {
+      tableConfig: TableConfig): (Option[Long], Option[Long]) = {
 
     /**
      * Checks if the given call is a materialization call for either proctime or rowtime.
@@ -441,7 +428,7 @@ object IntervalJoinUtil {
     val rightSideWithLiteral = replaceTimeFieldWithLiteral(rightSide)
 
     // reduce expression to literal
-     val exprReducer = new ExpressionReducer(config, allowChangeNullability = true)
+     val exprReducer = new ExpressionReducer(tableConfig, allowChangeNullability = true)
     val originList = new util.ArrayList[RexNode]()
     originList.add(leftSideWithLiteral)
     originList.add(rightSideWithLiteral)
@@ -459,4 +446,46 @@ object IntervalJoinUtil {
     (literals.head, literals(1))
   }
 
+  /**
+   * Check whether input join node satisfy preconditions to convert into interval join.
+   *
+   * @param join input join to analyze.
+   * @return True if input join node satisfy preconditions to convert into interval join,
+   *         else false.
+   */
+  def satisfyIntervalJoin(join: FlinkLogicalJoin): Boolean = {
+    satisfyIntervalJoin(join, join.getLeft, join.getRight)
+  }
+
+  def satisfyIntervalJoin(join: FlinkLogicalJoin, newLeft: RelNode, newRight: RelNode): Boolean = {
+    // TODO support SEMI/ANTI joinSplitAggregateRuleTest
+    if (!join.getJoinType.projectsRight) {
+      return false
+    }
+    val newJoinRowType = SqlValidatorUtil.deriveJoinRowType(
+      newLeft.getRowType,
+      newRight.getRowType,
+      join.getJoinType,
+      join.getCluster.getTypeFactory,
+      null,
+      join.getSystemFieldList)
+    val tableConfig = unwrapTableConfig(join)
+    val (windowBounds, _) = extractWindowBoundsFromPredicate(
+      join.getCondition,
+      newLeft.getRowType.getFieldCount,
+      newJoinRowType,
+      join.getCluster.getRexBuilder,
+      tableConfig)
+    windowBounds.nonEmpty
+  }
+
+  def extractWindowBounds(join: FlinkLogicalJoin): (Option[WindowBounds], Option[RexNode]) = {
+    val tableConfig = unwrapTableConfig(join)
+    extractWindowBoundsFromPredicate(
+      join.getCondition,
+      join.getLeft.getRowType.getFieldCount,
+      join.getRowType,
+      join.getCluster.getRexBuilder,
+      tableConfig)
+  }
 }

@@ -18,23 +18,32 @@
 
 package org.apache.flink.table.planner.plan.utils
 
-import org.apache.flink.table.api.{TableConfig, TableException}
+import org.apache.flink.configuration.ReadableConfig
+import org.apache.flink.table.api.TableException
 import org.apache.flink.table.data.RowData
+import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.codegen.{CodeGeneratorContext, ExprCodeGenerator, FunctionCodeGenerator}
 import org.apache.flink.table.planner.plan.nodes.exec.spec.JoinSpec
+import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalJoin, FlinkLogicalSnapshot}
+import org.apache.flink.table.planner.plan.utils.IntervalJoinUtil.satisfyIntervalJoin
+import org.apache.flink.table.planner.plan.utils.TemporalJoinUtil.satisfyTemporalJoin
+import org.apache.flink.table.planner.plan.utils.WindowJoinUtil.satisfyWindowJoin
 import org.apache.flink.table.runtime.generated.GeneratedJoinCondition
 import org.apache.flink.table.runtime.operators.join.stream.state.JoinInputSideSpec
-import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.runtime.types.PlannerTypeUtils
+import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.types.logical.{LogicalType, RowType}
 
 import org.apache.calcite.plan.RelOptUtil
 import org.apache.calcite.rel.RelNode
-import org.apache.calcite.rel.core.{Join, JoinInfo}
-import org.apache.calcite.rex.{RexNode, RexUtil}
+import org.apache.calcite.rel.`type`.{RelDataType, RelDataTypeField}
+import org.apache.calcite.rel.core.{Join, JoinInfo, JoinRelType}
+import org.apache.calcite.rex.{RexCall, RexInputRef, RexNode, RexUtil}
+import org.apache.calcite.sql.validate.SqlValidatorUtil
 import org.apache.calcite.util.ImmutableIntList
 
 import java.util
+import java.util.Collections
 
 import scala.collection.JavaConversions._
 
@@ -116,23 +125,23 @@ object JoinUtil {
   }
 
   def generateConditionFunction(
-      config: TableConfig,
+      tableConfig: ReadableConfig,
       joinSpec: JoinSpec,
       leftType: LogicalType,
       rightType: LogicalType): GeneratedJoinCondition = {
     generateConditionFunction(
-        config,
-        joinSpec.getNonEquiCondition().orElse(null),
+      tableConfig,
+        joinSpec.getNonEquiCondition.orElse(null),
         leftType,
         rightType)
   }
 
   def generateConditionFunction(
-        config: TableConfig,
+        tableConfig: ReadableConfig,
         nonEquiCondition: RexNode,
         leftType: LogicalType,
         rightType: LogicalType): GeneratedJoinCondition = {
-    val ctx = CodeGeneratorContext(config)
+    val ctx = CodeGeneratorContext(tableConfig)
     // should consider null fields
     val exprGenerator = new ExprCodeGenerator(ctx, false)
         .bindInput(leftType)
@@ -185,5 +194,71 @@ object JoinUtil {
 
   private def getSmallestKey(keys: util.List[Array[Int]]) = {
     keys.reduce((k1, k2) => if (k1.length <= k2.length) k1 else k2)
+  }
+
+  /**
+   * Checks if an expression accesses a time attribute.
+   *
+   * @param expr      The expression to check.
+   * @param inputType The input type of the expression.
+   * @return True, if the expression accesses a time attribute. False otherwise.
+   */
+  def accessesTimeAttribute(expr: RexNode, inputType: RelDataType): Boolean = {
+    expr match {
+      case ref: RexInputRef =>
+        val accessedType = inputType.getFieldList.get(ref.getIndex).getType
+        FlinkTypeFactory.isTimeIndicatorType(accessedType)
+      case c: RexCall =>
+        c.operands.exists(accessesTimeAttribute(_, inputType))
+      case _ => false
+    }
+  }
+
+  /**
+   * Combines join inputs' RowType. For SEMI/ANTI join, the result is different from join's
+   * RowType. For other joinType, the result is same with join's RowType.
+   *
+   * @param join
+   * @return
+   */
+  def combineJoinInputsRowType(join: Join): RelDataType = join.getJoinType match {
+    case JoinRelType.SEMI | JoinRelType.ANTI =>
+      SqlValidatorUtil.createJoinType(
+        join.getCluster.getTypeFactory,
+        join.getLeft.getRowType,
+        join.getRight.getRowType,
+        null,
+        Collections.emptyList[RelDataTypeField]
+      )
+    case _ =>
+      join.getRowType
+  }
+
+  /**
+   * Check whether input join node satisfy preconditions to convert into regular join.
+   *
+   * @param join input join to analyze.
+   * @param newLeft new left child of join
+   * @param newRight new right child of join
+   *
+   * @return True if input join node satisfy preconditions to convert into regular join,
+   *         else false.
+   */
+  def satisfyRegularJoin(join: FlinkLogicalJoin, newLeft: RelNode, newRight: RelNode): Boolean = {
+    if (newRight.isInstanceOf[FlinkLogicalSnapshot]) {
+      // exclude lookup join
+      false
+    } else if (satisfyTemporalJoin(join, newLeft, newRight)) {
+      // exclude temporal table join
+      false
+    } else if (satisfyIntervalJoin(join, newLeft, newRight)) {
+      // exclude interval join
+      false
+    } else if (satisfyWindowJoin(join, newLeft, newRight)) {
+      // exclude window join
+      false
+    } else {
+      true
+    }
   }
 }

@@ -120,8 +120,9 @@ object OperatorCodeGenerator extends Logging {
     """.stripMargin
 
     LOG.debug(s"Compiling OneInputStreamOperator Code:\n$name")
+    LOG.trace(s"Code: \n$operatorCode")
     new GeneratedOperator(
-      operatorName, operatorCode, ctx.references.toArray, ctx.tableConfig.getConfiguration)
+      operatorName, operatorCode, ctx.references.toArray, ctx.tableConfig)
   }
 
   def generateTwoInputStreamOperator[IN1 <: Any, IN2 <: Any, OUT <: Any](
@@ -248,8 +249,9 @@ object OperatorCodeGenerator extends Logging {
     """.stripMargin
 
     LOG.debug(s"Compiling TwoInputStreamOperator Code:\n$name")
+    LOG.trace(s"Code: \n$operatorCode")
     new GeneratedOperator(
-      operatorName, operatorCode, ctx.references.toArray, ctx.tableConfig.getConfiguration)
+      operatorName, operatorCode, ctx.references.toArray, ctx.tableConfig)
   }
 
   private def generateInputTerm(inputTypeTerm: String): String = {

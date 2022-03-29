@@ -64,18 +64,18 @@ class AggregateTest extends TableTestBase {
 
   @Test
   def testAggWithMiniBatch(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, true)
-    util.tableEnv.getConfig.getConfiguration.set(
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, Boolean.box(true))
+    util.tableEnv.getConfig.set(
       ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
     util.verifyExecPlan("SELECT b, COUNT(DISTINCT a), MAX(b), SUM(c)  FROM MyTable GROUP BY b")
   }
 
   @Test
   def testAggAfterUnionWithMiniBatch(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, true)
-    util.tableEnv.getConfig.getConfiguration.set(
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, Boolean.box(true))
+    util.tableEnv.getConfig.set(
       ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
     val query =
       """
@@ -97,9 +97,9 @@ class AggregateTest extends TableTestBase {
   @Test
   def testLocalGlobalAggAfterUnion(): Unit = {
     // enable local global optimize
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, true)
-    util.tableEnv.getConfig.getConfiguration.set(
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, Boolean.box(true))
+    util.tableEnv.getConfig.set(
       ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
 
     val sql =
@@ -130,9 +130,9 @@ class AggregateTest extends TableTestBase {
 
   @Test
   def testAggWithFilterClauseWithLocalGlobal(): Unit = {
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, true)
-    util.tableEnv.getConfig.getConfiguration.set(
+    util.tableEnv.getConfig.set(
+      ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ENABLED, Boolean.box(true))
+    util.tableEnv.getConfig.set(
       ExecutionConfigOptions.TABLE_EXEC_MINIBATCH_ALLOW_LATENCY, Duration.ofSeconds(1))
 
     val sql =
@@ -295,5 +295,71 @@ class AggregateTest extends TableTestBase {
          |  GROUP BY c
          |) t
          |""".stripMargin)
+  }
+
+  @Test
+  def testGroupKeyNotMatchSinkPk(): Unit = {
+    // test for FLINK-20370
+    util.tableEnv.executeSql(
+      """
+        |CREATE TABLE sink (
+        | id VARCHAR,
+        | cnt BIGINT,
+        | PRIMARY KEY (cnt) NOT ENFORCED
+        |) WITH (
+        | 'connector' = 'values'
+        | ,'sink-insert-only' = 'false'
+        |)
+        |""".stripMargin)
+    util.verifyExplainInsert(
+      """
+        |INSERT INTO sink
+        |SELECT c, COUNT(*) cnt FROM T GROUP BY c
+        |""".stripMargin, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testGroupKeyInSinkPk(): Unit = {
+    // test for FLINK-20370
+    util.tableEnv.executeSql(
+      """
+        |CREATE TABLE sink (
+        | a INT,
+        | b BIGINT,
+        | cnt BIGINT,
+        | PRIMARY KEY (a, b) NOT ENFORCED
+        |) WITH (
+        | 'connector' = 'values'
+        | ,'sink-insert-only' = 'false'
+        |)
+        |""".stripMargin)
+    util.verifyExplainInsert(
+      """
+        |INSERT INTO sink
+        |SELECT a, MAX(b) b, COUNT(*) cnt FROM T GROUP BY a
+        |""".stripMargin, ExplainDetail.CHANGELOG_MODE)
+  }
+
+  @Test
+  def testGroupResultLostUpsertKeyWithSinkPk(): Unit = {
+    // test for FLINK-20370
+    util.tableEnv.executeSql(
+      """
+        |CREATE TABLE sink (
+        | id VARCHAR,
+        | cnt BIGINT,
+        | PRIMARY KEY (id) NOT ENFORCED
+        |) WITH (
+        | 'connector' = 'values'
+        | ,'sink-insert-only' = 'false'
+        |)
+        |""".stripMargin)
+
+    // verify UB should reserve and add upsertMaterialize if group results lost upsert keys
+    util.verifyExplainInsert(
+      """
+        |INSERT INTO sink
+        |SELECT c, COUNT(*) cnt FROM T GROUP BY a, c
+        |""".stripMargin, ExplainDetail.CHANGELOG_MODE)
   }
 }

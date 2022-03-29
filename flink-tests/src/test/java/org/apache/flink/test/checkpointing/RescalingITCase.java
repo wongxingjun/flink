@@ -35,6 +35,7 @@ import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.configuration.StateBackendOptions;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -44,7 +45,6 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.runtime.testutils.TestingUtils;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -54,6 +54,7 @@ import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
@@ -238,8 +239,9 @@ public class RescalingITCase extends TestLogger {
             // clear the CollectionSink set for the restarted job
             CollectionSink.clearElementsSet();
 
-            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID());
-            CompletableFuture<String> savepointPathFuture = client.triggerSavepoint(jobID, null);
+            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID(), false);
+            CompletableFuture<String> savepointPathFuture =
+                    client.triggerSavepoint(jobID, null, SavepointFormatType.CANONICAL);
 
             final String savepointPath =
                     savepointPathFuture.get(deadline.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
@@ -317,11 +319,12 @@ public class RescalingITCase extends TestLogger {
             client.submitJob(jobGraph).get();
 
             // wait until the operator is started
-            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID());
+            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID(), false);
             // wait until the operator handles some data
             StateSourceBase.workStartedLatch.await();
 
-            CompletableFuture<String> savepointPathFuture = client.triggerSavepoint(jobID, null);
+            CompletableFuture<String> savepointPathFuture =
+                    client.triggerSavepoint(jobID, null, SavepointFormatType.CANONICAL);
 
             final String savepointPath =
                     savepointPathFuture.get(deadline.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
@@ -418,8 +421,9 @@ public class RescalingITCase extends TestLogger {
             // clear the CollectionSink set for the restarted job
             CollectionSink.clearElementsSet();
 
-            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID());
-            CompletableFuture<String> savepointPathFuture = client.triggerSavepoint(jobID, null);
+            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID(), false);
+            CompletableFuture<String> savepointPathFuture =
+                    client.triggerSavepoint(jobID, null, SavepointFormatType.CANONICAL);
 
             final String savepointPath =
                     savepointPathFuture.get(deadline.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
@@ -542,13 +546,15 @@ public class RescalingITCase extends TestLogger {
             client.submitJob(jobGraph).get();
 
             // wait until the operator is started
-            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID());
+            waitForAllTaskRunning(cluster.getMiniCluster(), jobGraph.getJobID(), false);
             // wait until the operator handles some data
             StateSourceBase.workStartedLatch.await();
 
             CompletableFuture<String> savepointPathFuture =
                     FutureUtils.retryWithDelay(
-                            () -> client.triggerSavepoint(jobID, null),
+                            () ->
+                                    client.triggerSavepoint(
+                                            jobID, null, SavepointFormatType.CANONICAL),
                             (int) deadline.timeLeft().getSeconds() / 10,
                             Time.seconds(10),
                             (throwable) -> true,
@@ -617,7 +623,6 @@ public class RescalingITCase extends TestLogger {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(parallelism);
         env.getConfig().setMaxParallelism(maxParallelism);
-        env.enableCheckpointing(Long.MAX_VALUE);
         env.setRestartStrategy(RestartStrategies.noRestart());
 
         StateSourceBase.workStartedLatch = new CountDownLatch(parallelism);

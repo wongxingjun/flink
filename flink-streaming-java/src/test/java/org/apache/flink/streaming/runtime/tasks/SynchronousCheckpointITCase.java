@@ -21,12 +21,13 @@ package org.apache.flink.streaming.runtime.tasks;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.broadcast.BroadcastVariableManager;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetricsBuilder;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
-import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.SavepointType;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.deployment.InputGateDeploymentDescriptor;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
@@ -44,8 +45,8 @@ import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.partition.NoOpResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionConsumableNotifier;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
+import org.apache.flink.runtime.jobgraph.tasks.TaskInvokable;
 import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.metrics.groups.TaskMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
@@ -109,7 +110,7 @@ public class SynchronousCheckpointITCase {
                     42,
                     156865867234L,
                     new CheckpointOptions(
-                            CheckpointType.SAVEPOINT_SUSPEND,
+                            SavepointType.suspend(SavepointFormatType.CANONICAL),
                             CheckpointStorageLocationReference.getDefault()));
 
             assertThat(eventQueue.take(), is(Event.PRE_TRIGGER_CHECKPOINT));
@@ -203,7 +204,7 @@ public class SynchronousCheckpointITCase {
         }
 
         @Override
-        protected void cleanup() {}
+        protected void cleanUpInternal() {}
     }
 
     /**
@@ -221,7 +222,7 @@ public class SynchronousCheckpointITCase {
     // --------------------------		Boilerplate tools copied from the TaskAsyncCallTest
     //	--------------------------
 
-    private Task createTask(Class<? extends AbstractInvokable> invokableClass) throws Exception {
+    private Task createTask(Class<? extends TaskInvokable> invokableClass) throws Exception {
 
         ResultPartitionConsumableNotifier consumableNotifier =
                 new NoOpResultPartitionConsumableNotifier();

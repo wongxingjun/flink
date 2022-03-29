@@ -72,8 +72,9 @@ class TableSinkTest extends TableTestBase {
          |)
          |""".stripMargin)
 
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      RelNodeBlockPlanBuilder.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED, true)
+    util.tableEnv.getConfig.set(
+      RelNodeBlockPlanBuilder.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED,
+      Boolean.box(true))
     val table1 = util.tableEnv.sqlQuery("SELECT SUM(a) AS sum_a, c FROM MyTable GROUP BY c")
     util.tableEnv.createTemporaryView("table1", table1)
     val stmtSet = util.tableEnv.createStatementSet()
@@ -115,8 +116,6 @@ class TableSinkTest extends TableTestBase {
          |)
        """.stripMargin)
 
-    util.tableEnv.getConfig.getConfiguration.setBoolean(
-      TableConfigOptions.TABLE_DYNAMIC_TABLE_OPTIONS_ENABLED, true)
     util.tableEnv.executeSql(
       s"""
          |CREATE TABLE MySink (
@@ -136,5 +135,40 @@ class TableSinkTest extends TableTestBase {
       "insert into MySink /*+ OPTIONS('path' = '/tmp2') */ select * from MyTable")
 
     util.verifyExecPlan(stmtSet)
+  }
+
+  @Test
+  def testManagedTableSinkWithDisableCheckpointing(): Unit = {
+    util.addTable(
+      s"""
+         |CREATE TABLE sink (
+         |  `a` INT,
+         |  `b` BIGINT,
+         |  `c` STRING
+         |) WITH(
+         |)
+         |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sink SELECT * FROM MyTable")
+    
+    util.verifyAstPlan(stmtSet)
+  }
+
+  @Test
+  def testManagedTableSinkWithEnableCheckpointing(): Unit = {
+    util.getStreamEnv.enableCheckpointing(10)
+    util.addTable(
+      s"""
+         |CREATE TABLE sink (
+         |  `a` INT,
+         |  `b` BIGINT,
+         |  `c` STRING
+         |) WITH(
+         |)
+         |""".stripMargin)
+    val stmtSet = util.tableEnv.createStatementSet()
+    stmtSet.addInsertSql("INSERT INTO sink SELECT * FROM MyTable")
+
+    util.verifyAstPlan(stmtSet)
   }
 }

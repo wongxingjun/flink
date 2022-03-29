@@ -64,7 +64,7 @@ class IntervalJoinTest extends TableTestBase {
        """.stripMargin)
 
   /** There should exist exactly two time conditions **/
-  @Test(expected = classOf[TableException])
+  @Test
   def testInteravlJoinSingleTimeCondition(): Unit = {
     val sql =
       """
@@ -75,7 +75,7 @@ class IntervalJoinTest extends TableTestBase {
   }
 
   /** Both time attributes in a join condition must be of the same type **/
-  @Test(expected = classOf[TableException])
+  @Test
   def testInteravalDiffTimeIndicator(): Unit = {
     val sql =
       """
@@ -105,7 +105,7 @@ class IntervalJoinTest extends TableTestBase {
   }
 
   /** The time conditions should be an And condition **/
-  @Test(expected = classOf[TableException])
+  @Test
   def testInteravalNotCnfCondition(): Unit = {
     val sql =
       """
@@ -491,6 +491,21 @@ class IntervalJoinTest extends TableTestBase {
     verifyRemainConditionConvert(
       query2,
       ">($2, $6)")
+  }
+
+  @Test
+  def testFallbackToRegularJoin(): Unit = {
+    // the following query would translated into regular join instead of interval join because the
+    // time attribute of right side would be materialized.
+    val sql =
+      """
+        |SELECT t1.a FROM MyTable t1 WHERE t1.a IN (
+        | SELECT t2.a FROM MyTable2 t2
+        |   WHERE t1.b = t2.b AND t1.rowtime between t2.rowtime and t2.rowtime + INTERVAL '5' MINUTE
+        |   GROUP BY t2.a
+        |)
+    """.stripMargin
+    util.verifyExecPlan(sql)
   }
 
   private def verifyTimeBoundary(

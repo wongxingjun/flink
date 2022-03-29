@@ -19,8 +19,8 @@
 package org.apache.flink.table.planner.plan.nodes.calcite
 
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
-import org.apache.flink.table.planner.expressions.PlannerNamedWindowProperty
 import org.apache.flink.table.planner.plan.logical.LogicalWindow
+import org.apache.flink.table.runtime.groupwindow.NamedWindowProperty
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
 import org.apache.calcite.rel.`type`.RelDataType
@@ -29,6 +29,8 @@ import org.apache.calcite.rel.{RelNode, RelWriter}
 import org.apache.calcite.util.ImmutableBitSet
 
 import java.util
+
+import scala.collection.JavaConverters._
 
 /**
   * Relational operator that represents a window table aggregate. A TableAggregate is similar to the
@@ -42,19 +44,19 @@ abstract class WindowTableAggregate(
     groupSets: util.List[ImmutableBitSet],
     aggCalls: util.List[AggregateCall],
     window: LogicalWindow,
-    namedProperties: Seq[PlannerNamedWindowProperty])
+    namedProperties: util.List[NamedWindowProperty])
   extends TableAggregate(cluster, traitSet, input, groupSet, groupSets, aggCalls) {
 
   def getWindow: LogicalWindow = window
 
-  def getNamedProperties: Seq[PlannerNamedWindowProperty] = namedProperties
+  def getNamedProperties: util.List[NamedWindowProperty] = namedProperties
 
   override def deriveRowType(): RelDataType = {
     val aggregateRowType = super.deriveRowType()
     val typeFactory = getCluster.getTypeFactory.asInstanceOf[FlinkTypeFactory]
     val builder = typeFactory.builder
     builder.addAll(aggregateRowType.getFieldList)
-    namedProperties.foreach { namedProp =>
+    namedProperties.asScala.foreach { namedProp =>
       builder.add(
         namedProp.getName,
         typeFactory.createFieldTypeFromLogicalType(namedProp.getProperty.getResultType)
@@ -66,6 +68,6 @@ abstract class WindowTableAggregate(
   override def explainTerms(pw: RelWriter): RelWriter = {
     super.explainTerms(pw)
       .item("window", window)
-      .item("properties", namedProperties.map(_.getName).mkString(", "))
+      .item("properties", namedProperties.asScala.map(_.getName).mkString(", "))
   }
 }

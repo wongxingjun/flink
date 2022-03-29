@@ -93,6 +93,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -171,9 +172,7 @@ public class StreamGraphGenerator {
 
     private SavepointRestoreSettings savepointRestoreSettings;
 
-    private long defaultBufferTimeout = StreamingJobGraphGenerator.UNDEFINED_NETWORK_BUFFER_TIMEOUT;
-
-    private RuntimeExecutionMode runtimeExecutionMode = RuntimeExecutionMode.STREAMING;
+    private long defaultBufferTimeout = ExecutionOptions.BUFFER_TIMEOUT.defaultValue().toMillis();
 
     private boolean shouldExecuteInBatchMode;
 
@@ -243,12 +242,6 @@ public class StreamGraphGenerator {
         this.savepointRestoreSettings = SavepointRestoreSettings.fromConfiguration(configuration);
     }
 
-    public StreamGraphGenerator setRuntimeExecutionMode(
-            final RuntimeExecutionMode runtimeExecutionMode) {
-        this.runtimeExecutionMode = checkNotNull(runtimeExecutionMode);
-        return this;
-    }
-
     public StreamGraphGenerator setSavepointDir(Path savepointDir) {
         this.savepointDir = savepointDir;
         return this;
@@ -314,10 +307,10 @@ public class StreamGraphGenerator {
         streamGraph.setEnableCheckpointsAfterTasksFinish(
                 configuration.get(
                         ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH));
-        shouldExecuteInBatchMode = shouldExecuteInBatchMode(runtimeExecutionMode);
+        shouldExecuteInBatchMode = shouldExecuteInBatchMode();
         configureStreamGraph(streamGraph);
 
-        alreadyTransformed = new HashMap<>();
+        alreadyTransformed = new IdentityHashMap<>();
 
         for (Transformation<?> transformation : transformations) {
             transform(transformation);
@@ -355,6 +348,9 @@ public class StreamGraphGenerator {
         graph.setChaining(chaining);
         graph.setUserArtifacts(userArtifacts);
         graph.setTimeCharacteristic(timeCharacteristic);
+        graph.setVertexDescriptionMode(configuration.get(PipelineOptions.VERTEX_DESCRIPTION_MODE));
+        graph.setVertexNameIncludeIndexPrefix(
+                configuration.get(PipelineOptions.VERTEX_NAME_INCLUDE_INDEX_PREFIX));
 
         if (shouldExecuteInBatchMode) {
             configureStreamGraphBatch(graph);
@@ -460,7 +456,10 @@ public class StreamGraphGenerator {
         }
     }
 
-    private boolean shouldExecuteInBatchMode(final RuntimeExecutionMode configuredMode) {
+    private boolean shouldExecuteInBatchMode() {
+        final RuntimeExecutionMode configuredMode =
+                configuration.get(ExecutionOptions.RUNTIME_MODE);
+
         final boolean existsUnboundedSource = existsUnboundedSource();
 
         checkState(
@@ -927,6 +926,11 @@ public class StreamGraphGenerator {
         @Override
         public ReadableConfig getGraphGeneratorConfig() {
             return config;
+        }
+
+        @Override
+        public Collection<Integer> transform(Transformation<?> transformation) {
+            return streamGraphGenerator.transform(transformation);
         }
     }
 }

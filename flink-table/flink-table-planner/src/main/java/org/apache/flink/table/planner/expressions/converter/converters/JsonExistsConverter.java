@@ -18,20 +18,22 @@
 
 package org.apache.flink.table.planner.expressions.converter.converters;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.JsonExistsOnError;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.planner.expressions.converter.CallExpressionConvertRule;
 import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable;
+import org.apache.flink.table.planner.typeutils.SymbolUtil;
 
 import org.apache.calcite.rex.RexNode;
-import org.apache.calcite.sql.SqlJsonExistsErrorBehavior;
 
 import java.util.LinkedList;
 import java.util.List;
 
 /** Conversion for {@link BuiltInFunctionDefinitions#JSON_EXISTS}. */
+@Internal
 class JsonExistsConverter extends CustomizedConverter {
     @Override
     public RexNode convert(CallExpression call, CallExpressionConvertRule.ConvertContext context) {
@@ -44,8 +46,7 @@ class JsonExistsConverter extends CustomizedConverter {
         if (call.getChildren().size() >= 3) {
             ((ValueLiteralExpression) call.getChildren().get(2))
                     .getValueAs(JsonExistsOnError.class)
-                    .map(JsonExistsOnError::name)
-                    .map(SqlJsonExistsErrorBehavior::valueOf)
+                    .map(SymbolUtil::commonToCalcite)
                     .ifPresent(
                             onErrorBehavior ->
                                     operands.add(

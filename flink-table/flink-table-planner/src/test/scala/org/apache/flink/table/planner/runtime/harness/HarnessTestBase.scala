@@ -17,12 +17,10 @@
  */
 package org.apache.flink.table.planner.runtime.harness
 
-import org.apache.flink.api.common.time.Time
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.dag.Transformation
 import org.apache.flink.api.java.functions.KeySelector
-import org.apache.flink.table.api.TableConfig
-import org.apache.flink.configuration.{CheckpointingOptions, Configuration}
+import org.apache.flink.configuration.Configuration
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend
 import org.apache.flink.runtime.state.StateBackend
 import org.apache.flink.runtime.state.memory.MemoryStateBackend
@@ -71,12 +69,12 @@ class HarnessTestBase(mode: StateBackendMode) extends StreamingTestBase {
 
   def createHarnessTester(
       ds: DataStream[_],
-      prefixOperatorName: String)
+      operatorNameIdentifier: String)
   : KeyedOneInputStreamOperatorTestHarness[RowData, RowData, RowData] = {
 
     val transformation = extractExpectedTransformation(
       ds.javaStream.getTransformation,
-      prefixOperatorName)
+      operatorNameIdentifier)
     val processOperator = transformation.getOperator
       .asInstanceOf[OneInputStreamOperator[Any, Any]]
     val keySelector = transformation.getStateKeySelector.asInstanceOf[KeySelector[Any, Any]]
@@ -88,11 +86,11 @@ class HarnessTestBase(mode: StateBackendMode) extends StreamingTestBase {
 
   def createHarnessTesterForNoState(
       ds: DataStream[_],
-      prefixOperatorName: String)
+      operatorNameIdentifier: String)
   : OneInputStreamOperatorTestHarness[RowData, RowData] = {
     val transformation = extractExpectedTransformation(
       ds.javaStream.getTransformation,
-      prefixOperatorName)
+      operatorNameIdentifier)
     val processOperator = transformation.getOperator
         .asInstanceOf[OneInputStreamOperator[Any, Any]]
     new OneInputStreamOperatorTestHarness(processOperator)
@@ -104,7 +102,8 @@ class HarnessTestBase(mode: StateBackendMode) extends StreamingTestBase {
       prefixOperatorName: String): OneInputTransformation[_, _] = {
     t match {
       case one: OneInputTransformation[_, _] =>
-        if (one.getName.startsWith(prefixOperatorName)) {
+        if (one.getName.contains(prefixOperatorName)
+            || one.getDescription.contains(prefixOperatorName)) {
           one
         } else {
           extractExpectedTransformation(one.getInputs.get(0), prefixOperatorName)
@@ -118,22 +117,6 @@ class HarnessTestBase(mode: StateBackendMode) extends StreamingTestBase {
 
   def dropWatermarks(elements: Array[AnyRef]): util.Collection[AnyRef] = {
     elements.filter(e => !e.isInstanceOf[Watermark]).toList
-  }
-
-  class TestTableConfig extends TableConfig {
-
-    private var minIdleStateRetentionTime = 0L
-
-    private var maxIdleStateRetentionTime = 0L
-
-    override def getMinIdleStateRetentionTime: Long = minIdleStateRetentionTime
-
-    override def getMaxIdleStateRetentionTime: Long = maxIdleStateRetentionTime
-
-    override def setIdleStateRetentionTime(minTime: Time, maxTime: Time): Unit = {
-      minIdleStateRetentionTime = minTime.toMilliseconds
-      maxIdleStateRetentionTime = maxTime.toMilliseconds
-    }
   }
 }
 

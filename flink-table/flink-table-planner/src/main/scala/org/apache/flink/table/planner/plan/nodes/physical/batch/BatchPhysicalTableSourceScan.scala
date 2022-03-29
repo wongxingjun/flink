@@ -24,7 +24,7 @@ import org.apache.flink.table.planner.plan.nodes.exec.batch.BatchExecTableSource
 import org.apache.flink.table.planner.plan.nodes.exec.spec.DynamicTableSourceSpec
 import org.apache.flink.table.planner.plan.nodes.physical.common.CommonPhysicalTableSourceScan
 import org.apache.flink.table.planner.plan.schema.TableSourceTable
-import org.apache.flink.table.planner.plan.utils.FlinkRelOptUtil
+import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan._
 import org.apache.calcite.rel.RelNode
@@ -49,6 +49,12 @@ class BatchPhysicalTableSourceScan(
     new BatchPhysicalTableSourceScan(cluster, traitSet, getHints, tableSourceTable)
   }
 
+  def copy(
+            traitSet: RelTraitSet,
+            tableSourceTable: TableSourceTable): BatchPhysicalTableSourceScan = {
+    new BatchPhysicalTableSourceScan(cluster, traitSet, getHints, tableSourceTable)
+  }
+
   override def computeSelfCost(planner: RelOptPlanner, mq: RelMetadataQuery): RelOptCost = {
     val rowCnt = mq.getRowCount(this)
     if (rowCnt == null) {
@@ -62,14 +68,12 @@ class BatchPhysicalTableSourceScan(
 
   override def translateToExecNode(): ExecNode[_] = {
     val tableSourceSpec = new DynamicTableSourceSpec(
-      tableSourceTable.tableIdentifier,
-      tableSourceTable.catalogTable,
+      tableSourceTable.contextResolvedTable,
       util.Arrays.asList(tableSourceTable.abilitySpecs: _*))
     tableSourceSpec.setTableSource(tableSourceTable.tableSource)
-    val tableConfig = FlinkRelOptUtil.getTableConfigFromContext(this)
-    tableSourceSpec.setReadableConfig(tableConfig.getConfiguration)
 
     new BatchExecTableSourceScan(
+      unwrapTableConfig(this),
       tableSourceSpec,
       FlinkTypeFactory.toLogicalRowType(getRowType),
       getRelDetailedDescription)

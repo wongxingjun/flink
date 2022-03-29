@@ -51,7 +51,6 @@ import org.apache.flink.api.java.typeutils.MissingTypeInfo;
 import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
@@ -61,6 +60,7 @@ import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.StateChangelogOptions;
 import org.apache.flink.configuration.UnmodifiableConfiguration;
 import org.apache.flink.core.execution.DefaultExecutorServiceLoader;
 import org.apache.flink.core.execution.DetachedJobExecutionResult;
@@ -95,7 +95,6 @@ import org.apache.flink.streaming.api.functions.source.StatefulSequenceSource;
 import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.streaming.api.graph.StreamGraphGenerator;
-import org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator;
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.util.DynamicCodeLoadingException;
 import org.apache.flink.util.ExceptionUtils;
@@ -169,14 +168,14 @@ public class StreamExecutionEnvironment {
     // ------------------------------------------------------------------------
 
     /** The execution configuration for this environment. */
-    private final ExecutionConfig config = new ExecutionConfig();
+    protected final ExecutionConfig config = new ExecutionConfig();
 
     /** Settings that control the checkpointing behavior. */
-    private final CheckpointConfig checkpointCfg = new CheckpointConfig();
+    protected final CheckpointConfig checkpointCfg = new CheckpointConfig();
 
     protected final List<Transformation<?>> transformations = new ArrayList<>();
 
-    private long bufferTimeout = StreamingJobGraphGenerator.UNDEFINED_NETWORK_BUFFER_TIMEOUT;
+    private long bufferTimeout = ExecutionOptions.BUFFER_TIMEOUT.defaultValue().toMillis();
 
     protected boolean isChainingEnabled = true;
 
@@ -265,7 +264,7 @@ public class StreamExecutionEnvironment {
                 userClassloader == null ? getClass().getClassLoader() : userClassloader;
 
         // the configuration of a job or an operator can be specified at the following places:
-        //     i) at the operator level using e.g. parallelism using the
+        //     i) at the operator level via e.g. parallelism by using the
         // SingleOutputStreamOperator.setParallelism().
         //     ii) programmatically by using e.g. the env.setRestartStrategy() method
         //     iii) in the configuration passed here
@@ -418,7 +417,7 @@ public class StreamExecutionEnvironment {
      * @param timeoutMillis The maximum time between two output flushes.
      */
     public StreamExecutionEnvironment setBufferTimeout(long timeoutMillis) {
-        if (timeoutMillis < -1) {
+        if (timeoutMillis < ExecutionOptions.DISABLED_NETWORK_BUFFER_TIMEOUT) {
             throw new IllegalArgumentException("Timeout of buffer must be non-negative or -1");
         }
 
@@ -482,7 +481,7 @@ public class StreamExecutionEnvironment {
      * <p>The job draws checkpoints periodically, in the given interval. The state will be stored in
      * the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
      * For that reason, iterative jobs will not be started if used with enabled checkpointing. To
      * override this mechanism, use the {@link #enableCheckpointing(long, CheckpointingMode,
      * boolean)} method.
@@ -503,7 +502,7 @@ public class StreamExecutionEnvironment {
      * {@link CheckpointingMode} for the checkpointing ("exactly once" vs "at least once"). The
      * state will be stored in the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
      * For that reason, iterative jobs will not be started if used with enabled checkpointing. To
      * override this mechanism, use the {@link #enableCheckpointing(long, CheckpointingMode,
      * boolean)} method.
@@ -526,7 +525,7 @@ public class StreamExecutionEnvironment {
      * <p>The job draws checkpoints periodically, in the given interval. The state will be stored in
      * the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
      * If the "force" parameter is set to true, the system will execute the job nonetheless.
      *
      * @param interval Time interval between state checkpoints in millis.
@@ -556,7 +555,7 @@ public class StreamExecutionEnvironment {
      * <p>The job draws checkpoints periodically, in the default interval. The state will be stored
      * in the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
      * For that reason, iterative jobs will not be started if used with enabled checkpointing. To
      * override this mechanism, use the {@link #enableCheckpointing(long, CheckpointingMode,
      * boolean)} method.
@@ -967,7 +966,7 @@ public class StreamExecutionEnvironment {
                 .getOptional(StreamPipelineOptions.TIME_CHARACTERISTIC)
                 .ifPresent(this::setStreamTimeCharacteristic);
         configuration
-                .getOptional(CheckpointingOptions.ENABLE_STATE_CHANGE_LOG)
+                .getOptional(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG)
                 .ifPresent(this::enableChangelogStateBackend);
         Optional.ofNullable(loadStateBackend(configuration, classLoader))
                 .ifPresent(this::setStateBackend);
@@ -1141,7 +1140,7 @@ public class StreamExecutionEnvironment {
     }
 
     /**
-     * Creates a new data set that contains the given elements. The framework will determine the
+     * Creates a new data stream that contains the given elements. The framework will determine the
      * type according to the based type user supplied. The elements should be the same or be the
      * subclass to the based type. The sequence of elements must not be empty. Note that this
      * operation will result in a non-parallel data stream source, i.e. a data stream source with a
@@ -1894,7 +1893,7 @@ public class StreamExecutionEnvironment {
      * @param <OUT> type of the returned stream
      * @return the data stream constructed
      */
-    @Experimental
+    @PublicEvolving
     public <OUT> DataStreamSource<OUT> fromSource(
             Source<OUT, ?, ?> source,
             WatermarkStrategy<OUT> timestampsAndWatermarks,
@@ -2112,10 +2111,10 @@ public class StreamExecutionEnvironment {
     }
 
     /**
-     * Getter of the {@link org.apache.flink.streaming.api.graph.StreamGraph} of the streaming job.
-     * This call clears previously registered {@link Transformation transformations}.
+     * Getter of the {@link StreamGraph} of the streaming job. This call clears previously
+     * registered {@link Transformation transformations}.
      *
-     * @return The streamgraph representing the transformations
+     * @return The stream graph representing the transformations
      */
     @Internal
     public StreamGraph getStreamGraph() {
@@ -2123,33 +2122,47 @@ public class StreamExecutionEnvironment {
     }
 
     /**
-     * Getter of the {@link org.apache.flink.streaming.api.graph.StreamGraph StreamGraph} of the
-     * streaming job with the option to clear previously registered {@link Transformation
-     * transformations}. Clearing the transformations allows, for example, to not re-execute the
-     * same operations when calling {@link #execute()} multiple times.
+     * Getter of the {@link StreamGraph} of the streaming job with the option to clear previously
+     * registered {@link Transformation transformations}. Clearing the transformations allows, for
+     * example, to not re-execute the same operations when calling {@link #execute()} multiple
+     * times.
      *
      * @param clearTransformations Whether or not to clear previously registered transformations
-     * @return The streamgraph representing the transformations
+     * @return The stream graph representing the transformations
      */
     @Internal
     public StreamGraph getStreamGraph(boolean clearTransformations) {
-        final StreamGraph streamGraph = getStreamGraphGenerator().generate();
+        final StreamGraph streamGraph = getStreamGraphGenerator(transformations).generate();
         if (clearTransformations) {
-            this.transformations.clear();
+            transformations.clear();
         }
         return streamGraph;
     }
 
-    private StreamGraphGenerator getStreamGraphGenerator() {
+    /**
+     * Generates a {@link StreamGraph} that consists of the given {@link Transformation
+     * transformations} and is configured with the configuration of this environment.
+     *
+     * <p>This method does not access or clear the previously registered transformations.
+     *
+     * @param transformations list of transformations that the graph should contain
+     * @return The stream graph representing the transformations
+     */
+    @Internal
+    public StreamGraph generateStreamGraph(List<Transformation<?>> transformations) {
+        return getStreamGraphGenerator(transformations).generate();
+    }
+
+    private StreamGraphGenerator getStreamGraphGenerator(List<Transformation<?>> transformations) {
         if (transformations.size() <= 0) {
             throw new IllegalStateException(
                     "No operators defined in streaming topology. Cannot execute.");
         }
 
-        final RuntimeExecutionMode executionMode = configuration.get(ExecutionOptions.RUNTIME_MODE);
-
-        return new StreamGraphGenerator(transformations, config, checkpointCfg, configuration)
-                .setRuntimeExecutionMode(executionMode)
+        // We copy the transformation so that newly added transformations cannot intervene with the
+        // stream graph generation.
+        return new StreamGraphGenerator(
+                        new ArrayList<>(transformations), config, checkpointCfg, configuration)
                 .setStateBackend(defaultStateBackend)
                 .setChangelogStateBackendEnabled(changelogStateBackendEnabled)
                 .setSavepointDir(defaultSavepointDirectory)
@@ -2467,6 +2480,19 @@ public class StreamExecutionEnvironment {
                         name, new DistributedCache.DistributedCacheEntry(filePath, executable)));
     }
 
+    /**
+     * Checks whether it is currently permitted to explicitly instantiate a LocalEnvironment or a
+     * RemoteEnvironment.
+     *
+     * @return True, if it is possible to explicitly instantiate a LocalEnvironment or a
+     *     RemoteEnvironment, false otherwise.
+     */
+    @Internal
+    public static boolean areExplicitEnvironmentsAllowed() {
+        return contextEnvironmentFactory == null
+                && threadLocalContextEnvironmentFactory.get() == null;
+    }
+
     // Private helpers.
     @SuppressWarnings("unchecked")
     private <OUT, T extends TypeInformation<OUT>> T getTypeInfo(
@@ -2488,5 +2514,10 @@ public class StreamExecutionEnvironment {
             }
         }
         return (T) resolvedTypeInfo;
+    }
+
+    @Internal
+    public List<Transformation<?>> getTransformations() {
+        return transformations;
     }
 }

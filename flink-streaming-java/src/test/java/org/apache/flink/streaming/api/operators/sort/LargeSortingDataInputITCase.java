@@ -18,6 +18,7 @@
 
 package org.apache.flink.streaming.api.operators.sort;
 
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
@@ -42,7 +43,7 @@ import org.apache.flink.streaming.runtime.io.StreamOneInputProcessor;
 import org.apache.flink.streaming.runtime.io.StreamTaskInput;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.streaming.runtime.streamstatus.StreamStatus;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -81,7 +82,8 @@ public class LargeSortingDataInputITCase {
                                 true,
                                 1.0,
                                 new Configuration(),
-                                new DummyInvokable())) {
+                                new DummyInvokable(),
+                                new ExecutionConfig())) {
             DataInputStatus inputStatus;
             VerifyingOutput<Integer> output = new VerifyingOutput<>(keySelector);
             do {
@@ -109,7 +111,8 @@ public class LargeSortingDataInputITCase {
                                 true,
                                 1.0,
                                 new Configuration(),
-                                new DummyInvokable())) {
+                                new DummyInvokable(),
+                                new ExecutionConfig())) {
             DataInputStatus inputStatus;
             VerifyingOutput<String> output = new VerifyingOutput<>(keySelector);
             do {
@@ -143,7 +146,8 @@ public class LargeSortingDataInputITCase {
                             environment.getIOManager(),
                             true,
                             1.0,
-                            new Configuration());
+                            new Configuration(),
+                            new ExecutionConfig());
 
             StreamTaskInput<?>[] sortingDataInputs = selectableSortingInputs.getSortedInputs();
             try (StreamTaskInput<Tuple3<Integer, String, byte[]>> sortedInput1 =
@@ -210,7 +214,7 @@ public class LargeSortingDataInputITCase {
         public void emitWatermark(Watermark watermark) throws Exception {}
 
         @Override
-        public void emitStreamStatus(StreamStatus streamStatus) throws Exception {}
+        public void emitWatermarkStatus(WatermarkStatus watermarkStatus) throws Exception {}
 
         @Override
         public void emitLatencyMarker(LatencyMarker latencyMarker) throws Exception {}

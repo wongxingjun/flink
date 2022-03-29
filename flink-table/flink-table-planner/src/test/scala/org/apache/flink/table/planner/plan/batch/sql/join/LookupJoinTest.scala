@@ -188,7 +188,7 @@ class LookupJoinTest(legacyTableSource: Boolean) extends TableTestBase {
          |FROM ($sql2) AS T
          |GROUP BY b
       """.stripMargin
-    val programs = FlinkBatchProgram.buildProgram(testUtil.tableEnv.getConfig.getConfiguration)
+    val programs = FlinkBatchProgram.buildProgram(testUtil.tableEnv.getConfig)
     programs.remove(FlinkBatchProgram.PHYSICAL)
     testUtil.replaceBatchProgram(programs)
     testUtil.verifyRelPlan(sql)
@@ -196,12 +196,14 @@ class LookupJoinTest(legacyTableSource: Boolean) extends TableTestBase {
 
   @Test
   def testLogicalPlanWithImplicitTypeCast(): Unit = {
-    val programs = FlinkBatchProgram.buildProgram(testUtil.tableEnv.getConfig.getConfiguration)
+    val programs = FlinkBatchProgram.buildProgram(testUtil.tableEnv.getConfig)
     programs.remove(FlinkBatchProgram.PHYSICAL)
     testUtil.replaceBatchProgram(programs)
 
     thrown.expect(classOf[TableException])
-    thrown.expectMessage("VARCHAR(2147483647) and INTEGER does not have common type now")
+    thrown.expectMessage(
+      "implicit type conversion between VARCHAR(2147483647) and INTEGER " +
+        "is not supported on join's condition now")
 
     testUtil.verifyRelPlan("SELECT * FROM MyTable AS T JOIN LookupTable "
       + "FOR SYSTEM_TIME AS OF T.proctime AS D ON T.b = D.id")
@@ -327,8 +329,8 @@ class LookupJoinTest(legacyTableSource: Boolean) extends TableTestBase {
 
   @Test
   def testReusing(): Unit = {
-    testUtil.tableEnv.getConfig.getConfiguration.setBoolean(
-      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SUB_PLAN_ENABLED, true)
+    testUtil.tableEnv.getConfig.set(
+      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_SUB_PLAN_ENABLED, Boolean.box(true))
     val sql1 =
       """
         |SELECT b, a, sum(c) c, sum(d) d, PROCTIME() as proctime

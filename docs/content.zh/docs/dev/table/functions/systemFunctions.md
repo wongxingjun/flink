@@ -107,7 +107,7 @@ Known Limitations:
 
 ### 辅助函数
 
-{{< sql_functions_zh "auxilary" >}}
+{{< sql_functions_zh "auxiliary" >}}
 
 聚合函数
 -------------------
@@ -206,7 +206,7 @@ Known Limitations:
 ```java
 table
    .groupBy("withColumns(1 to 3)")
-   .select("withColumns(a to b), myUDAgg(myUDF(withColumns(5 to 20)))")
+   .select("withColumns(a to b), myUDAgg(myUDF(withColumns(5 to 20)))");
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}

@@ -45,14 +45,14 @@ Add the following dependency to your `pom.xml` to use Gelly.
 
 {{< tabs "96de5128-3c66-4942-9498-e9a8ae439314" >}}
 {{< tab "Java" >}}
-{{< artifact flink-gelly withScalaVersion >}}
+{{< artifact flink-gelly >}}
 {{< /tab >}}
 {{< tab "Scala" >}}
 {{< artifact flink-gelly-scala withScalaVersion >}}
 {{< /tab >}}
 {{< /tabs >}}
 
-Note that Gelly is not part of the binary distribution. See [linking]({{< ref "docs/dev/datastream/project-configuration" >}}) for
+Note that Gelly is not part of the binary distribution. See [linking]({{< ref "docs/dev/configuration/overview" >}}) for
 instructions on packaging Gelly libraries into Flink user programs.
 
 The remaining sections provide a description of available methods and present several examples of how to use Gelly and how to mix it with the Flink DataSet API.

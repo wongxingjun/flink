@@ -81,14 +81,13 @@ public class HiveRunnerITCase {
     private static final HiveRunnerConfig CONFIG =
             new HiveRunnerConfig() {
                 {
-                    if (HiveShimLoader.getHiveVersion().startsWith("3.")) {
-                        // hive-3.x requires a proper txn manager to create ACID table
-                        getHiveConfSystemOverride()
-                                .put(HIVE_TXN_MANAGER.varname, DbTxnManager.class.getName());
-                        getHiveConfSystemOverride().put(HIVE_SUPPORT_CONCURRENCY.varname, "true");
-                        // tell TxnHandler to prepare txn DB
-                        getHiveConfSystemOverride().put(HIVE_IN_TEST.varname, "true");
-                    }
+                    // catalog lock needs txn manager
+                    // hive-3.x requires a proper txn manager to create ACID table
+                    getHiveConfSystemOverride()
+                            .put(HIVE_TXN_MANAGER.varname, DbTxnManager.class.getName());
+                    getHiveConfSystemOverride().put(HIVE_SUPPORT_CONCURRENCY.varname, "true");
+                    // tell TxnHandler to prepare txn DB
+                    getHiveConfSystemOverride().put(HIVE_IN_TEST.varname, "true");
                 }
             };
 
@@ -257,9 +256,9 @@ public class HiveRunnerITCase {
         TableEnvironment tableEnv = getTableEnvWithHiveCatalog();
         tableEnv.executeSql("create database db1");
         try {
-            tableEnv.executeSql("create table db1.src1 (x decimal(10,2))");
-            tableEnv.executeSql("create table db1.src2 (x decimal(10,2))");
-            tableEnv.executeSql("create table db1.dest (x decimal(10,2))");
+            tableEnv.executeSql("create table db1.src1 (x decimal(12,2))");
+            tableEnv.executeSql("create table db1.src2 (x decimal(12,2))");
+            tableEnv.executeSql("create table db1.dest (x decimal(12,2))");
             // populate src1 from Hive
             // TABLE keyword in INSERT INTO is mandatory prior to 1.1.0
             hiveShell.execute(
@@ -540,9 +539,7 @@ public class HiveRunnerITCase {
             tableEnv.executeSql("create table db1.src (x smallint,y int) stored as orc");
             hiveShell.execute("insert into table db1.src values (1,100),(2,200)");
 
-            tableEnv.getConfig()
-                    .getConfiguration()
-                    .setBoolean(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_READER, true);
+            tableEnv.getConfig().set(HiveOptions.TABLE_EXEC_HIVE_FALLBACK_MAPRED_READER, true);
 
             tableEnv.executeSql("alter table db1.src change x x int");
             assertEquals(
@@ -768,5 +765,25 @@ public class HiveRunnerITCase {
                             return res;
                         })
                 .collect(Collectors.joining(","));
+    }
+
+    @Test
+    public void testCatalogLock() throws Exception {
+        TableEnvironment tableEnv = HiveTestUtils.createTableEnvInBatchMode(SqlDialect.DEFAULT);
+        tableEnv.registerCatalog(hiveCatalog.getName(), hiveCatalog);
+        tableEnv.useCatalog(hiveCatalog.getName());
+
+        tableEnv.executeSql("create database db1");
+        try {
+            tableEnv.useDatabase("db1");
+            tableEnv.executeSql(
+                    "create table src (x int) with ('connector'='datagen','number-of-rows'='2')");
+            tableEnv.executeSql("create table lock_t (x int) with ('connector'='test-lock')");
+
+            // see TestLockTableSinkFactory
+            tableEnv.executeSql("insert into lock_t select * from src").await();
+        } finally {
+            tableEnv.executeSql("drop database db1 cascade");
+        }
     }
 }

@@ -69,7 +69,7 @@ public class KubernetesLeaderRetrievalDriverTest extends KubernetesHighAvailabil
                                     callbackHandler = getLeaderRetrievalConfigMapCallback();
 
                             // Leader changed
-                            final String newLeader = LEADER_URL + "_" + 2;
+                            final String newLeader = LEADER_ADDRESS + "_" + 2;
                             getLeaderConfigMap()
                                     .getData()
                                     .put(Constants.LEADER_ADDRESS_KEY, newLeader);
@@ -98,6 +98,7 @@ public class KubernetesLeaderRetrievalDriverTest extends KubernetesHighAvailabil
                             getLeaderConfigMap().getData().clear();
                             callbackHandler.onModified(
                                     Collections.singletonList(getLeaderConfigMap()));
+                            retrievalEventHandler.waitForEmptyLeaderInformation(TIMEOUT);
                             assertThat(retrievalEventHandler.getAddress(), is(nullValue()));
                         });
             }

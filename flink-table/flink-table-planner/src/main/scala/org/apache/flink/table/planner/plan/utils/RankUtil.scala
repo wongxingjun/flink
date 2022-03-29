@@ -19,11 +19,16 @@
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.table.api.TableConfig
+import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.codegen.ExpressionReducer
 import org.apache.flink.table.planner.plan.nodes.calcite.Rank
-import org.apache.flink.table.runtime.operators.rank.{ConstantRankRange, ConstantRankRangeWithoutEnd, RankRange, VariableRankRange}
+import org.apache.flink.table.planner.plan.nodes.logical.FlinkLogicalRank
+import org.apache.flink.table.planner.plan.nodes.physical.stream.StreamPhysicalDeduplicate
+import org.apache.flink.table.runtime.operators.rank.{ConstantRankRange, ConstantRankRangeWithoutEnd, RankRange, RankType, VariableRankRange}
 
 import org.apache.calcite.plan.RelOptUtil
+import org.apache.calcite.rel.RelCollation
+import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rex.{RexBuilder, RexCall, RexInputRef, RexLiteral, RexNode, RexUtil}
 import org.apache.calcite.sql.SqlKind
 
@@ -60,18 +65,17 @@ object RankUtil {
     * @param  oriPred             the original predicate
     * @param  rankFieldIndex      the index of rank field
     * @param  rexBuilder          RexBuilder
-    * @param  config              TableConfig
+    * @param  tableConfig         TableConfig
     * @return A Tuple2 of extracted rank range and remaining predicates.
     */
   def extractRankRange(
       oriPred: RexNode,
       rankFieldIndex: Int,
       rexBuilder: RexBuilder,
-      config: TableConfig): (Option[RankRange], Option[RexNode]) = {
+      tableConfig: TableConfig): (Option[RankRange], Option[RexNode]) = {
     val predicate = FlinkRexUtil.expandSearch(rexBuilder, oriPred)
     // Converts the condition to conjunctive normal form (CNF)
-    val cnfNodeCount = config.getConfiguration.getInteger(
-      FlinkRexUtil.TABLE_OPTIMIZER_CNF_NODES_LIMIT)
+    val cnfNodeCount = tableConfig.get(FlinkRexUtil.TABLE_OPTIMIZER_CNF_NODES_LIMIT)
     val cnfCondition = FlinkRexUtil.toCnf(rexBuilder, cnfNodeCount, predicate)
 
     // split the condition into sort limit condition and other condition
@@ -100,7 +104,7 @@ object RankUtil {
       return (None, Some(predicate))
     }
 
-    val sortBounds = limitPreds.map(computeWindowBoundFromPredicate(_, rexBuilder, config))
+    val sortBounds = limitPreds.map(computeWindowBoundFromPredicate(_, rexBuilder, tableConfig))
     val rankRange = sortBounds match {
       case Seq(Some(LowerBoundary(x)), Some(UpperBoundary(y))) =>
         new ConstantRankRange(x, y)
@@ -202,7 +206,7 @@ object RankUtil {
   private def computeWindowBoundFromPredicate(
       limitPred: LimitPredicate,
       rexBuilder: RexBuilder,
-      config: TableConfig): Option[Boundary] = {
+      tableConfig: TableConfig): Option[Boundary] = {
 
     val bound: BoundDefine = limitPred.pred.getKind match {
       case SqlKind.GREATER_THAN | SqlKind.GREATER_THAN_OR_EQUAL if limitPred.rankOnLeftSide =>
@@ -228,7 +232,7 @@ object RankUtil {
       case (_: RexInputRef, Lower) => None
       case _ =>
         // reduce predicate to constants to compute bounds
-        val literal = reduceComparisonPredicate(limitPred, rexBuilder, config)
+        val literal = reduceComparisonPredicate(limitPred, rexBuilder, tableConfig)
         if (literal.isEmpty) {
           None
         } else {
@@ -259,15 +263,15 @@ object RankUtil {
     * Replaces the rank aggregate reference on of a predicate by a zero literal and
     * reduces the expressions on both sides to a long literal.
     *
-    * @param limitPred The limit predicate which both sides are reduced.
-    * @param rexBuilder A RexBuilder
-    * @param config A TableConfig.
+    * @param limitPred   The limit predicate which both sides are reduced.
+    * @param rexBuilder  A RexBuilder
+    * @param tableConfig A TableConfig.
     * @return The values of the reduced literals on both sides of the comparison predicate.
     */
   private def reduceComparisonPredicate(
       limitPred: LimitPredicate,
       rexBuilder: RexBuilder,
-      config: TableConfig): Option[Long] = {
+      tableConfig: TableConfig): Option[Long] = {
 
     val expression = if (limitPred.rankOnLeftSide) {
       limitPred.pred.operands.get(1)
@@ -280,7 +284,7 @@ object RankUtil {
     }
 
     // reduce expression to literal
-     val exprReducer = new ExpressionReducer(config)
+     val exprReducer = new ExpressionReducer(tableConfig)
      val originList = new util.ArrayList[RexNode]()
      originList.add(expression)
      val reduceList = new util.ArrayList[RexNode]()
@@ -310,4 +314,43 @@ object RankUtil {
     }
   }
 
+  /**
+   * Whether the given rank could be converted to [[StreamPhysicalDeduplicate]].
+   *
+   * Returns true if the given rank is sorted by time attribute and limits 1
+   * and its RankFunction is ROW_NUMBER, else false.
+   *
+   * @param rank The [[FlinkLogicalRank]] node
+   * @return True if the input rank could be converted to [[StreamPhysicalDeduplicate]]
+   */
+  def canConvertToDeduplicate(rank: FlinkLogicalRank): Boolean = {
+    val sortCollation = rank.orderKey
+    val rankRange = rank.rankRange
+
+    val isRowNumberType = rank.rankType == RankType.ROW_NUMBER
+
+    val isLimit1 = rankRange match {
+      case rankRange: ConstantRankRange =>
+        rankRange.getRankStart == 1 && rankRange.getRankEnd == 1
+      case _ => false
+    }
+
+    val inputRowType = rank.getInput.getRowType
+    val isSortOnTimeAttribute = sortOnTimeAttribute(sortCollation, inputRowType)
+
+    !rank.outputRankNumber && isLimit1 && isSortOnTimeAttribute && isRowNumberType
+  }
+
+  private def sortOnTimeAttribute(
+      sortCollation: RelCollation,
+      inputRowType: RelDataType): Boolean = {
+    if (sortCollation.getFieldCollations.size() != 1) {
+      false
+    } else {
+      val firstSortField = sortCollation.getFieldCollations.get(0)
+      val fieldType = inputRowType.getFieldList.get(firstSortField.getFieldIndex).getType
+      FlinkTypeFactory.isProctimeIndicatorType(fieldType) ||
+        FlinkTypeFactory.isRowtimeIndicatorType(fieldType)
+    }
+  }
 }

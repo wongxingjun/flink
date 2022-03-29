@@ -71,7 +71,7 @@ response back to the client.
 
 To enable queryable state on your Flink cluster, you need to do the following:
 
- 1. copy the `flink-queryable-state-runtime{{< scala_version >}}-{{< version >}}.jar`
+ 1. copy the `flink-queryable-state-runtime-{{< version >}}.jar`
 from the `opt/` folder of your [Flink distribution]({{< downloads >}} "Apache Flink: Downloads"), 
 to the `lib/` folder.
  2. set the property `queryable-state.enable` to `true`. See the [Configuration]({{< ref "docs/deployment/config" >}}#queryable-state) documentation for details and additional parameters.
@@ -125,7 +125,7 @@ In a program like the following, all records of the keyed stream will be used to
 `ValueState.update(value)`:
 
 ```java
-stream.keyBy(value -> value.f0).asQueryableState("query-name")
+stream.keyBy(value -> value.f0).asQueryableState("query-name");
 ```
 
 This acts like the Scala API's `flatMapWithState`.
@@ -173,7 +173,7 @@ jar which must be explicitly included as a dependency in the `pom.xml` of your p
 </dependency>
 ```
 
-For more on this, you can check how to [set up a Flink program]({{< ref "docs/dev/datastream/project-configuration" >}}).
+For more on this, you can check how to [set up a Flink program]({{< ref "docs/dev/configuration/overview" >}}).
 
 The `QueryableStateClient` will submit your query to the internal proxy, which will then process your query and return 
 the final result. The only requirement to initialize the client is to provide a valid `TaskManager` hostname (remember 

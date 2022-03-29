@@ -25,10 +25,12 @@ import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.FunctionCatalog;
+import org.apache.flink.table.module.ModuleManager;
 import org.apache.flink.table.planner.calcite.CalciteConfig;
 import org.apache.flink.table.planner.calcite.CalciteConfig$;
 import org.apache.flink.table.planner.calcite.FlinkContext;
 import org.apache.flink.table.planner.calcite.FlinkContextImpl;
+import org.apache.flink.table.planner.calcite.FlinkConvertletTable;
 import org.apache.flink.table.planner.calcite.FlinkPlannerImpl;
 import org.apache.flink.table.planner.calcite.FlinkRelBuilder;
 import org.apache.flink.table.planner.calcite.FlinkRelFactories;
@@ -102,7 +104,9 @@ public class PlannerContext {
     private final FrameworkConfig frameworkConfig;
 
     public PlannerContext(
+            boolean isBatchMode,
             TableConfig tableConfig,
+            ModuleManager moduleManager,
             FunctionCatalog functionCatalog,
             CatalogManager catalogManager,
             CalciteSchema rootSchema,
@@ -111,7 +115,12 @@ public class PlannerContext {
 
         this.context =
                 new FlinkContextImpl(
-                        tableConfig, functionCatalog, catalogManager, rexConverterFactory);
+                        isBatchMode,
+                        tableConfig,
+                        moduleManager,
+                        functionCatalog,
+                        catalogManager,
+                        rexConverterFactory);
 
         this.rootSchema = rootSchema;
         this.traitDefs = traitDefs;
@@ -139,6 +148,7 @@ public class PlannerContext {
                 .parserConfig(getSqlParserConfig())
                 .costFactory(new FlinkCostFactory())
                 .typeSystem(typeSystem)
+                .convertletTable(FlinkConvertletTable.INSTANCE)
                 .sqlToRelConverterConfig(getSqlToRelConverterConfig(getCalciteConfig(tableConfig)))
                 .operatorTable(getSqlOperatorTable(getCalciteConfig(tableConfig)))
                 // set the executor to evaluate constant expressions
@@ -174,7 +184,7 @@ public class PlannerContext {
                         context,
                         // Sets up the ViewExpander explicitly for FlinkRelBuilder.
                         createFlinkPlanner(currentCatalog, currentDatabase).createToRelContext());
-        return new FlinkRelBuilder(chain, cluster, relOptSchema);
+        return FlinkRelBuilder.of(chain, cluster, relOptSchema);
     }
 
     /**

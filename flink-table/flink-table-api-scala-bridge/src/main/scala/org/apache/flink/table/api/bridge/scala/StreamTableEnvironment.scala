@@ -18,7 +18,6 @@
 package org.apache.flink.table.api.bridge.scala
 
 import org.apache.flink.annotation.PublicEvolving
-import org.apache.flink.api.common.JobExecutionResult
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.streaming.api.scala.{DataStream, StreamExecutionEnvironment}
@@ -584,6 +583,17 @@ trait StreamTableEnvironment extends TableEnvironment {
         table: Table, targetSchema: Schema, changelogMode: ChangelogMode): DataStream[Row]
 
   /**
+   * Returns a [[StatementSet]] that integrates with the Scala-specific [[DataStream]] API.
+   *
+   * It accepts pipelines defined by DML statements or [[Table]] objects. The planner can
+   * optimize all added statements together and then either submit them as one job or attach them
+   * to the underlying [[StreamExecutionEnvironment]].
+   *
+   * @return statement set builder for the Scala-specific [[DataStream]] API
+   */
+  def createStatementSet(): StreamStatementSet
+
+  /**
     * Converts the given [[DataStream]] into a [[Table]] with specified field names.
     *
     * There are two modes for mapping original fields to the fields of the [[Table]]:
@@ -608,7 +618,7 @@ trait StreamTableEnvironment extends TableEnvironment {
     *   )
     * }}}
     *
-    * <p>2. Reference input fields by position:
+    * 2. Reference input fields by position:
     * In this mode, fields are simply renamed. Event-time attributes can
     * replace the field on their position in the input data (if it is of correct type) or be
     * appended at the end. Proctime attributes must be appended at the end. This mode can only be
@@ -633,7 +643,13 @@ trait StreamTableEnvironment extends TableEnvironment {
     *               the [[Table]].
     * @tparam T The type of the [[DataStream]].
     * @return The converted [[Table]].
+    * @deprecated Use [[fromDataStream(DataStream, Schema)]] instead. In most cases,
+    *             [[fromDataStream(DataStream)]] should already be sufficient. It integrates with
+    *             the new type system and supports all kinds of [[DataTypes]] that the table runtime
+    *             can consume. The semantics might be slightly different for raw and structured
+    *             types.
     */
+  @deprecated
   def fromDataStream[T](dataStream: DataStream[T], fields: Expression*): Table
 
   /**
@@ -779,7 +795,13 @@ trait StreamTableEnvironment extends TableEnvironment {
     * @param fields The fields expressions to map original fields of the DataStream to the fields of
     *               the View.
     * @tparam T The type of the [[DataStream]].
+    * @deprecated Use [[createTemporaryView(String, DataStream, Schema)]] instead. In most cases,
+    *             [[createTemporaryView(String, DataStream)]] should already be sufficient. It
+    *             integrates with the new type system and supports all kinds of [[DataTypes]] that
+    *             the table runtime can consume. The semantics might be slightly different for raw
+    *             and structured types.
     */
+  @deprecated
   def createTemporaryView[T](path: String, dataStream: DataStream[T], fields: Expression*): Unit
 
   /**
@@ -796,7 +818,13 @@ trait StreamTableEnvironment extends TableEnvironment {
     * @param table The [[Table]] to convert.
     * @tparam T The type of the resulting [[DataStream]].
     * @return The converted [[DataStream]].
+    * @deprecated Use [[toDataStream(Table, Class)]] instead. It integrates with the new type
+    *             system and supports all kinds of [[DataTypes]] that the table runtime can produce.
+    *             The semantics might be slightly different for raw and structured types. Use
+    *             `toDataStream(DataTypes.of(Types.of[Class]))` if [[TypeInformation]]
+    *             should be used as source of truth.
     */
+  @deprecated
   def toAppendStream[T: TypeInformation](table: Table): DataStream[T]
 
   /**
@@ -809,28 +837,12 @@ trait StreamTableEnvironment extends TableEnvironment {
     * @param table The [[Table]] to convert.
     * @tparam T The type of the requested data type.
     * @return The converted [[DataStream]].
-    */
-  def toRetractStream[T: TypeInformation](table: Table): DataStream[(Boolean, T)]
-
-  /**
-    * Triggers the program execution. The environment will execute all parts of
-    * the program.
-    *
-    * The program execution will be logged and displayed with the provided name
-    *
-    * It calls the StreamExecutionEnvironment#execute on the underlying
-    * [[StreamExecutionEnvironment]]. In contrast to the [[TableEnvironment]] this
-    * environment translates queries eagerly.
-    *
-    * @param jobName Desired name of the job
-    * @return The result of the job execution, containing elapsed time and accumulators.
-    * @throws Exception which occurs during job execution.
-    * @deprecated Use [[StreamExecutionEnvironment.execute(String)]] instead or directly call
-    *             the execute methods of the Table API such as [[executeSql(String)]].
+    * @deprecated Use [[toChangelogStream(Table, Schema)]] instead. It integrates with the new
+    *             type system and supports all kinds of [[DataTypes]] and every [[ChangelogMode]]
+    *             that the table runtime can produce.
     */
   @deprecated
-  @throws[Exception]
-  override def execute(jobName: String): JobExecutionResult
+  def toRetractStream[T: TypeInformation](table: Table): DataStream[(Boolean, T)]
 }
 
 object StreamTableEnvironment {
@@ -856,9 +868,7 @@ object StreamTableEnvironment {
     *                             [[TableEnvironment]].
     */
   def create(executionEnvironment: StreamExecutionEnvironment): StreamTableEnvironment = {
-    create(
-      executionEnvironment,
-      EnvironmentSettings.newInstance().build())
+    create(executionEnvironment, EnvironmentSettings.newInstance().build)
   }
 
   /**
@@ -886,43 +896,6 @@ object StreamTableEnvironment {
       executionEnvironment: StreamExecutionEnvironment,
       settings: EnvironmentSettings)
     : StreamTableEnvironment = {
-    val config = new TableConfig();
-    config.addConfiguration(settings.toConfiguration)
-    StreamTableEnvironmentImpl
-      .create(executionEnvironment, settings, config)
-  }
-
-  /**
-    * Creates a table environment that is the entry point and central context for creating Table and
-    * SQL API programs that integrate with the Scala-specific [[DataStream]] API.
-    *
-    * It is unified for bounded and unbounded data processing.
-    *
-    * A stream table environment is responsible for:
-    *
-    * - Convert a [[DataStream]] into [[Table]] and vice-versa.
-    * - Connecting to external systems.
-    * - Registering and retrieving [[Table]]s and other meta objects from a catalog.
-    * - Executing SQL statements.
-    * - Offering further configuration options.
-    *
-    * Note: If you don't intend to use the [[DataStream]] API, [[TableEnvironment]] is meant for
-    * pure table programs.
-    *
-    * @param executionEnvironment The Scala [[StreamExecutionEnvironment]] of the
-    *                             [[TableEnvironment]].
-    * @param tableConfig The configuration of the [[TableEnvironment]].
-    * @deprecated Use [[create(StreamExecutionEnvironment)]] and
-    *             [[StreamTableEnvironment#getConfig()]] for manipulating the [[TableConfig]].
-    */
-  @deprecated
-  def create(executionEnvironment: StreamExecutionEnvironment, tableConfig: TableConfig)
-    : StreamTableEnvironment = {
-
-    StreamTableEnvironmentImpl
-      .create(
-        executionEnvironment,
-        EnvironmentSettings.newInstance().build(),
-        tableConfig)
+    StreamTableEnvironmentImpl.create(executionEnvironment, settings)
   }
 }

@@ -19,10 +19,11 @@
 package org.apache.flink.table.planner.calcite
 
 import org.apache.flink.sql.parser.ExtendedSqlNode
-import org.apache.flink.sql.parser.dml.{RichSqlInsert, SqlBeginStatementSet, SqlEndStatementSet}
+import org.apache.flink.sql.parser.dml.{RichSqlInsert, SqlBeginStatementSet, SqlCompileAndExecutePlan, SqlEndStatementSet, SqlExecute, SqlExecutePlan, SqlStatementSet}
 import org.apache.flink.sql.parser.dql._
 import org.apache.flink.table.api.{TableException, ValidationException}
 import org.apache.flink.table.planner.plan.FlinkCalciteCatalogReader
+
 import com.google.common.collect.ImmutableList
 import org.apache.calcite.config.NullCollation
 import org.apache.calcite.plan._
@@ -31,18 +32,20 @@ import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rel.hint.RelHint
 import org.apache.calcite.rel.{RelFieldCollation, RelRoot}
 import org.apache.calcite.rex.{RexInputRef, RexNode}
-import org.apache.calcite.sql.advise.{SqlAdvisor, SqlAdvisorValidator}
+import org.apache.calcite.sql.advise.SqlAdvisorValidator
 import org.apache.calcite.sql.validate.SqlValidator
-import org.apache.calcite.sql.{SqlExplain, SqlKind, SqlNode, SqlOperatorTable}
+import org.apache.calcite.sql.{SqlInsert, SqlKind, SqlNode, SqlOperatorTable}
 import org.apache.calcite.sql2rel.{SqlRexConvertletTable, SqlToRelConverter}
 import org.apache.calcite.tools.{FrameworkConfig, RelConversionException}
-import org.apache.flink.sql.parser.ddl.{SqlReset, SqlSet, SqlUseModules}
+import org.apache.flink.sql.parser.ddl.{SqlCompilePlan, SqlReset, SqlSet, SqlUseModules}
 import org.apache.flink.table.planner.parse.CalciteParser
 
 import javax.annotation.Nullable
+
 import java.lang.{Boolean => JBoolean}
 import java.util
 import java.util.function.{Function => JFunction}
+
 import scala.collection.JavaConverters._
 
 /**
@@ -119,7 +122,6 @@ class FlinkPlannerImpl(
       }
       // no need to validate row type for DDL and insert nodes.
       if (sqlNode.getKind.belongsTo(SqlKind.DDL)
-        || sqlNode.getKind == SqlKind.INSERT
         || sqlNode.getKind == SqlKind.CREATE_FUNCTION
         || sqlNode.getKind == SqlKind.DROP_FUNCTION
         || sqlNode.getKind == SqlKind.OTHER_DDL
@@ -133,6 +135,7 @@ class FlinkPlannerImpl(
         || sqlNode.isInstanceOf[SqlShowJars]
         || sqlNode.isInstanceOf[SqlShowModules]
         || sqlNode.isInstanceOf[SqlShowViews]
+        || sqlNode.isInstanceOf[SqlShowColumns]
         || sqlNode.isInstanceOf[SqlShowPartitions]
         || sqlNode.isInstanceOf[SqlRichDescribeTable]
         || sqlNode.isInstanceOf[SqlUnloadModule]
@@ -140,21 +143,39 @@ class FlinkPlannerImpl(
         || sqlNode.isInstanceOf[SqlBeginStatementSet]
         || sqlNode.isInstanceOf[SqlEndStatementSet]
         || sqlNode.isInstanceOf[SqlSet]
-        || sqlNode.isInstanceOf[SqlReset]) {
+        || sqlNode.isInstanceOf[SqlReset]
+        || sqlNode.isInstanceOf[SqlExecutePlan]) {
         return sqlNode
       }
       sqlNode match {
         case richExplain: SqlRichExplain =>
-          val validatedStatement = richExplain.getStatement match {
-            case insert: RichSqlInsert =>
-              val validatedSource = validator.validate(insert.getSource)
-              insert.setOperand(2, validatedSource)
-              insert
-            case others =>
-              validator.validate(others)
-          }
-          richExplain.setOperand(0, validatedStatement)
+          richExplain.setOperand(0, validate(richExplain.getStatement))
           richExplain
+        case statementSet: SqlStatementSet =>
+          statementSet.getInserts.asScala.zipWithIndex.foreach {
+            case (insert, idx) => statementSet.setOperand(idx, validate(insert))
+          }
+          statementSet
+        case execute: SqlExecute =>
+          execute.setOperand(0, validate(execute.getStatement))
+          execute
+        case insert: RichSqlInsert =>
+          // We don't support UPSERT INTO semantics (see FLINK-24225).
+          if (insert.isUpsert) {
+            throw new ValidationException(
+              "UPSERT INTO statement is not supported. Please use INSERT INTO instead.")
+          }
+          // only validate source here.
+          // ignore row type which will be verified in table environment.
+          val validatedSource = validator.validate(insert.getSource)
+          insert.setOperand(2, validatedSource)
+          insert
+        case compile: SqlCompilePlan =>
+          compile.setOperand(0, validate(compile.getOperandList.get(0)))
+          compile
+        case compileAndExecute: SqlCompileAndExecutePlan =>
+          compileAndExecute.setOperand(0, validate(compileAndExecute.getOperandList.get(0)))
+          compileAndExecute
         case _ =>
           validator.validate(sqlNode)
       }

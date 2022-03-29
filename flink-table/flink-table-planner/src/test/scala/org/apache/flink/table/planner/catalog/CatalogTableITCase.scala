@@ -61,13 +61,8 @@ class CatalogTableITCase(isStreamingMode: Boolean) extends AbstractTestBase {
 
   @Before
   def before(): Unit = {
-    tableEnv.getConfig.getConfiguration.setBoolean(
-      TableConfigOptions.TABLE_DYNAMIC_TABLE_OPTIONS_ENABLED,
-      true)
-
     tableEnv.getConfig
-      .getConfiguration
-      .setInteger(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 1)
+      .set(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, Int.box(1))
     TestCollectionTableFactory.reset()
 
     val func = new CatalogFunctionImpl(
@@ -1079,8 +1074,9 @@ class CatalogTableITCase(isStreamingMode: Boolean) extends AbstractTestBase {
     tableEnv.executeSql(createViewDDL)
     expectedEx.expect(classOf[TableException])
     expectedEx.expectMessage(
-      "SHOW CREATE TABLE does not support showing CREATE VIEW statement with " +
-        "identifier `default_catalog`.`default_database`.`tmp`.")
+      "SHOW CREATE TABLE is only supported for tables, " +
+        "but `default_catalog`.`default_database`.`tmp` is a view. " +
+        "Please use SHOW CREATE VIEW instead.")
     tableEnv.executeSql("SHOW CREATE TABLE `tmp`")
   }
 

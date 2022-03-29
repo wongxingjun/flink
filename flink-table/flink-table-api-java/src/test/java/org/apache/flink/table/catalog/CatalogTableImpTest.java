@@ -29,8 +29,9 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Test for {@link CatalogTableImpl}. */
 public class CatalogTableImpTest {
@@ -45,7 +46,7 @@ public class CatalogTableImpTest {
         DescriptorProperties descriptorProperties = new DescriptorProperties(false);
         descriptorProperties.putProperties(table.toProperties());
 
-        assertEquals(schema, descriptorProperties.getTableSchema(Schema.SCHEMA));
+        assertThat(descriptorProperties.getTableSchema(Schema.SCHEMA)).isEqualTo(schema);
     }
 
     @Test
@@ -57,9 +58,19 @@ public class CatalogTableImpTest {
         CatalogTableImpl tableFromProperties =
                 CatalogTableImpl.fromProperties(table.toProperties());
 
-        assertEquals(tableFromProperties.getOptions(), table.getOptions());
-        assertEquals(tableFromProperties.getPartitionKeys(), table.getPartitionKeys());
-        assertEquals(tableFromProperties.getSchema(), table.getSchema());
+        assertThat(table.getOptions()).isEqualTo(tableFromProperties.getOptions());
+        assertThat(table.getPartitionKeys()).isEqualTo(tableFromProperties.getPartitionKeys());
+        assertThat(table.getSchema()).isEqualTo(tableFromProperties.getSchema());
+    }
+
+    @Test
+    public void testNullComment() {
+        TableSchema schema = createTableSchema();
+        Map<String, String> prop = createProperties();
+        CatalogTable table = new CatalogTableImpl(schema, createPartitionKeys(), prop, null);
+
+        assertThat(table.getComment()).isEmpty();
+        assertThat(table.getDescription()).isEqualTo(Optional.of(""));
     }
 
     private static Map<String, String> createProperties() {

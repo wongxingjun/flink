@@ -35,6 +35,7 @@ import org.apache.flink.kubernetes.kubeclient.decorators.FlinkConfMountDecorator
 import org.apache.flink.kubernetes.kubeclient.decorators.HadoopConfMountDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.InternalServiceDecorator;
 import org.apache.flink.kubernetes.kubeclient.decorators.KerberosMountDecorator;
+import org.apache.flink.kubernetes.kubeclient.services.HeadlessClusterIPService;
 import org.apache.flink.kubernetes.utils.Constants;
 import org.apache.flink.kubernetes.utils.KubernetesUtils;
 
@@ -159,10 +160,11 @@ public class KubernetesJobManagerFactoryTest extends KubernetesJobManagerTestBas
 
         final Map<String, String> expectedLabels = new HashMap<>(getCommonLabels());
         expectedLabels.put(Constants.LABEL_COMPONENT_KEY, Constants.LABEL_COMPONENT_JOB_MANAGER);
-        expectedLabels.putAll(userLabels);
 
-        assertEquals(expectedLabels, resultDeploymentSpec.getTemplate().getMetadata().getLabels());
         assertEquals(expectedLabels, resultDeploymentSpec.getSelector().getMatchLabels());
+
+        expectedLabels.putAll(userLabels);
+        assertEquals(expectedLabels, resultDeploymentSpec.getTemplate().getMetadata().getLabels());
 
         assertThat(
                 resultDeploymentSpec.getTemplate().getMetadata().getAnnotations(),
@@ -286,17 +288,17 @@ public class KubernetesJobManagerFactoryTest extends KubernetesJobManagerTestBas
 
         assertNull(resultInternalService.getSpec().getType());
         assertEquals(
-                Constants.HEADLESS_SERVICE_CLUSTER_IP,
+                HeadlessClusterIPService.HEADLESS_CLUSTER_IP,
                 resultInternalService.getSpec().getClusterIP());
         assertEquals(2, resultInternalService.getSpec().getPorts().size());
-        assertEquals(5, resultInternalService.getSpec().getSelector().size());
+        assertEquals(3, resultInternalService.getSpec().getSelector().size());
 
         final Service resultRestService = restServiceCandidates.get(0);
         assertEquals(2, resultRestService.getMetadata().getLabels().size());
 
-        assertEquals(resultRestService.getSpec().getType(), "LoadBalancer");
+        assertEquals("ClusterIP", resultRestService.getSpec().getType());
         assertEquals(1, resultRestService.getSpec().getPorts().size());
-        assertEquals(5, resultRestService.getSpec().getSelector().size());
+        assertEquals(3, resultRestService.getSpec().getSelector().size());
     }
 
     @Test

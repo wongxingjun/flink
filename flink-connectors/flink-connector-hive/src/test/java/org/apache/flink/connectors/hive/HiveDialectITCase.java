@@ -42,6 +42,7 @@ import org.apache.flink.table.operations.command.QuitOperation;
 import org.apache.flink.table.operations.command.ResetOperation;
 import org.apache.flink.table.operations.command.SetOperation;
 import org.apache.flink.table.planner.delegation.hive.HiveParser;
+import org.apache.flink.table.utils.CatalogManagerMocks;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.FileUtils;
@@ -58,6 +59,7 @@ import org.apache.hadoop.hive.ql.io.RCFileOutputFormat;
 import org.apache.hadoop.hive.ql.io.orc.OrcInputFormat;
 import org.apache.hadoop.hive.ql.io.orc.OrcOutputFormat;
 import org.apache.hadoop.hive.ql.io.orc.OrcSerde;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCount;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFAbs;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe;
@@ -74,8 +76,6 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 
-import static org.apache.flink.table.api.EnvironmentSettings.DEFAULT_BUILTIN_CATALOG;
-import static org.apache.flink.table.api.EnvironmentSettings.DEFAULT_BUILTIN_DATABASE;
 import static org.hamcrest.CoreMatchers.instanceOf;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -636,21 +636,51 @@ public class HiveDialectITCase {
     }
 
     @Test
+    public void testTemporaryFunctionUDAF() throws Exception {
+        // create temp function
+        tableEnv.executeSql(
+                String.format(
+                        "create temporary function temp_count as '%s'",
+                        GenericUDAFCount.class.getName()));
+        String[] functions = tableEnv.listUserDefinedFunctions();
+        assertArrayEquals(new String[] {"temp_count"}, functions);
+        // call the function
+        tableEnv.executeSql("create table src(x int)");
+        tableEnv.executeSql("insert into src values (1),(-1)").await();
+        assertEquals(
+                "[+I[2]]",
+                queryResult(tableEnv.sqlQuery("select temp_count(x) from src")).toString());
+        // switch DB and the temp function can still be used
+        tableEnv.executeSql("create database db1");
+        tableEnv.useDatabase("db1");
+        assertEquals(
+                "[+I[2]]",
+                queryResult(tableEnv.sqlQuery("select temp_count(x) from `default`.src"))
+                        .toString());
+        // drop the function
+        tableEnv.executeSql("drop temporary function temp_count");
+        functions = tableEnv.listUserDefinedFunctions();
+        assertEquals(0, functions.length);
+        tableEnv.executeSql("drop temporary function if exists foo");
+    }
+
+    @Test
     public void testCatalog() {
         List<Row> catalogs =
                 CollectionUtil.iteratorToList(tableEnv.executeSql("show catalogs").collect());
         assertEquals(2, catalogs.size());
-        tableEnv.executeSql("use catalog " + DEFAULT_BUILTIN_CATALOG);
+        tableEnv.executeSql("use catalog " + CatalogManagerMocks.DEFAULT_CATALOG);
         List<Row> databases =
                 CollectionUtil.iteratorToList(tableEnv.executeSql("show databases").collect());
         assertEquals(1, databases.size());
-        assertEquals("+I[" + DEFAULT_BUILTIN_DATABASE + "]", databases.get(0).toString());
+        assertEquals(
+                "+I[" + CatalogManagerMocks.DEFAULT_DATABASE + "]", databases.get(0).toString());
         String catalogName =
                 tableEnv.executeSql("show current catalog").collect().next().toString();
-        assertEquals("+I[" + DEFAULT_BUILTIN_CATALOG + "]", catalogName);
+        assertEquals("+I[" + CatalogManagerMocks.DEFAULT_CATALOG + "]", catalogName);
         String databaseName =
                 tableEnv.executeSql("show current database").collect().next().toString();
-        assertEquals("+I[" + DEFAULT_BUILTIN_DATABASE + "]", databaseName);
+        assertEquals("+I[" + CatalogManagerMocks.DEFAULT_DATABASE + "]", databaseName);
     }
 
     @Test

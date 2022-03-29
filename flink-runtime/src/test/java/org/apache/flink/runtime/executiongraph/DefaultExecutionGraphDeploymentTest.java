@@ -188,6 +188,7 @@ public class DefaultExecutionGraphDeploymentTest extends TestLogger {
                         .createTestingLogicalSlot();
 
         assertEquals(ExecutionState.CREATED, vertex.getExecutionState());
+        vertex.getCurrentExecutionAttempt().transitionState(ExecutionState.SCHEDULED);
 
         vertex.getCurrentExecutionAttempt()
                 .registerProducedPartitions(slot.getTaskManagerLocation(), true)
@@ -670,7 +671,6 @@ public class DefaultExecutionGraphDeploymentTest extends TestLogger {
                                 0,
                                 1,
                                 CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
-                                false,
                                 false,
                                 false,
                                 0,

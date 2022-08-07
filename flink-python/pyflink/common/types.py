@@ -22,6 +22,8 @@ from typing import List
 
 __all__ = ['Row', 'RowKind']
 
+from pyflink.java_gateway import get_gateway
+
 
 class RowKind(Enum):
     INSERT = 0
@@ -38,6 +40,10 @@ class RowKind(Enum):
             return '+U'
         else:
             return '-D'
+
+    def to_j_row_kind(self):
+        JRowKind = get_gateway().jvm.org.apache.flink.types.RowKind
+        return getattr(JRowKind, self.name)
 
 
 def _create_row(fields, values, row_kind: RowKind = None):
@@ -99,9 +105,8 @@ class Row(object):
             raise ValueError("Can not use both args "
                              "and kwargs to create Row")
         if kwargs:
-            names = sorted(kwargs.keys())
-            self._fields = names
-            self._values = [kwargs[n] for n in names]
+            self._fields = list(kwargs.keys())
+            self._values = [kwargs[n] for n in self._fields]
             self._from_dict = True
         else:
             self._values = list(args)
@@ -150,6 +155,16 @@ class Row(object):
 
     def set_field_names(self, field_names: List):
         self._fields = field_names
+
+    def get_fields_by_names(self, names: List[str]):
+        if not hasattr(self, '_fields') or names == self._fields:
+            return self._values
+
+        difference = list(set(names).difference(set(self._fields)))
+        if difference:
+            raise Exception("Field names {0} not exist in {1}.".format(difference, self._fields))
+        else:
+            return [self._values[self._fields.index(name)] for name in names]
 
     def _is_retract_msg(self):
         return self._row_kind == RowKind.UPDATE_BEFORE or self._row_kind == RowKind.DELETE
@@ -246,14 +261,19 @@ class Row(object):
         if hasattr(self, "_fields"):
             if not hasattr(other, "_fields"):
                 return False
-            if self._fields != other._fields:
+            if sorted(self._fields) != sorted(other._fields):
                 return False
+            sorted_fields = sorted(self._fields)
+            return (self.__class__ == other.__class__ and
+                    self._row_kind == other._row_kind and
+                    [self._values[self._fields.index(name)] for name in sorted_fields] ==
+                    [other._values[other._fields.index(name)] for name in sorted_fields])
         else:
             if hasattr(other, "_fields"):
                 return False
-        return self.__class__ == other.__class__ and \
-            self._row_kind == other._row_kind and \
-            self._values == other._values
+            return (self.__class__ == other.__class__ and
+                    self._row_kind == other._row_kind and
+                    self._values == other._values)
 
     def __hash__(self):
         return tuple(self).__hash__()
@@ -263,3 +283,30 @@ class Row(object):
 
     def __len__(self):
         return len(self._values)
+
+
+def to_java_data_structure(value):
+    jvm = get_gateway().jvm
+    if isinstance(value, (int, float, str)):
+        return value
+    elif isinstance(value, (list, tuple)):
+        j_list = jvm.java.util.ArrayList()
+        for item in value:
+            j_list.add(to_java_data_structure(item))
+        return j_list
+    elif isinstance(value, map):
+        j_map = jvm.java.util.HashMap()
+        for k, v in value:
+            j_map.put(to_java_data_structure(k), to_java_data_structure(v))
+        return j_map
+    elif isinstance(value, Row):
+        j_row = jvm.org.apache.flink.types.Row(value.get_row_kind().to_j_row_kind(), len(value))
+        if hasattr(value, '_fields'):
+            for field_name, value in zip(value._fields, value._values):
+                j_row.setField(field_name, to_java_data_structure(value))
+        else:
+            for idx, value in enumerate(value._values):
+                j_row.setField(idx, to_java_data_structure(value))
+        return j_row
+    else:
+        raise TypeError('value must be a vanilla Python object')

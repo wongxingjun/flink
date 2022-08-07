@@ -35,6 +35,7 @@ import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
@@ -42,6 +43,7 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.thrift.TException;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.ArrayList;
@@ -120,6 +122,8 @@ public class HivePartitionUtils {
                 return Float.valueOf(valStr);
             case DOUBLE:
                 return Double.valueOf(valStr);
+            case DECIMAL:
+                return new BigDecimal(valStr);
             case DATE:
                 return HiveInspectors.toFlinkObject(
                         HiveInspectors.getObjectInspector(partitionType),
@@ -162,13 +166,13 @@ public class HivePartitionUtils {
             if (partitionColNames != null && partitionColNames.size() > 0) {
                 List<Partition> partitions = new ArrayList<>();
                 if (remainingPartitions != null) {
-                    for (Map<String, String> spec : remainingPartitions) {
-                        partitions.add(
-                                client.getPartition(
-                                        dbName,
-                                        tableName,
-                                        partitionSpecToValues(spec, partitionColNames)));
-                    }
+                    List<String> partitionNames =
+                            getPartitionNames(
+                                    remainingPartitions,
+                                    partitionColNames,
+                                    JobConfUtils.getDefaultPartitionName(jobConf));
+                    partitions.addAll(
+                            client.getPartitionsByNames(dbName, tableName, partitionNames));
                 } else {
                     partitions.addAll(client.listPartitions(dbName, tableName, (short) -1));
                 }
@@ -184,6 +188,30 @@ public class HivePartitionUtils {
             throw new FlinkHiveException("Failed to collect all partitions from hive metaStore", e);
         }
         return allHivePartitions;
+    }
+
+    /**
+     * Get the partitions' name by partitions' spec.
+     *
+     * @param partitionsSpec a list contains the spec of the partitions, one of which is for one
+     *     partition. The map for the spec of partition can be unordered.
+     * @param partitionColNames the partition column's name
+     * @param defaultStr the default value used to make partition name when the key or value for the
+     *     partition's spec partition column in the spec is null or empty string.
+     * @return a list contains the partitions' name like "p1=v1/p2=v2", one of which is for one
+     *     partition.
+     */
+    public static List<String> getPartitionNames(
+            List<Map<String, String>> partitionsSpec,
+            List<String> partitionColNames,
+            String defaultStr) {
+        List<String> partitionNames = new ArrayList<>(partitionsSpec.size());
+        for (Map<String, String> partitionSpec : partitionsSpec) {
+            List<String> pVals = partitionSpecToValues(partitionSpec, partitionColNames);
+            // Construct a pattern of the form: partKey=partVal/partKey2=partVal2/...
+            partitionNames.add(FileUtils.makePartName(partitionColNames, pVals, defaultStr));
+        }
+        return partitionNames;
     }
 
     public static List<String> partitionSpecToValues(

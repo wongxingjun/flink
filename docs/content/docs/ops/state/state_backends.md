@@ -129,6 +129,12 @@ val env = StreamExecutionEnvironment.getExecutionEnvironment()
 env.setStateBackend(new HashMapStateBackend())
 ```
 {{< /tab >}}
+{{< tab "Python" >}}
+```python
+env = StreamExecutionEnvironment.get_execution_environment()
+env.set_state_backend(HashMapStateBackend())
+```
+{{< /tab >}}
 {{< /tabs >}}
 
 If you want to use the `EmbeddedRocksDBStateBackend` in your IDE or configure it programmatically in your Flink job, you will have to add the following dependency to your Flink project.
@@ -290,6 +296,8 @@ allocating more memory than configured.
 
 Below is an example how to define a custom ConfigurableOptionsFactory (set class name under `state.backend.rocksdb.options-factory`).
 
+{{< tabs "6e6f1fd6-fcc6-4af4-929f-97dc7d639eg8" >}}
+{{< tab "Java" >}}
 ```java
 public class MyOptionsFactory implements ConfigurableRocksDBOptionsFactory {
     public static final ConfigOption<Integer> BLOCK_RESTART_INTERVAL = ConfigOptions
@@ -324,6 +332,13 @@ public class MyOptionsFactory implements ConfigurableRocksDBOptionsFactory {
     }
 }
 ```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+Still not supported in Python API.
+```
+{{< /tab >}}
+{{< /tabs >}}
 
 {{< top >}}
 
@@ -421,7 +436,7 @@ env.enable_changelog_statebackend(true)
 
 ### Monitoring
 
-Available metrics are listed [here]({{< ref "docs/ops/metrics#changelog" >}}).
+Available metrics are listed [here]({{< ref "docs/ops/metrics#state-changelog" >}}).
 
 If a task is backpressured by writing state changes, it will be shown as busy (red) in the UI.
 
@@ -429,9 +444,9 @@ If a task is backpressured by writing state changes, it will be shown as busy (r
 
 **Enabling Changelog**
 
-Resuming only from savepoints in canonical format is supported:
+Resuming from both savepoints and checkpoints is supported:
 - given an existing non-changelog job
-- take a [savepoint]({{< ref "docs/ops/state/savepoints#resuming-from-savepoints" >}}) (canonical format is the default)
+- take either a [savepoint]({{< ref "docs/ops/state/savepoints#resuming-from-savepoints" >}}) or a [checkpoint]({{< ref "docs/ops/state/checkpoints#resuming-from-a-retained-checkpoint" >}})
 - alter configuration (enable Changelog)
 - resume from the taken snapshot
 
@@ -477,14 +492,21 @@ state.checkpoint-storage: jobmanager
 ```java
 StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 env.setStateBackend(new HashMapStateBackend());
-env.getCheckpointConfig().setCheckpointStorage(new JobManagerStateBackend());
+env.getCheckpointConfig().setCheckpointStorage(new JobManagerCheckpointStorage());
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
 ```scala
 val env = StreamExecutionEnvironment.getExecutionEnvironment
 env.setStateBackend(new HashMapStateBackend)
-env.getCheckpointConfig().setCheckpointStorage(new JobManagerStateBackend)
+env.getCheckpointConfig().setCheckpointStorage(new JobManagerCheckpointStorage)
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+env = StreamExecutionEnvironment.get_execution_environment()
+env.set_state_backend(HashMapStateBackend())
+env.get_checkpoint_config().set_checkpoint_storage(JobManagerCheckpointStorage())
 ```
 {{< /tab >}}
 {{< /tabs>}}
@@ -531,6 +553,18 @@ env.getCheckpointConfig().setCheckpointStorage("file:///checkpoint-dir")
 env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("file:///checkpoint-dir"))
 ```
 {{< /tab >}}
+{{< tab "Python" >}}
+```python
+env = StreamExecutionEnvironment.get_execution_environment()
+env.set_state_backend(HashMapStateBackend())
+env.get_checkpoint_config().set_checkpoint_storage_dir("file:///checkpoint-dir")
+
+
+# Advanced FsStateBackend configurations, such as write buffer size
+# can be set by manually instantiating a FileSystemCheckpointStorage object.
+env.get_checkpoint_config().set_checkpoint_storage(FileSystemCheckpointStorage("file:///checkpoint-dir"))
+```
+{{< /tab >}}
 {{< /tabs>}}
 
 ### RocksDBStateBackend 
@@ -575,6 +609,19 @@ env.getCheckpointConfig().setCheckpointStorage("file:///checkpoint-dir")
 // to specify advanced checkpointing configurations such as write buffer size,
 // you can achieve the same results by using manually instantiating a FileSystemCheckpointStorage object.
 env.getCheckpointConfig().setCheckpointStorage(new FileSystemCheckpointStorage("file:///checkpoint-dir"))
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+env = StreamExecutionEnvironment.get_execution_environment()
+env.set_state_backend(EmbeddedRocksDBStateBackend())
+env.get_checkpoint_config().set_checkpoint_storage_dir("file:///checkpoint-dir")
+
+
+# If you manually passed FsStateBackend into the RocksDBStateBackend constructor
+# to specify advanced checkpointing configurations such as write buffer size,
+# you can achieve the same results by using manually instantiating a FileSystemCheckpointStorage object.
+env.get_checkpoint_config().set_checkpoint_storage(FileSystemCheckpointStorage("file:///checkpoint-dir"))
 ```
 {{< /tab >}}
 {{< /tabs>}}

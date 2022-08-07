@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.physical.stream
 
 import org.apache.flink.table.catalog.ContextResolvedTable
@@ -23,22 +22,20 @@ import org.apache.flink.table.connector.sink.DynamicTableSink
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.plan.abilities.sink.SinkAbilitySpec
 import org.apache.flink.table.planner.plan.nodes.calcite.Sink
+import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
 import org.apache.flink.table.planner.plan.nodes.exec.spec.DynamicTableSinkSpec
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecSink
-import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
-import org.apache.flink.table.planner.plan.utils.{ChangelogPlanUtils, RelDescriptionWriterImpl}
+import org.apache.flink.table.planner.plan.utils.ChangelogPlanUtils
 import org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTableConfig
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
-import org.apache.calcite.rel.RelNode
+import org.apache.calcite.rel.{RelNode, RelWriter}
 import org.apache.calcite.rel.hint.RelHint
 
-import java.io.{PrintWriter, StringWriter}
 import java.util
 
 /**
- * Stream physical RelNode to to write data into an external sink defined by a
- * [[DynamicTableSink]].
+ * Stream physical RelNode to to write data into an external sink defined by a [[DynamicTableSink]].
  */
 class StreamPhysicalSink(
     cluster: RelOptCluster,
@@ -48,7 +45,7 @@ class StreamPhysicalSink(
     contextResolvedTable: ContextResolvedTable,
     tableSink: DynamicTableSink,
     abilitySpecs: Array[SinkAbilitySpec],
-    upsertMaterialize: Boolean = false)
+    val upsertMaterialize: Boolean = false)
   extends Sink(cluster, traitSet, inputRel, hints, contextResolvedTable, tableSink)
   with StreamPhysicalRel {
 
@@ -79,11 +76,10 @@ class StreamPhysicalSink(
   }
 
   override def translateToExecNode(): ExecNode[_] = {
-    val inputChangelogMode = ChangelogPlanUtils.getChangelogMode(
-      getInput.asInstanceOf[StreamPhysicalRel]).get
-    val tableSinkSpec = new DynamicTableSinkSpec(
-      contextResolvedTable,
-      util.Arrays.asList(abilitySpecs: _*))
+    val inputChangelogMode =
+      ChangelogPlanUtils.getChangelogMode(getInput.asInstanceOf[StreamPhysicalRel]).get
+    val tableSinkSpec =
+      new DynamicTableSinkSpec(contextResolvedTable, util.Arrays.asList(abilitySpecs: _*))
     tableSinkSpec.setTableSink(tableSink)
     new StreamExecSink(
       unwrapTableConfig(this),
@@ -92,19 +88,12 @@ class StreamPhysicalSink(
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),
       upsertMaterialize,
-      getDescriptionWithUpsert(upsertMaterialize))
+      getRelDetailedDescription)
   }
 
-  /**
-   * The inputChangelogMode can only be obtained in translateToExecNode phase.
-   */
-  def getDescriptionWithUpsert(upsertMaterialize: Boolean): String = {
-    val sw = new StringWriter
-    val pw = new PrintWriter(sw)
-    val relWriter = new RelDescriptionWriterImpl(pw)
-    this.explainTerms(relWriter)
-    relWriter.itemIf("upsertMaterialize", "true", upsertMaterialize)
-    relWriter.done(this)
-    sw.toString
+  override def explainTerms(pw: RelWriter): RelWriter = {
+    super
+      .explainTerms(pw)
+      .itemIf("upsertMaterialize", "true", upsertMaterialize)
   }
 }

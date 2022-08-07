@@ -24,6 +24,7 @@ import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.api.java.tuple.Tuple6;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.queryablestate.KvStateID;
+import org.apache.flink.runtime.blocklist.BlockedNode;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
@@ -90,9 +91,6 @@ public class TestingJobMasterGatewayBuilder {
             requestPartitionStateFunction =
                     (ignoredA, ignoredB) ->
                             CompletableFuture.completedFuture(ExecutionState.RUNNING);
-    private Function<ResultPartitionID, CompletableFuture<Acknowledge>>
-            notifyPartitionDataAvailableFunction =
-                    ignored -> CompletableFuture.completedFuture(Acknowledge.get());
     private Function<ResourceID, CompletableFuture<Acknowledge>> disconnectTaskManagerFunction =
             ignored -> CompletableFuture.completedFuture(Acknowledge.get());
     private Consumer<ResourceManagerId> disconnectResourceManagerConsumer = ignored -> {};
@@ -175,6 +173,10 @@ public class TestingJobMasterGatewayBuilder {
     private Consumer<Collection<ResourceRequirement>> notifyNotEnoughResourcesConsumer =
             ignored -> {};
 
+    private Function<Collection<BlockedNode>, CompletableFuture<Acknowledge>>
+            notifyNewBlockedNodesFunction =
+                    ignored -> CompletableFuture.completedFuture(Acknowledge.get());
+
     public TestingJobMasterGatewayBuilder setAddress(String address) {
         this.address = address;
         return this;
@@ -209,13 +211,6 @@ public class TestingJobMasterGatewayBuilder {
             BiFunction<IntermediateDataSetID, ResultPartitionID, CompletableFuture<ExecutionState>>
                     requestPartitionStateFunction) {
         this.requestPartitionStateFunction = requestPartitionStateFunction;
-        return this;
-    }
-
-    public TestingJobMasterGatewayBuilder setNotifyPartitionDataAvailableFunction(
-            Function<ResultPartitionID, CompletableFuture<Acknowledge>>
-                    notifyPartitionDataAvailableFunction) {
-        this.notifyPartitionDataAvailableFunction = notifyPartitionDataAvailableFunction;
         return this;
     }
 
@@ -392,6 +387,13 @@ public class TestingJobMasterGatewayBuilder {
         return this;
     }
 
+    public TestingJobMasterGatewayBuilder setNotifyNewBlockedNodesFunction(
+            Function<Collection<BlockedNode>, CompletableFuture<Acknowledge>>
+                    notifyNewBlockedNodesFunction) {
+        this.notifyNewBlockedNodesFunction = notifyNewBlockedNodesFunction;
+        return this;
+    }
+
     public TestingJobMasterGateway build() {
         return new TestingJobMasterGateway(
                 address,
@@ -400,7 +402,6 @@ public class TestingJobMasterGatewayBuilder {
                 updateTaskExecutionStateFunction,
                 requestNextInputSplitFunction,
                 requestPartitionStateFunction,
-                notifyPartitionDataAvailableFunction,
                 disconnectTaskManagerFunction,
                 disconnectResourceManagerConsumer,
                 offerSlotsFunction,
@@ -423,6 +424,7 @@ public class TestingJobMasterGatewayBuilder {
                 updateAggregateFunction,
                 operatorEventSender,
                 deliverCoordinationRequestFunction,
-                notifyNotEnoughResourcesConsumer);
+                notifyNotEnoughResourcesConsumer,
+                notifyNewBlockedNodesFunction);
     }
 }

@@ -39,12 +39,10 @@ import org.apache.flink.table.catalog.hive.HiveTestUtils;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.CollectionUtil;
-import org.apache.flink.util.ExceptionUtils;
 
 import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
 
 import org.junit.AfterClass;
-import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
@@ -72,9 +70,9 @@ import static org.apache.flink.table.planner.utils.TableTestUtil.readFromResourc
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceNodeIdInOperator;
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStageId;
 import static org.apache.flink.table.planner.utils.TableTestUtil.replaceStreamNodeId;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 /** Tests {@link HiveTableSink}. */
 public class HiveTableSinkITCase {
@@ -131,9 +129,8 @@ public class HiveTableSinkITCase {
                         "insert into test_table select 1, 1", ExplainDetail.JSON_EXECUTION_PLAN);
         final String expected = readFromResource(expectedResourceFileName);
 
-        assertEquals(
-                replaceNodeIdInOperator(replaceStreamNodeId(replaceStageId(expected))),
-                replaceNodeIdInOperator(replaceStreamNodeId(replaceStageId(actual))));
+        assertThat(replaceNodeIdInOperator(replaceStreamNodeId(replaceStageId(actual))))
+                .isEqualTo(replaceNodeIdInOperator(replaceStreamNodeId(replaceStageId(expected))));
 
         tEnv.executeSql("drop database db1 cascade");
     }
@@ -153,7 +150,7 @@ public class HiveTableSinkITCase {
                     CollectionUtil.iteratorToList(
                             tEnv.executeSql("select * from append_table").collect());
             rows.sort(Comparator.comparingInt(o -> (int) o.getField(0)));
-            Assert.assertEquals(Arrays.asList(Row.of(1, 1), Row.of(2, 2)), rows);
+            assertThat(rows).isEqualTo(Arrays.asList(Row.of(1, 1), Row.of(2, 2)));
         } finally {
             tEnv.executeSql("drop database db1 cascade");
         }
@@ -213,15 +210,13 @@ public class HiveTableSinkITCase {
                     StreamTableEnvironment tEnv = HiveTestUtils.createTableEnvInStreamingMode(env);
                     tEnv.registerCatalog(hiveCatalog.getName(), hiveCatalog);
                     tEnv.useCatalog(hiveCatalog.getName());
-
                     try {
                         tEnv.executeSql(
                                         "insert into db1.sink_table select 6,'a','b','2020-05-03','12'")
                                 .await();
                     } catch (Exception e) {
-                        Assert.fail("Failed to execute sql: " + e.getMessage());
+                        fail("Failed to execute sql: " + e.getMessage());
                     }
-
                     assertBatch(
                             "db1.sink_table",
                             Arrays.asList(
@@ -371,11 +366,11 @@ public class HiveTableSinkITCase {
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }
-                Assert.assertEquals(
-                        Arrays.asList(
-                                Row.of(expectedData.get(i - 1)).toString(),
-                                Row.of(expectedData.get(i - 1)).toString()),
-                        fetchRows(iter, 2));
+                assertThat(fetchRows(iter, 2))
+                        .isEqualTo(
+                                Arrays.asList(
+                                        Row.of(expectedData.get(i - 1)).toString(),
+                                        Row.of(expectedData.get(i - 1)).toString()));
 
                 if (i < 6) {
                     HiveTestUtils.createTextTableInserter(hiveCatalog, "db1", "source_table")
@@ -418,12 +413,11 @@ public class HiveTableSinkITCase {
             fail("Streaming write partitioned table without commit policy should fail");
         } catch (FlinkHiveException e) {
             // expected
-            assertTrue(
-                    e.getMessage()
-                            .contains(
-                                    String.format(
-                                            "Streaming write to partitioned hive table `%s`.`%s`.`%s` without providing a commit policy",
-                                            hiveCatalog.getName(), "db1", "dest")));
+            assertThat(e.getMessage())
+                    .contains(
+                            String.format(
+                                    "Streaming write to partitioned hive table `%s`.`%s`.`%s` without providing a commit policy",
+                                    hiveCatalog.getName(), "db1", "dest"));
         } finally {
             tableEnv.executeSql("drop database db1 cascade");
         }
@@ -433,17 +427,13 @@ public class HiveTableSinkITCase {
     public void testCustomPartitionCommitPolicyNotFound() {
         String customCommitPolicyClassName = "NotExistPartitionCommitPolicyClass";
 
-        try {
-            testStreamingWriteWithCustomPartitionCommitPolicy(customCommitPolicyClassName);
-            fail("ExecutionException expected");
-        } catch (Exception e) {
-            assertTrue(
-                    ExceptionUtils.findThrowableWithMessage(
-                                    e,
-                                    "Can not create new instance for custom class from "
-                                            + customCommitPolicyClassName)
-                            .isPresent());
-        }
+        assertThatThrownBy(
+                        () ->
+                                testStreamingWriteWithCustomPartitionCommitPolicy(
+                                        customCommitPolicyClassName))
+                .hasStackTraceContaining(
+                        "Can not create new instance for custom class from "
+                                + customCommitPolicyClassName);
     }
 
     @Test
@@ -451,10 +441,65 @@ public class HiveTableSinkITCase {
         testStreamingWriteWithCustomPartitionCommitPolicy(TestCustomCommitPolicy.class.getName());
     }
 
+    @Test
+    public void testWritingNoDataToPartition() throws Exception {
+        TableEnvironment tEnv = HiveTestUtils.createTableEnvInBatchMode(SqlDialect.HIVE);
+        tEnv.registerCatalog(hiveCatalog.getName(), hiveCatalog);
+        tEnv.useCatalog(hiveCatalog.getName());
+        tEnv.executeSql("CREATE TABLE src_table (name string) PARTITIONED BY (`dt` string)");
+        tEnv.executeSql("CREATE TABLE target_table (name string) PARTITIONED BY (`dt` string)");
+
+        // insert into partition
+        tEnv.executeSql(
+                        "INSERT INTO target_table partition (dt='2022-07-27') SELECT name FROM src_table where dt = '2022-07-27'")
+                .await();
+        List<Row> partitions =
+                CollectionUtil.iteratorToList(
+                        tEnv.executeSql("show partitions target_table").collect());
+        assertThat(partitions).hasSize(1);
+        assertThat(partitions.toString()).contains("dt=2022-07-27");
+
+        // insert overwrite partition
+        tEnv.executeSql(
+                        "INSERT OVERWRITE target_table partition (dt='2022-07-28') SELECT name FROM src_table where dt = '2022-07-28'")
+                .await();
+        partitions =
+                CollectionUtil.iteratorToList(
+                        tEnv.executeSql("show partitions target_table").collect());
+        assertThat(partitions).hasSize(2);
+        assertThat(partitions.toString()).contains("dt=2022-07-28");
+
+        // insert into a partition with data
+        tEnv.executeSql("INSERT INTO target_table partition (dt='2022-07-29') VALUES ('zm')")
+                .await();
+
+        assertBatch("target_table", Arrays.asList("+I[zm, 2022-07-29]"));
+        tEnv.executeSql(
+                        "INSERT INTO target_table partition (dt='2022-07-29') SELECT name FROM src_table where dt = '2022-07-29'")
+                .await();
+        partitions =
+                CollectionUtil.iteratorToList(
+                        tEnv.executeSql("show partitions target_table").collect());
+        assertThat(partitions).hasSize(3);
+        assertThat(partitions.toString()).contains("dt=2022-07-29");
+        assertBatch("target_table", Arrays.asList("+I[zm, 2022-07-29]"));
+
+        // insert overwrite a partition with data
+        tEnv.executeSql(
+                        "INSERT OVERWRITE target_table partition (dt='2022-07-29') SELECT name FROM src_table where dt = '2022-07-29'")
+                .await();
+        partitions =
+                CollectionUtil.iteratorToList(
+                        tEnv.executeSql("show partitions target_table").collect());
+        assertThat(partitions).hasSize(3);
+        assertThat(partitions.toString()).contains("dt=2022-07-29");
+        assertBatch("target_table", Arrays.asList());
+    }
+
     private static List<String> fetchRows(Iterator<Row> iter, int size) {
         List<String> strings = new ArrayList<>(size);
         for (int i = 0; i < size; i++) {
-            Assert.assertTrue(iter.hasNext());
+            assertThat(iter.hasNext()).isTrue();
             strings.add(iter.next().toString());
         }
         strings.sort(String::compareTo);
@@ -463,12 +508,12 @@ public class HiveTableSinkITCase {
 
     private void checkSuccessFiles(String path) {
         File basePath = new File(path, "d=2020-05-03");
-        Assert.assertEquals(5, basePath.list().length);
-        Assert.assertTrue(new File(new File(basePath, "e=7"), "_MY_SUCCESS").exists());
-        Assert.assertTrue(new File(new File(basePath, "e=8"), "_MY_SUCCESS").exists());
-        Assert.assertTrue(new File(new File(basePath, "e=9"), "_MY_SUCCESS").exists());
-        Assert.assertTrue(new File(new File(basePath, "e=10"), "_MY_SUCCESS").exists());
-        Assert.assertTrue(new File(new File(basePath, "e=11"), "_MY_SUCCESS").exists());
+        assertThat(basePath.list()).hasSize(5);
+        assertThat(new File(new File(basePath, "e=7"), "_MY_SUCCESS").exists()).isTrue();
+        assertThat(new File(new File(basePath, "e=8"), "_MY_SUCCESS").exists()).isTrue();
+        assertThat(new File(new File(basePath, "e=9"), "_MY_SUCCESS").exists()).isTrue();
+        assertThat(new File(new File(basePath, "e=10"), "_MY_SUCCESS").exists()).isTrue();
+        assertThat(new File(new File(basePath, "e=11"), "_MY_SUCCESS").exists()).isTrue();
     }
 
     private void testStreamingWriteWithCustomPartitionCommitPolicy(
@@ -546,11 +591,12 @@ public class HiveTableSinkITCase {
                     partitionKV -> {
                         String partitionPath =
                                 new Path(new Path(base, "d=2020-05-03"), partitionKV).toString();
-                        Assert.assertTrue(
-                                "Partition(d=2020-05-03, "
-                                        + partitionKV
-                                        + ") is not committed successfully",
-                                committedPaths.contains(partitionPath));
+                        assertThat(committedPaths)
+                                .as(
+                                        "Partition(d=2020-05-03, "
+                                                + partitionKV
+                                                + ") is not committed successfully")
+                                .contains(partitionPath);
                     });
         } finally {
             tEnv.executeSql("drop database if exists db1 cascade");
@@ -662,6 +708,6 @@ public class HiveTableSinkITCase {
                 .forEachRemaining(r -> results.add(r.toString()));
         results.sort(String::compareTo);
         expected.sort(String::compareTo);
-        Assert.assertEquals(expected, results);
+        assertThat(results).isEqualTo(expected);
     }
 }

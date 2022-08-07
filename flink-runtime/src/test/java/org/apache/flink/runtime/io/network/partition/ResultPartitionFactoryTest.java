@@ -22,6 +22,7 @@ import org.apache.flink.runtime.io.disk.BatchShuffleReadBufferPool;
 import org.apache.flink.runtime.io.disk.FileChannelManager;
 import org.apache.flink.runtime.io.disk.FileChannelManagerImpl;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
+import org.apache.flink.runtime.io.network.partition.hybrid.HsResultPartition;
 import org.apache.flink.runtime.shuffle.PartitionDescriptorBuilder;
 import org.apache.flink.runtime.util.EnvironmentInformation;
 import org.apache.flink.runtime.util.NettyShuffleDescriptorBuilder;
@@ -83,6 +84,12 @@ public class ResultPartitionFactoryTest extends TestLogger {
     }
 
     @Test
+    public void testHybridResultPartitionCreated() {
+        ResultPartition resultPartition = createResultPartition(ResultPartitionType.HYBRID);
+        assertTrue(resultPartition instanceof HsResultPartition);
+    }
+
+    @Test
     public void testNoReleaseOnConsumptionForBoundedBlockingPartition() {
         final ResultPartition resultPartition = createResultPartition(ResultPartitionType.BLOCKING);
 
@@ -95,6 +102,15 @@ public class ResultPartitionFactoryTest extends TestLogger {
     public void testNoReleaseOnConsumptionForSortMergePartition() {
         final ResultPartition resultPartition =
                 createResultPartition(ResultPartitionType.BLOCKING, 1);
+
+        resultPartition.onConsumedSubpartition(0);
+
+        assertFalse(resultPartition.isReleased());
+    }
+
+    @Test
+    public void testNoReleaseOnConsumptionForHybridPartition() {
+        final ResultPartition resultPartition = createResultPartition(ResultPartitionType.HYBRID);
 
         resultPartition.onConsumedSubpartition(0);
 
@@ -125,7 +141,8 @@ public class ResultPartitionFactoryTest extends TestLogger {
                         Integer.MAX_VALUE,
                         10,
                         sortShuffleMinParallelism,
-                        false);
+                        false,
+                        0);
 
         final ResultPartitionDeploymentDescriptor descriptor =
                 new ResultPartitionDeploymentDescriptor(
@@ -133,8 +150,7 @@ public class ResultPartitionFactoryTest extends TestLogger {
                                 .setPartitionType(partitionType)
                                 .build(),
                         NettyShuffleDescriptorBuilder.newBuilder().buildLocal(),
-                        1,
-                        true);
+                        1);
 
         // guard our test assumptions
         assertEquals(1, descriptor.getNumberOfSubpartitions());

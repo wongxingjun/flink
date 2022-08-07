@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 
+import static org.apache.flink.runtime.io.network.partition.BufferReaderWriterUtil.HEADER_LENGTH;
 import static org.apache.flink.runtime.io.network.partition.BufferReaderWriterUtil.readFromByteChannel;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -59,14 +60,15 @@ class PartitionedFileReader {
     /** Next file offset to be read. */
     private long nextOffsetToRead;
 
-    /** Number of remaining buffers in the current data region read. */
-    private int currentRegionRemainingBuffers;
+    /** Number of remaining bytes in the current data region read. */
+    private long currentRegionRemainingBytes;
 
     PartitionedFileReader(
             PartitionedFile partitionedFile,
             int targetSubpartition,
             FileChannel dataFileChannel,
-            FileChannel indexFileChannel) {
+            FileChannel indexFileChannel)
+            throws IOException {
         checkArgument(checkNotNull(dataFileChannel).isOpen(), "Data file channel must be opened.");
         checkArgument(
                 checkNotNull(indexFileChannel).isOpen(), "Index file channel must be opened.");
@@ -78,15 +80,16 @@ class PartitionedFileReader {
 
         this.indexEntryBuf = ByteBuffer.allocateDirect(PartitionedFile.INDEX_ENTRY_SIZE);
         BufferReaderWriterUtil.configureByteBuffer(indexEntryBuf);
+        moveToNextReadableRegion();
     }
 
     private void moveToNextReadableRegion() throws IOException {
-        while (currentRegionRemainingBuffers <= 0
+        while (currentRegionRemainingBytes <= 0
                 && nextRegionToRead < partitionedFile.getNumRegions()) {
             partitionedFile.getIndexEntry(
                     indexFileChannel, indexEntryBuf, nextRegionToRead, targetSubpartition);
             nextOffsetToRead = indexEntryBuf.getLong();
-            currentRegionRemainingBuffers = indexEntryBuf.getInt();
+            currentRegionRemainingBytes = indexEntryBuf.getLong();
             ++nextRegionToRead;
         }
     }
@@ -103,20 +106,23 @@ class PartitionedFileReader {
      */
     @Nullable
     Buffer readCurrentRegion(MemorySegment target, BufferRecycler recycler) throws IOException {
-        if (currentRegionRemainingBuffers == 0) {
+        if (currentRegionRemainingBytes == 0) {
             return null;
         }
 
         dataFileChannel.position(nextOffsetToRead);
         Buffer buffer = readFromByteChannel(dataFileChannel, headerBuf, target, recycler);
-        nextOffsetToRead = dataFileChannel.position();
-        --currentRegionRemainingBuffers;
+        if (buffer != null) {
+            int length = buffer.readableBytes() + HEADER_LENGTH;
+            nextOffsetToRead = nextOffsetToRead + length;
+            currentRegionRemainingBytes -= length;
+        }
         return buffer;
     }
 
     boolean hasRemaining() throws IOException {
         moveToNextReadableRegion();
-        return currentRegionRemainingBuffers > 0;
+        return currentRegionRemainingBytes > 0;
     }
 
     /** Gets read priority of this file reader. Smaller value indicates higher priority. */

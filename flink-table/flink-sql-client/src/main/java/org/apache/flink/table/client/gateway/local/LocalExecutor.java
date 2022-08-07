@@ -169,9 +169,9 @@ public class LocalExecutor implements Executor {
 
         List<Operation> operations;
         try {
-            operations = context.wrapClassLoader(() -> parser.parse(statement));
-        } catch (Exception e) {
-            throw new SqlExecutionException("Failed to parse statement: " + statement, e);
+            operations = parser.parse(statement);
+        } catch (Throwable t) {
+            throw new SqlExecutionException("Failed to parse statement: " + statement, t);
         }
         if (operations.isEmpty()) {
             throw new SqlExecutionException("Failed to parse statement: " + statement);
@@ -186,10 +186,7 @@ public class LocalExecutor implements Executor {
                 (TableEnvironmentInternal) context.getTableEnvironment();
 
         try {
-            return context.wrapClassLoader(
-                    () ->
-                            Arrays.asList(
-                                    tableEnv.getParser().getCompletionHints(statement, position)));
+            return Arrays.asList(tableEnv.getParser().getCompletionHints(statement, position));
         } catch (Throwable t) {
             // catch everything such that the query does not crash the executor
             if (LOG.isDebugEnabled()) {
@@ -206,9 +203,9 @@ public class LocalExecutor implements Executor {
         final TableEnvironmentInternal tEnv =
                 (TableEnvironmentInternal) context.getTableEnvironment();
         try {
-            return context.wrapClassLoader(() -> tEnv.executeInternal(operation));
-        } catch (Exception e) {
-            throw new SqlExecutionException(MESSAGE_SQL_EXECUTION_ERROR, e);
+            return tEnv.executeInternal(operation);
+        } catch (Throwable t) {
+            throw new SqlExecutionException(MESSAGE_SQL_EXECUTION_ERROR, t);
         }
     }
 
@@ -219,9 +216,9 @@ public class LocalExecutor implements Executor {
         final TableEnvironmentInternal tEnv =
                 (TableEnvironmentInternal) context.getTableEnvironment();
         try {
-            return context.wrapClassLoader(() -> tEnv.executeInternal(operations));
-        } catch (Exception e) {
-            throw new SqlExecutionException(MESSAGE_SQL_EXECUTION_ERROR, e);
+            return tEnv.executeInternal(operations);
+        } catch (Throwable t) {
+            throw new SqlExecutionException(MESSAGE_SQL_EXECUTION_ERROR, t);
         }
     }
 
@@ -299,8 +296,8 @@ public class LocalExecutor implements Executor {
         try {
             // this operator will also stop flink job
             result.close();
-        } catch (Exception e) {
-            throw new SqlExecutionException("Could not cancel the query execution", e);
+        } catch (Throwable t) {
+            throw new SqlExecutionException("Could not cancel the query execution", t);
         }
         resultStore.removeResult(resultId);
     }

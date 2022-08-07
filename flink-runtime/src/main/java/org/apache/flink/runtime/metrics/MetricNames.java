@@ -72,6 +72,9 @@ public class MetricNames {
     public static final String TASK_IDLE_TIME = "idleTimeMs" + SUFFIX_RATE;
     public static final String TASK_BUSY_TIME = "busyTimeMs" + SUFFIX_RATE;
     public static final String TASK_BACK_PRESSURED_TIME = "backPressuredTimeMs" + SUFFIX_RATE;
+    public static final String ACC_TASK_IDLE_TIME = "accumulateIdleTimeMs";
+    public static final String ACC_TASK_BUSY_TIME = "accumulateBusyTimeMs";
+    public static final String ACC_TASK_BACK_PRESSURED_TIME = "accumulateBackPressuredTimeMs";
     public static final String TASK_SOFT_BACK_PRESSURED_TIME =
             "softBackPressuredTimeMs" + SUFFIX_RATE;
     public static final String TASK_HARD_BACK_PRESSURED_TIME =
@@ -106,4 +109,18 @@ public class MetricNames {
     public static final String MAILBOX_THROUGHPUT = "mailboxMailsPerSecond";
     public static final String MAILBOX_LATENCY = "mailboxLatencyMs";
     public static final String MAILBOX_SIZE = "mailboxQueueSize";
+
+    // speculative execution
+    public static final String NUM_SLOW_EXECUTION_VERTICES = "numSlowExecutionVertices";
+    public static final String NUM_EFFECTIVE_SPECULATIVE_EXECUTIONS =
+            "numEffectiveSpeculativeExecutions";
+
+    // FLIP-221 for caches
+    public static final String HIT_COUNT = "hitCount";
+    public static final String MISS_COUNT = "missCount";
+    public static final String LOAD_COUNT = "loadCount";
+    public static final String NUM_LOAD_FAILURES = "numLoadFailures";
+    public static final String LATEST_LOAD_TIME = "latestLoadTime";
+    public static final String NUM_CACHED_RECORDS = "numCachedRecords";
+    public static final String NUM_CACHED_BYTES = "numCachedBytes";
 }

@@ -21,6 +21,8 @@ package org.apache.flink.table.functions.hive;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.typeutils.GenericTypeInfo;
+import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.util.HiveTypeUtil;
 import org.apache.flink.table.functions.AggregateFunction;
@@ -28,15 +30,19 @@ import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.hive.conversion.HiveInspectors;
 import org.apache.flink.table.functions.hive.conversion.HiveObjectConversion;
 import org.apache.flink.table.functions.hive.conversion.IdentityConversion;
-import org.apache.flink.table.runtime.types.TypeInfoDataTypeConverter;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.inference.CallContext;
+import org.apache.flink.table.types.inference.TypeInference;
+import org.apache.flink.table.types.inference.TypeStrategies;
 
 import org.apache.hadoop.hive.ql.exec.UDAF;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFBridge;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFResolver;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFResolver2;
+import org.apache.hadoop.hive.ql.udf.generic.SimpleGenericUDAFParameterInfo;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 
 import java.util.Arrays;
@@ -48,34 +54,33 @@ import java.util.Arrays;
 @Internal
 public class HiveGenericUDAF
         extends AggregateFunction<Object, GenericUDAFEvaluator.AggregationBuffer>
-        implements HiveFunction {
+        implements HiveFunction<GenericUDAFResolver> {
 
-    private final HiveFunctionWrapper hiveFunctionWrapper;
+    private final HiveFunctionWrapper<GenericUDAFResolver> hiveFunctionWrapper;
     // Flag that indicates whether a bridge between GenericUDAF and UDAF is required.
     // Old UDAF can be used with the GenericUDAF infrastructure through bridging.
     private final boolean isUDAFBridgeRequired;
+    // Flag that indicates whether the GenericUDAF implement GenericUDAFResolver2
+    private final boolean isUDAFResolve2;
+    private final HiveShim hiveShim;
 
-    private Object[] constantArguments;
-    private DataType[] argTypes;
+    private HiveFunctionArguments arguments;
 
     private transient GenericUDAFEvaluator partialEvaluator;
     private transient GenericUDAFEvaluator finalEvaluator;
-    private transient ObjectInspector partialResultObjectInspector;
     private transient ObjectInspector finalResultObjectInspector;
     private transient HiveObjectConversion[] conversions;
     private transient boolean allIdentityConverter;
     private transient boolean initialized;
 
-    private final HiveShim hiveShim;
-
-    public HiveGenericUDAF(HiveFunctionWrapper funcWrapper, HiveShim hiveShim) {
-        this(funcWrapper, false, hiveShim);
-    }
-
     public HiveGenericUDAF(
-            HiveFunctionWrapper funcWrapper, boolean isUDAFBridgeRequired, HiveShim hiveShim) {
+            HiveFunctionWrapper<GenericUDAFResolver> funcWrapper,
+            boolean isUDAFBridgeRequired,
+            boolean isUDAFResolve2,
+            HiveShim hiveShim) {
         this.hiveFunctionWrapper = funcWrapper;
         this.isUDAFBridgeRequired = isUDAFBridgeRequired;
+        this.isUDAFResolve2 = isUDAFResolve2;
         this.hiveShim = hiveShim;
     }
 
@@ -86,15 +91,14 @@ public class HiveGenericUDAF
     }
 
     private void init() throws HiveException {
-        ObjectInspector[] inputInspectors =
-                HiveInspectors.toInspectors(hiveShim, constantArguments, argTypes);
+        ObjectInspector[] inputInspectors = HiveInspectors.getArgInspectors(hiveShim, arguments);
 
         // Flink UDAF only supports Hive UDAF's PARTIAL_1 and FINAL mode
 
         // PARTIAL1: from original data to partial aggregation data:
         // 		iterate() and terminatePartial() will be called.
         this.partialEvaluator = createEvaluator(inputInspectors);
-        this.partialResultObjectInspector =
+        ObjectInspector partialResultObjectInspector =
                 partialEvaluator.init(GenericUDAFEvaluator.Mode.PARTIAL1, inputInspectors);
 
         // FINAL: from partial aggregation to full aggregation:
@@ -109,7 +113,9 @@ public class HiveGenericUDAF
         for (int i = 0; i < inputInspectors.length; i++) {
             conversions[i] =
                     HiveInspectors.getConversion(
-                            inputInspectors[i], argTypes[i].getLogicalType(), hiveShim);
+                            inputInspectors[i],
+                            arguments.getDataType(i).getLogicalType(),
+                            hiveShim);
         }
         allIdentityConverter =
                 Arrays.stream(conversions).allMatch(conv -> conv instanceof IdentityConversion);
@@ -119,15 +125,7 @@ public class HiveGenericUDAF
 
     public GenericUDAFEvaluator createEvaluator(ObjectInspector[] inputInspectors)
             throws SemanticException {
-        GenericUDAFResolver2 resolver;
-
-        if (isUDAFBridgeRequired) {
-            resolver = new GenericUDAFBridge((UDAF) hiveFunctionWrapper.createFunction());
-        } else {
-            resolver = (GenericUDAFResolver2) hiveFunctionWrapper.createFunction();
-        }
-
-        return resolver.getEvaluator(
+        SimpleGenericUDAFParameterInfo parameterInfo =
                 hiveShim.createUDAFParameterInfo(
                         inputInspectors,
                         // The flag to indicate if the UDAF invocation was from the windowing
@@ -147,7 +145,18 @@ public class HiveGenericUDAF
                         // function implementation
                         // is not expected to ensure the wildcard handling of the target relation.
                         // That is handled by the framework.
-                        Boolean.FALSE));
+                        Boolean.FALSE);
+
+        if (isUDAFBridgeRequired) {
+            return new GenericUDAFBridge((UDAF) hiveFunctionWrapper.createFunction())
+                    .getEvaluator(parameterInfo);
+        } else if (isUDAFResolve2) {
+            return ((GenericUDAFResolver2) hiveFunctionWrapper.createFunction())
+                    .getEvaluator(parameterInfo);
+        } else {
+            // otherwise, it's instance of GenericUDAFResolver
+            return hiveFunctionWrapper.createFunction().getEvaluator(parameterInfo.getParameters());
+        }
     }
 
     /**
@@ -166,7 +175,7 @@ public class HiveGenericUDAF
             throw new FlinkHiveUDFException(
                     String.format(
                             "Failed to create accumulator for %s",
-                            hiveFunctionWrapper.getClassName()),
+                            hiveFunctionWrapper.getUDFClassName()),
                     e);
         }
     }
@@ -200,39 +209,56 @@ public class HiveGenericUDAF
         } catch (HiveException e) {
             throw new FlinkHiveUDFException(
                     String.format(
-                            "Failed to get final result on %s", hiveFunctionWrapper.getClassName()),
+                            "Failed to get final result on %s",
+                            hiveFunctionWrapper.getUDFClassName()),
                     e);
         }
     }
 
     @Override
-    public void setArgumentTypesAndConstants(Object[] constantArguments, DataType[] argTypes) {
-        this.constantArguments = constantArguments;
-        this.argTypes = argTypes;
+    public void close() throws Exception {
+        partialEvaluator.close();
+        finalEvaluator.close();
     }
 
     @Override
-    public DataType getHiveResultType(Object[] constantArguments, DataType[] argTypes) {
+    public TypeInference getTypeInference(DataTypeFactory typeFactory) {
+        return TypeInference.newBuilder()
+                .inputTypeStrategy(new HiveFunctionInputStrategy(this))
+                .accumulatorTypeStrategy(
+                        TypeStrategies.explicit(
+                                DataTypes.RAW(GenericUDAFEvaluator.AggregationBuffer.class)
+                                        .toDataType(typeFactory)))
+                .outputTypeStrategy(new HiveFunctionOutputStrategy(this))
+                .build();
+    }
+
+    @Override
+    public void setArguments(CallContext callContext) {
+        if (arguments == null) {
+            arguments = HiveFunctionArguments.create(callContext);
+        }
+    }
+
+    @Override
+    public DataType inferReturnType() {
         try {
             if (!initialized) {
-                setArgumentTypesAndConstants(constantArguments, argTypes);
                 init();
             }
-
             return HiveTypeUtil.toFlinkType(finalResultObjectInspector);
         } catch (Exception e) {
             throw new FlinkHiveUDFException(
                     String.format(
                             "Failed to get Hive result type from %s",
-                            hiveFunctionWrapper.getClassName()),
+                            hiveFunctionWrapper.getUDFClassName()),
                     e);
         }
     }
 
     @Override
-    public TypeInformation getResultType() {
-        return TypeInfoDataTypeConverter.fromDataTypeToTypeInfo(
-                getHiveResultType(this.constantArguments, this.argTypes));
+    public HiveFunctionWrapper<GenericUDAFResolver> getFunctionWrapper() {
+        return hiveFunctionWrapper;
     }
 
     @Override

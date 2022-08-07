@@ -498,6 +498,26 @@ public class KubernetesConfigOptions {
                             "Whether to enable HostNetwork mode. "
                                     + "The HostNetwork allows the pod could use the node network namespace instead of the individual pod network namespace. Please note that the JobManager service account should have the permission to update Kubernetes service.");
 
+    public static final ConfigOption<String> KUBERNETES_CLIENT_USER_AGENT =
+            key("kubernetes.client.user-agent")
+                    .stringType()
+                    .defaultValue("flink")
+                    .withDescription(
+                            "The user agent to be used for contacting with Kubernetes APIServer.");
+
+    /**
+     * This will only be used to support blocklist mechanism, which is experimental currently, so we
+     * do not want to expose this option in the documentation.
+     */
+    @Documentation.ExcludeFromDocumentation
+    public static final ConfigOption<String> KUBERNETES_NODE_NAME_LABEL =
+            key("kubernetes.node-name-label")
+                    .stringType()
+                    .defaultValue("kubernetes.io/hostname")
+                    .withDescription(
+                            "The node label whose value is the same as the node name. "
+                                    + "Currently, this will only be used to set the node affinity of TM pods to avoid being scheduled on blocked nodes.");
+
     private static String getDefaultFlinkImage() {
         // The default container image that ties to the exact needed versions of both Flink and
         // Scala.

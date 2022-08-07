@@ -95,16 +95,16 @@ public class AsyncSinkWriterTest {
         AsyncSinkWriterImpl sink =
                 new AsyncSinkWriterImplBuilder()
                         .context(sinkInitContext)
-                        .maxBatchSize(2)
+                        .maxBatchSize(4)
                         .delay(100)
                         .build();
         for (int i = 0; i < 4; i++) {
             sink.write(String.valueOf(i));
         }
-
+        sink.flush(true);
         assertThat(sinkInitContext.getCurrentSendTimeGauge().get().getValue())
                 .isGreaterThanOrEqualTo(99);
-        assertThat(sinkInitContext.getCurrentSendTimeGauge().get().getValue()).isLessThan(110);
+        assertThat(sinkInitContext.getCurrentSendTimeGauge().get().getValue()).isLessThan(120);
     }
 
     @Test
@@ -884,26 +884,30 @@ public class AsyncSinkWriterTest {
         TestProcessingTimeService tpts = sinkInitContext.getTestProcessingTimeService();
         ExecutorService es = Executors.newFixedThreadPool(4);
 
-        tpts.setCurrentTime(0L);
-        sink.write("1");
-        sink.write("2");
-        es.submit(
-                () -> {
-                    try {
-                        sink.writeAsNonMailboxThread("3");
-                    } catch (IOException | InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                });
+        try {
+            tpts.setCurrentTime(0L);
+            sink.write("1");
+            sink.write("2");
+            es.submit(
+                    () -> {
+                        try {
+                            sink.writeAsNonMailboxThread("3");
+                        } catch (IOException | InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    });
 
-        delayedStartLatch.await();
-        sink.write("4");
-        tpts.setCurrentTime(100L);
-        blockedWriteLatch.countDown();
-        es.shutdown();
-        assertThat(es.awaitTermination(500, TimeUnit.MILLISECONDS))
-                .as("Executor Service stuck at termination, not terminated after 500ms!")
-                .isTrue();
+            delayedStartLatch.await();
+            sink.write("4");
+            tpts.setCurrentTime(100L);
+            blockedWriteLatch.countDown();
+            es.shutdown();
+            assertThat(es.awaitTermination(500, TimeUnit.MILLISECONDS))
+                    .as("Executor Service stuck at termination, not terminated after 500ms!")
+                    .isTrue();
+        } finally {
+            es.shutdown();
+        }
     }
 
     /**
@@ -1055,12 +1059,12 @@ public class AsyncSinkWriterTest {
          * <p>A limitation of this basic implementation is that each element written must be unique.
          *
          * @param requestEntries a set of request entries that should be persisted to {@code res}
-         * @param requestResult a Consumer that needs to accept a collection of failure elements
+         * @param requestToRetry a Consumer that needs to accept a collection of failure elements
          *     once all request entries have been persisted
          */
         @Override
         protected void submitRequestEntries(
-                List<Integer> requestEntries, Consumer<List<Integer>> requestResult) {
+                List<Integer> requestEntries, Consumer<List<Integer>> requestToRetry) {
             maybeDelay();
 
             if (requestEntries.stream().anyMatch(val -> val > 100 && val <= 200)) {
@@ -1083,10 +1087,10 @@ public class AsyncSinkWriterTest {
 
                 requestEntries.removeAll(firstTimeFailed);
                 res.addAll(requestEntries);
-                requestResult.accept(firstTimeFailed);
+                requestToRetry.accept(firstTimeFailed);
             } else {
                 res.addAll(requestEntries);
-                requestResult.accept(new ArrayList<>());
+                requestToRetry.accept(new ArrayList<>());
             }
         }
 
@@ -1235,7 +1239,7 @@ public class AsyncSinkWriterTest {
 
         @Override
         protected void submitRequestEntries(
-                List<Integer> requestEntries, Consumer<List<Integer>> requestResult) {
+                List<Integer> requestEntries, Consumer<List<Integer>> requestToRetry) {
             if (requestEntries.size() == 3) {
                 try {
                     delayedStartLatch.countDown();
@@ -1254,7 +1258,7 @@ public class AsyncSinkWriterTest {
             }
 
             res.addAll(requestEntries);
-            requestResult.accept(new ArrayList<>());
+            requestToRetry.accept(new ArrayList<>());
         }
     }
 }

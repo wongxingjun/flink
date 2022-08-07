@@ -27,7 +27,7 @@ under the License.
 
 # Savepoints
 
-## 什么是 Savepoint ？ Savepoint 与 Checkpoint 有什么不同？
+## 什么是 Savepoint ？
 
 Savepoint 是依据 Flink [checkpointing 机制]({{< ref "docs/learn-flink/fault_tolerance" >}})所创建的流作业执行状态的一致镜像。 你可以使用 Savepoint 进行 Flink 作业的停止与重启、fork 或者更新。 Savepoint 由两部分组成：稳定存储（列入 HDFS，S3，...) 上包含二进制文件的目录（通常很大），和元数据文件（相对较小）。 稳定存储上的文件表示作业执行状态的数据镜像。 Savepoint 的元数据文件以（相对路径）的形式包含（主要）指向作为 Savepoint 一部分的稳定存储上的所有文件的指针。
 
@@ -35,11 +35,7 @@ Savepoint 是依据 Flink [checkpointing 机制]({{< ref "docs/learn-flink/fault
 **注意:** 为了允许程序和 Flink 版本之间的升级，请务必查看以下有关<a href="#分配算子-id">分配算子 ID </a>的部分 。
 {{< /hint >}}
 
-从概念上讲， Flink 的 Savepoint 与 Checkpoint 的不同之处类似于传统数据库中的备份与恢复日志之间的差异。 Checkpoint 的主要目的是为意外失败的作业提供恢复机制。 Checkpoint 的生命周期由 Flink 管理，即 Flink 创建，管理和删除 Checkpoint - 无需用户交互。 作为一种恢复和定期触发的方法，Checkpoint 实现有两个设计目标：i）轻量级创建和 ii）尽可能快地恢复。 可能会利用某些特定的属性来达到这个，例如， 工作代码在执行尝试之间不会改变。 在用户终止作业后，通常会删除 Checkpoint（除非明确配置为保留的 Checkpoint）。
-
- 与此相反、Savepoint 由用户创建，拥有和删除。 他们的用例是计划的，手动备份和恢复。 例如，升级 Flink 版本，调整用户逻辑，改变并行度，以及进行红蓝部署等。 当然，Savepoint 必须在作业停止后继续存在。 从概念上讲，Savepoint 的生成，恢复成本可能更高一些，Savepoint 更多地关注可移植性和对前面提到的作业更改的支持。
-
-除去这些概念上的差异，Checkpoint 和 Savepoint 的当前实现基本上使用相同的代码并生成相同的格式。然而，目前有一个例外，我们可能会在未来引入更多的差异。例外情况是使用 RocksDB 状态后端的增量 Checkpoint。他们使用了一些 RocksDB 内部格式，而不是 Flink 的本机 Savepoint 格式。这使他们成为了与 Savepoint 相比，更轻量级的 Checkpoint 机制的第一个实例。
+为了正确使用 savepoints，了解 [checkpoints]({{< ref "docs/ops/state/checkpoints" >}}) 与 savepoints 之间的区别非常重要，[checkpoints 与 savepoints]({{< ref "docs/ops/state/checkpoints_vs_savepoints" >}}) 中对此进行了描述。
 
 ## 分配算子 ID
 
@@ -120,6 +116,19 @@ mapper-id   | State of StatefulMapper
 **注意:** 不建议移动或删除正在运行作业的最后一个 Savepoint ，因为这可能会干扰故障恢复。因此，Savepoint 对精确一次的接收器有副作用，为了确保精确一次的语义，如果在最后一个 Savepoint 之后没有 Checkpoint ，那么将使用 Savepoint 进行恢复。
 {{< /hint >}}
 
+<a name="savepoint-format"></a>
+
+#### Savepoint 格式
+
+你可以在 savepoint 的两种二进制格式之间进行选择：
+
+* 标准格式 - 一种在所有 state backends 间统一的格式，允许你使用一种状态后端创建 savepoint 后，使用另一种状态后端恢复这个 savepoint。这是最稳定的格式，旨在与之前的版本、模式、修改等保持最大兼容性。
+
+* 原生格式 - 标准格式的缺点是它的创建和恢复速度通常很慢。原生格式以特定于使用的状态后端的格式创建快照（例如 RocksDB 的 SST 文件）。
+
+{{< hint info >}}
+以原生格式创建 savepoint 的能力在 Flink 1.15 中引入，在那之前 savepoint 都是以标准格式创建的。
+{{< /hint >}}
 
 #### 触发 Savepoint
 
@@ -127,7 +136,11 @@ mapper-id   | State of StatefulMapper
 $ bin/flink savepoint :jobId [:targetDirectory]
 ```
 
-这将触发 ID 为 `:jobId` 的作业的 Savepoint，并返回创建的 Savepoint 路径。 你需要此路径来还原和删除 Savepoint 。
+这将触发 ID 为 `:jobId` 的作业的 Savepoint，并返回创建的 Savepoint 路径。 你需要此路径来恢复和删除 Savepoint 。你也可以指定创建 Savepoint 的格式。如果没有指定，会采用标准格式创建 Savepoint。
+
+```shell
+$ bin/flink savepoint --type [native/canonical] :jobId [:targetDirectory]
+```
 
 #### 使用 YARN 触发 Savepoint
 
@@ -137,13 +150,15 @@ $ bin/flink savepoint :jobId [:targetDirectory] -yid :yarnAppId
 
 这将触发 ID 为 `:jobId` 和 YARN 应用程序 ID `:yarnAppId` 的作业的 Savepoint，并返回创建的 Savepoint 的路径。
 
-#### 使用 Savepoint 取消作业
+<a name="stopping-a-job-with-savepoint"></a>
+
+#### 使用 Savepoint 停止作业
 
 ```shell
-$ bin/flink cancel -s [:targetDirectory] :jobId
+$ bin/flink stop --type [native/canonical] --savepointPath [:targetDirectory] :jobId
 ```
 
-这将自动触发 ID 为 `:jobid` 的作业的 Savepoint，并取消该作业。此外，你可以指定一个目标文件系统目录来存储 Savepoint 。该目录需要能被 JobManager(s) 和 TaskManager(s) 访问。
+这将自动触发 ID 为 `:jobid` 的作业的 Savepoint，并停止该作业。此外，你可以指定一个目标文件系统目录来存储 Savepoint 。该目录需要能被 JobManager(s) 和 TaskManager(s) 访问。你也可以指定创建 Savepoint 的格式。如果没有指定，会采用标准格式创建 Savepoint。
 
 ### 从 Savepoint 恢复
 

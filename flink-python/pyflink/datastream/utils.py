@@ -7,7 +7,7 @@
 #  "License"); you may not use this file except in compliance
 #  with the License.  You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE2.0
+#      http://www.apache.org/licenses/LICENSE-2.0
 #
 #  Unless required by applicable law or agreed to in writing, software
 #  distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,12 +18,29 @@
 import ast
 import datetime
 import pickle
+from abc import abstractmethod
 
 from pyflink.common import Row, RowKind
-from pyflink.common.typeinfo import (RowTypeInfo, TupleTypeInfo, Types,  BasicArrayTypeInfo,
+from pyflink.common.typeinfo import (RowTypeInfo, TupleTypeInfo, Types, BasicArrayTypeInfo,
                                      PrimitiveArrayTypeInfo, MapTypeInfo, ListTypeInfo,
-                                     ObjectArrayTypeInfo, ExternalTypeInfo)
+                                     ObjectArrayTypeInfo, ExternalTypeInfo, TypeInformation)
 from pyflink.java_gateway import get_gateway
+
+
+class ResultTypeQueryable(object):
+
+    @abstractmethod
+    def get_produced_type(self) -> TypeInformation:
+        pass
+
+
+class JavaObjectWrapper(object):
+
+    def __init__(self, j_object):
+        self._j_object = j_object
+
+    def get_java_object(self):
+        return self._j_object
 
 
 def convert_to_python_obj(data, type_info):

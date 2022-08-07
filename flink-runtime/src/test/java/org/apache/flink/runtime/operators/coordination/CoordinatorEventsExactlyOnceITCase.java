@@ -22,8 +22,6 @@ import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.accumulators.ListAccumulator;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
@@ -39,14 +37,14 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
-import org.apache.flink.runtime.minicluster.MiniCluster;
-import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.OperatorStreamStateHandle;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.state.TaskStateManager;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
 import org.apache.flink.runtime.taskmanager.DispatcherThreadFactory;
+import org.apache.flink.runtime.testutils.MiniClusterResource;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.InstantiationUtil;
@@ -55,8 +53,7 @@ import org.apache.flink.util.TestLogger;
 
 import org.apache.flink.shaded.guava30.com.google.common.collect.Iterators;
 
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.ClassRule;
 import org.junit.Test;
 
 import javax.annotation.Nullable;
@@ -146,28 +143,13 @@ public class CoordinatorEventsExactlyOnceITCase extends TestLogger {
     private static final String OPERATOR_1_NAME = "operator-1";
     private static final String OPERATOR_2_NAME = "operator-2";
 
-    private static MiniCluster miniCluster;
-
-    @BeforeClass
-    public static void startMiniCluster() throws Exception {
-        final Configuration config = new Configuration();
-        config.setString(RestOptions.BIND_PORT, "0");
-
-        final MiniClusterConfiguration clusterCfg =
-                new MiniClusterConfiguration.Builder()
-                        .setNumTaskManagers(2)
-                        .setNumSlotsPerTaskManager(1)
-                        .setConfiguration(config)
-                        .build();
-
-        miniCluster = new MiniCluster(clusterCfg);
-        miniCluster.start();
-    }
-
-    @AfterClass
-    public static void shutdownMiniCluster() throws Exception {
-        miniCluster.close();
-    }
+    @ClassRule
+    public static final MiniClusterResource MINI_CLUSTER =
+            new MiniClusterResource(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(2)
+                            .setNumberSlotsPerTaskManager(1)
+                            .build());
 
     // ------------------------------------------------------------------------
 
@@ -191,7 +173,8 @@ public class CoordinatorEventsExactlyOnceITCase extends TestLogger {
                         .setJobCheckpointingSettings(createCheckpointSettings())
                         .build();
 
-        final JobExecutionResult result = miniCluster.executeJobBlocking(jobGraph);
+        final JobExecutionResult result =
+                MINI_CLUSTER.getMiniCluster().executeJobBlocking(jobGraph);
 
         checkListContainsSequence(result.getAccumulatorResult(OPERATOR_1_NAME), numEvents1);
         checkListContainsSequence(result.getAccumulatorResult(OPERATOR_2_NAME), numEvents2);
@@ -304,9 +287,9 @@ public class CoordinatorEventsExactlyOnceITCase extends TestLogger {
      * The coordinator that sends events and completes checkpoints.
      *
      * <p>All consistency guaranteed for the coordinator apply to order or method invocations (like
-     * {@link #subtaskFailed(int, Throwable)}, {@link #subtaskReset(int, long)} or {@link
-     * #checkpointCoordinator(long, CompletableFuture)}) and the order in which actions are done
-     * (sending events and completing checkpoints). Tho consistently evaluate this, but with
+     * {@link #executionAttemptFailed(int, int, Throwable)}}, {@link #subtaskReset(int, long)} or
+     * {@link #checkpointCoordinator(long, CompletableFuture)}) and the order in which actions are
+     * done (sending events and completing checkpoints). Tho consistently evaluate this, but with
      * concurrency against the scheduler thread that calls this coordinator implements a simple
      * mailbox that moves the method handling into a separate thread, but keeps the order.
      */
@@ -374,7 +357,8 @@ public class CoordinatorEventsExactlyOnceITCase extends TestLogger {
         }
 
         @Override
-        public void handleEventFromOperator(int subtask, OperatorEvent event) throws Exception {
+        public void handleEventFromOperator(int subtask, int attemptNumber, OperatorEvent event)
+                throws Exception {
             if (subtask != 0 || !(event instanceof StartEvent)) {
                 throw new Exception(
                         String.format("Don't recognize event '%s' from task %d.", event, subtask));
@@ -400,7 +384,8 @@ public class CoordinatorEventsExactlyOnceITCase extends TestLogger {
         }
 
         @Override
-        public void subtaskFailed(int subtask, @Nullable Throwable reason) {
+        public void executionAttemptFailed(
+                int subtask, int attemptNumber, @Nullable Throwable reason) {
             // we need to create and register this outside the mailbox so that the
             // registration is not affected by the artificial stall on the mailbox, but happens
             // strictly before the tasks are restored and the operator events are received (to
@@ -437,7 +422,7 @@ public class CoordinatorEventsExactlyOnceITCase extends TestLogger {
         public void subtaskReset(int subtask, long checkpointId) {}
 
         @Override
-        public void subtaskReady(int subtask, SubtaskGateway gateway) {
+        public void executionAttemptReady(int subtask, int attemptNumber, SubtaskGateway gateway) {
             runInMailbox(
                     () -> {
                         checkState(!workLoopRunning);

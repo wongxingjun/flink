@@ -40,12 +40,17 @@ import org.antlr.runtime.tree.TreeVisitorAction;
 import org.apache.calcite.plan.RelOptCluster;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.CorrelationId;
+import org.apache.calcite.rel.logical.LogicalFilter;
+import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
+import org.apache.calcite.rex.RexCorrelVariable;
+import org.apache.calcite.rex.RexFieldAccess;
 import org.apache.calcite.rex.RexFieldCollation;
 import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.rex.RexSubQuery;
 import org.apache.calcite.rex.RexWindowBound;
 import org.apache.calcite.sql.SqlCall;
 import org.apache.calcite.sql.SqlKind;
@@ -74,6 +79,7 @@ import org.apache.hadoop.hive.ql.metadata.InvalidTableException;
 import org.apache.hadoop.hive.ql.metadata.Partition;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveFilter;
 import org.apache.hadoop.hive.ql.parse.PTFInvocationSpec.Order;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.parse.WindowingSpec;
@@ -85,6 +91,8 @@ import org.apache.hadoop.hive.ql.plan.PlanUtils;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator;
 import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.DelimitedJSONSerDe;
+import org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorConverters;
 import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
@@ -114,6 +122,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.apache.flink.table.planner.delegation.hive.HiveParserUtils.removeASTChild;
+import static org.apache.flink.table.planner.delegation.hive.parse.HiveParserDDLSemanticAnalyzer.encodeRowFormat;
 
 /**
  * Counterpart of hive's org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer, and also contains
@@ -387,7 +396,9 @@ public class HiveParserBaseSemanticAnalyzer {
     }
 
     private static void checkColumnName(String columnName) throws SemanticException {
-        if (VirtualColumn.VIRTUAL_COLUMN_NAMES.contains(columnName.toUpperCase())) {
+        ColumnInfo columnInfo = new ColumnInfo();
+        columnInfo.setAlias(columnName);
+        if (VirtualColumn.isVirtualColumnBasedOnAlias(columnInfo)) {
             throw new SemanticException("Invalid column name " + columnName);
         }
     }
@@ -1699,8 +1710,8 @@ public class HiveParserBaseSemanticAnalyzer {
                                 GroupByDesc.Mode.COMPLETE, isDistinct);
 
                 GenericUDAFEvaluator genericUDAFEvaluator;
-                if (aggName.toLowerCase().equals(FunctionRegistry.LEAD_FUNC_NAME)
-                        || aggName.toLowerCase().equals(FunctionRegistry.LAG_FUNC_NAME)) {
+                if (aggName.equalsIgnoreCase(FunctionRegistry.LEAD_FUNC_NAME)
+                        || aggName.equalsIgnoreCase(FunctionRegistry.LAG_FUNC_NAME)) {
                     ArrayList<ObjectInspector> originalParameterTypeInfos =
                             HiveParserUtils.getWritableObjectInspector(aggParameters);
                     genericUDAFEvaluator =
@@ -1858,6 +1869,70 @@ public class HiveParserBaseSemanticAnalyzer {
                 cluster,
                 rexBuilder.getTypeFactory().createStructType(calciteRowType.getFieldList()),
                 rows);
+    }
+
+    /**
+     * traverse the given node to find all correlated variables, the main logic is from {@link
+     * HiveFilter#getVariablesSet()}.
+     */
+    public static Set<CorrelationId> getVariablesSetForFilter(RexNode rexNode) {
+        Set<CorrelationId> correlationVariables = new HashSet<>();
+        if (rexNode instanceof RexSubQuery) {
+            RexSubQuery rexSubQuery = (RexSubQuery) rexNode;
+            // we expect correlated variables in Filter only for now.
+            // also check case where operator has 0 inputs .e.g TableScan
+            if (rexSubQuery.rel.getInputs().isEmpty()) {
+                return correlationVariables;
+            }
+            RelNode input = rexSubQuery.rel.getInput(0);
+            while (input != null
+                    && !(input instanceof LogicalFilter)
+                    && input.getInputs().size() >= 1) {
+                // we don't expect corr vars within UNION for now
+                if (input.getInputs().size() > 1) {
+                    if (input instanceof LogicalJoin) {
+                        correlationVariables.addAll(
+                                findCorrelatedVar(((LogicalJoin) input).getCondition()));
+                    }
+                    // todo: throw Unsupported exception when the input isn't LogicalJoin and
+                    // contains correlate variables in FLINK-28317
+                    return correlationVariables;
+                }
+                input = input.getInput(0);
+            }
+            if (input instanceof LogicalFilter) {
+                correlationVariables.addAll(
+                        findCorrelatedVar(((LogicalFilter) input).getCondition()));
+            }
+            return correlationVariables;
+        }
+        // AND, NOT etc
+        if (rexNode instanceof RexCall) {
+            int numOperands = ((RexCall) rexNode).getOperands().size();
+            for (int i = 0; i < numOperands; i++) {
+                RexNode op = ((RexCall) rexNode).getOperands().get(i);
+                correlationVariables.addAll(getVariablesSetForFilter(op));
+            }
+        }
+        return correlationVariables;
+    }
+
+    private static Set<CorrelationId> findCorrelatedVar(RexNode node) {
+        Set<CorrelationId> allVars = new HashSet<>();
+        if (node instanceof RexCall) {
+            RexCall nd = (RexCall) node;
+            for (RexNode rn : nd.getOperands()) {
+                if (rn instanceof RexFieldAccess) {
+                    final RexNode ref = ((RexFieldAccess) rn).getReferenceExpr();
+                    if (ref instanceof RexCorrelVariable) {
+                        allVars.add(((RexCorrelVariable) ref).id);
+                    }
+                } else {
+                    allVars.addAll(findCorrelatedVar(rn));
+                }
+            }
+        }
+        return allVars;
     }
 
     private static void validatePartColumnType(
@@ -2336,7 +2411,10 @@ public class HiveParserBaseSemanticAnalyzer {
         }
 
         public void analyzeRowFormat(HiveParserASTNode child) throws SemanticException {
-            child = (HiveParserASTNode) child.getChild(0);
+            analyzeSerdeProps((HiveParserASTNode) child.getChild(0));
+        }
+
+        public void analyzeSerdeProps(HiveParserASTNode child) throws SemanticException {
             int numChildRowFormat = child.getChildCount();
             for (int numC = 0; numC < numChildRowFormat; numC++) {
                 HiveParserASTNode rowChild = (HiveParserASTNode) child.getChild(numC);
@@ -2487,6 +2565,104 @@ public class HiveParserBaseSemanticAnalyzer {
 
         public boolean isRely() {
             return rely;
+        }
+    }
+
+    /** including serde class name and the properties. */
+    public static class SerDeClassProps implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private final String serdeClassName;
+        private final Map<String, String> properties;
+
+        public SerDeClassProps(String serdeClassName, Map<String, String> properties) {
+            this.serdeClassName = serdeClassName;
+            this.properties = properties;
+        }
+
+        public String getSerdeClassName() {
+            return serdeClassName;
+        }
+
+        public Map<String, String> getProperties() {
+            return properties;
+        }
+
+        public static SerDeClassProps analyzeSerDeInfo(
+                HiveParserASTNode astNode, String cols, String colTypes, boolean defaultCols)
+                throws SemanticException {
+            String serdeClassName = LazySimpleSerDe.class.getName();
+            Map<String, String> properties = new HashMap<>();
+            if (astNode.getType() == HiveASTParser.TOK_SERDENAME) {
+                serdeClassName = unescapeSQLString(astNode.getChild(0).getText());
+                properties.putAll(
+                        getDefaultSerDeProps(
+                                serdeClassName,
+                                String.valueOf(Utilities.tabCode),
+                                cols,
+                                colTypes,
+                                defaultCols,
+                                false));
+                // copy all the properties
+                if (astNode.getChildCount() == 2) {
+                    HiveParserASTNode propNode =
+                            (HiveParserASTNode) astNode.getChild(1).getChild(0);
+                    for (int propChild = 0; propChild < propNode.getChildCount(); propChild++) {
+                        String key =
+                                unescapeSQLString(
+                                        propNode.getChild(propChild).getChild(0).getText());
+                        String value =
+                                unescapeSQLString(
+                                        propNode.getChild(propChild).getChild(1).getText());
+                        properties.put(key, value);
+                    }
+                }
+            } else if (astNode.getType() == HiveASTParser.TOK_SERDEPROPS) {
+                properties.putAll(
+                        getDefaultSerDeProps(
+                                serdeClassName,
+                                String.valueOf(Utilities.ctrlaCode),
+                                cols,
+                                colTypes,
+                                defaultCols,
+                                false));
+                HiveParserRowFormatParams rowFormatParams = new HiveParserRowFormatParams();
+                rowFormatParams.analyzeSerdeProps(astNode);
+                encodeRowFormat(rowFormatParams, properties);
+            } else {
+                throw new SemanticException("Encounter an unexpected ASTNode: " + astNode);
+            }
+            return new SerDeClassProps(serdeClassName, properties);
+        }
+
+        public static Map<String, String> getDefaultSerDeProps(
+                String serdeClass,
+                String separatorCode,
+                String columns,
+                String columnTypes,
+                boolean lastColumnTakesRestOfTheLine,
+                boolean useDelimitedJSON) {
+            Map<String, String> props = new HashMap<>();
+            props.put(serdeConstants.SERIALIZATION_FORMAT, separatorCode);
+            props.put(serdeConstants.LIST_COLUMNS, columns);
+
+            if (!separatorCode.equals(Integer.toString(Utilities.ctrlaCode))) {
+                props.put(serdeConstants.FIELD_DELIM, separatorCode);
+            }
+
+            if (columnTypes != null) {
+                props.put(serdeConstants.LIST_COLUMN_TYPES, columnTypes);
+            }
+
+            if (lastColumnTakesRestOfTheLine) {
+                props.put(serdeConstants.SERIALIZATION_LAST_COLUMN_TAKES_REST, "true");
+            }
+            if (useDelimitedJSON) {
+                serdeClass = DelimitedJSONSerDe.class.getName();
+            }
+            props.put(serdeConstants.SERIALIZATION_LIB, serdeClass);
+            return props;
         }
     }
 }

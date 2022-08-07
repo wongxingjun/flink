@@ -50,6 +50,7 @@ import org.apache.flink.table.planner.delegation.hive.copy.HiveParserWindowingSp
 import org.apache.flink.table.planner.delegation.hive.parse.HiveASTParser;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserCreateViewInfo;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserErrorMsg;
+import org.apache.flink.table.planner.functions.bridging.BridgingSqlFunction;
 import org.apache.flink.table.planner.plan.FlinkCalciteCatalogReader;
 import org.apache.flink.table.planner.plan.nodes.hive.LogicalDistribution;
 import org.apache.flink.table.types.DataType;
@@ -74,7 +75,6 @@ import org.apache.calcite.rel.core.SetOp;
 import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.logical.LogicalAggregate;
 import org.apache.calcite.rel.logical.LogicalCorrelate;
-import org.apache.calcite.rel.logical.LogicalFilter;
 import org.apache.calcite.rel.logical.LogicalIntersect;
 import org.apache.calcite.rel.logical.LogicalJoin;
 import org.apache.calcite.rel.logical.LogicalMinus;
@@ -98,7 +98,6 @@ import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.sql.type.SqlTypeName;
-import org.apache.calcite.sql.validate.SqlUserDefinedTableFunction;
 import org.apache.calcite.sql2rel.DeduplicateCorrelateVariables;
 import org.apache.calcite.tools.FrameworkConfig;
 import org.apache.calcite.util.CompositeList;
@@ -117,6 +116,7 @@ import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
 import org.apache.hadoop.hive.ql.parse.ColumnAccessInfo;
 import org.apache.hadoop.hive.ql.parse.JoinType;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.parse.SplitSample;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
@@ -192,6 +192,7 @@ public class HiveParserCalcitePlanner {
             new LinkedHashMap<>();
     private final LinkedHashMap<RelNode, Map<String, Integer>> relToHiveColNameCalcitePosMap =
             new LinkedHashMap<>();
+    private final HiveConf hiveConf;
     // correlated vars across subqueries within same query needs to have different ID
     // this will be used in HiveParserRexNodeConverter to create cor var
     private int subqueryId = 0;
@@ -209,11 +210,10 @@ public class HiveParserCalcitePlanner {
             throws SemanticException {
         this.catalogManager = catalogManager;
         this.catalogReader = catalogReader;
-        flinkPlanner =
-                plannerContext.createFlinkPlanner(
-                        catalogManager.getCurrentCatalog(), catalogManager.getCurrentDatabase());
+        flinkPlanner = plannerContext.createFlinkPlanner();
         this.plannerContext = plannerContext;
         this.frameworkConfig = frameworkConfig;
+        this.hiveConf = queryState.getConf();
         this.semanticAnalyzer =
                 new HiveParserSemanticAnalyzer(
                         queryState, hiveShim, frameworkConfig, plannerContext.getCluster());
@@ -780,25 +780,15 @@ public class HiveParserCalcitePlanner {
         HiveParserRowResolver rowResolver = new HiveParserRowResolver();
 
         try {
-            // 1. If the table has a Sample specified, bail from Calcite path.
-            // 2. if returnpath is on and hivetestmode is on bail
-            if (qb.getParseInfo().needTableSample(tableAlias)
-                    || semanticAnalyzer.getNameToSplitSampleMap().containsKey(tableAlias)
-                    || Boolean.parseBoolean(
-                                    semanticAnalyzer
-                                            .getConf()
-                                            .get("hive.cbo.returnpath.hiveop", "false"))
-                            && semanticAnalyzer
-                                    .getConf()
-                                    .getBoolVar(HiveConf.ConfVars.HIVETESTMODE)) {
-                String msg =
-                        String.format(
-                                "Table Sample specified for %s."
-                                        + " Currently we don't support Table Sample clauses in CBO,"
-                                        + " turn off cbo for queries on tableSamples.",
-                                tableAlias);
-                LOG.debug(msg);
-                throw new SemanticException(msg);
+            // 1. If the table has a split sample, and it isn't TABLESAMPLE (n ROWS), throw
+            // exception
+            // 2. if the table has a bucket sample, throw exception
+            SplitSample splitSample = semanticAnalyzer.getNameToSplitSampleMap().get(tableAlias);
+            if ((splitSample != null
+                            && (splitSample.getPercent() != null
+                                    || splitSample.getTotalLength() != null))
+                    || qb.getParseInfo().needTableSample(tableAlias)) {
+                throw new UnsupportedOperationException("Only TABLESAMPLE (n ROWS) is supported.");
             }
 
             // 2. Get Table Metadata
@@ -866,6 +856,17 @@ public class HiveParserCalcitePlanner {
                                         ViewExpanders.toRelContext(
                                                 flinkPlanner.createToRelContext(), cluster));
 
+                if (splitSample != null) {
+                    tableRel =
+                            LogicalSort.create(
+                                    tableRel,
+                                    cluster.traitSet().canonize(RelCollations.EMPTY),
+                                    null,
+                                    cluster.getRexBuilder()
+                                            .makeExactLiteral(
+                                                    BigDecimal.valueOf(splitSample.getRowCount())));
+                }
+
                 // 6. Add Schema(RR) to RelNode-Schema map
                 Map<String, Integer> hiveToCalciteColMap = buildHiveToCalciteColumnMap(rowResolver);
                 relToRowResolver.put(tableRel, rowResolver);
@@ -912,7 +913,12 @@ public class HiveParserCalcitePlanner {
         RexNode factoredFilterExpr =
                 RexUtil.pullFactors(cluster.getRexBuilder(), convertedFilterExpr)
                         .accept(funcConverter);
-        RelNode filterRel = LogicalFilter.create(srcRel, factoredFilterExpr);
+        RelNode filterRel =
+                HiveParserUtils.genFilterRelNode(
+                        srcRel,
+                        factoredFilterExpr,
+                        HiveParserBaseSemanticAnalyzer.getVariablesSetForFilter(
+                                factoredFilterExpr));
         relToRowResolver.put(filterRel, relToRowResolver.get(srcRel));
         relToHiveColNameCalcitePosMap.put(filterRel, hiveColNameToCalcitePos);
 
@@ -1072,7 +1078,12 @@ public class HiveParserCalcitePlanner {
                             .convert(subQueryExpr)
                             .accept(funcConverter);
 
-            RelNode filterRel = LogicalFilter.create(srcRel, convertedFilterLHS);
+            RelNode filterRel =
+                    HiveParserUtils.genFilterRelNode(
+                            srcRel,
+                            convertedFilterLHS,
+                            HiveParserBaseSemanticAnalyzer.getVariablesSetForFilter(
+                                    convertedFilterLHS));
 
             relToHiveColNameCalcitePosMap.put(filterRel, relToHiveColNameCalcitePosMap.get(srcRel));
             relToRowResolver.put(filterRel, relToRowResolver.get(srcRel));
@@ -1755,11 +1766,8 @@ public class HiveParserCalcitePlanner {
             RelCollation canonizedCollation = traitSet.canonize(RelCollations.EMPTY);
             sortRel = LogicalSort.create(srcRel, canonizedCollation, offsetRex, fetchRex);
 
-            HiveParserRowResolver outputRR = new HiveParserRowResolver();
-            if (!HiveParserRowResolver.add(outputRR, relToRowResolver.get(srcRel))) {
-                throw new SemanticException(
-                        "Duplicates detected when adding columns to RR: see previous message");
-            }
+            HiveParserRowResolver inputRR = relToRowResolver.get(srcRel);
+            HiveParserRowResolver outputRR = inputRR.duplicate();
             Map<String, Integer> hiveColNameCalcitePosMap = buildHiveToCalciteColumnMap(outputRR);
             relToRowResolver.put(sortRel, outputRR);
             relToHiveColNameCalcitePosMap.put(sortRel, hiveColNameCalcitePosMap);
@@ -2004,6 +2012,8 @@ public class HiveParserCalcitePlanner {
 
         ArrayList<ExprNodeDesc> exprNodeDescs = new ArrayList<>();
 
+        HiveParserASTNode trfm = null;
+
         // 1. Get Select Expression List
         HiveParserQBParseInfo qbp = qb.getParseInfo();
         String selClauseName = qbp.getClauseNames().iterator().next();
@@ -2028,16 +2038,16 @@ public class HiveParserCalcitePlanner {
         boolean isInTransform =
                 selExprList.getChild(posn).getChild(0).getType() == HiveASTParser.TOK_TRANSFORM;
         if (isInTransform) {
-            String msg =
-                    "SELECT TRANSFORM is currently not supported in CBO, turn off cbo to use TRANSFORM.";
-            throw new SemanticException(msg);
+            trfm = (HiveParserASTNode) selExprList.getChild(posn).getChild(0);
         }
 
         // 2.Row resolvers for input, output
         HiveParserRowResolver outRR = new HiveParserRowResolver();
+        // SELECT * or SELECT TRANSFORM(*)
         Integer pos = 0;
         // TODO: will this also fix windowing? try
         HiveParserRowResolver inputRR = relToRowResolver.get(srcRel), starRR = inputRR;
+        inputRR.setCheckForAmbiguity(true);
         if (starSrcRel != null) {
             starRR = relToRowResolver.get(starSrcRel);
         }
@@ -2121,13 +2131,19 @@ public class HiveParserCalcitePlanner {
 
         // 6. Iterate over all expression (after SELECT)
         HiveParserASTNode exprList;
-        if (udtfOperator != null) {
+        if (isInTransform) {
+            exprList = (HiveParserASTNode) trfm.getChild(0);
+        } else if (udtfOperator != null) {
             exprList = expr;
         } else {
             exprList = selExprList;
         }
         // For UDTF's, skip the function name to get the expressions
         int startPos = udtfOperator != null ? posn + 1 : posn;
+        if (isInTransform) {
+            startPos = 0;
+        }
+
         // track the col aliases provided by user
         List<String> colAliases = new ArrayList<>();
         for (int i = startPos; i < exprList.getChildCount(); ++i) {
@@ -2135,12 +2151,18 @@ public class HiveParserCalcitePlanner {
 
             // 6.1 child can be EXPR AS ALIAS, or EXPR.
             HiveParserASTNode child = (HiveParserASTNode) exprList.getChild(i);
-            boolean hasAsClause = child.getChildCount() == 2;
+            boolean hasAsClause = child.getChildCount() == 2 && !isInTransform;
+            boolean isWindowSpec =
+                    child.getChildCount() == 3
+                            && child.getChild(2).getType() == HiveASTParser.TOK_WINDOWSPEC;
 
             // 6.2 EXPR AS (ALIAS,...) parses, but is only allowed for UDTF's
             // This check is not needed and invalid when there is a transform b/c the AST's are
             // slightly different.
-            if (udtfOperator == null && child.getChildCount() > 2) {
+            if (!isWindowSpec
+                    && !isInTransform
+                    && udtfOperator == null
+                    && child.getChildCount() > 2) {
                 throw new SemanticException(
                         generateErrorMessage(
                                 (HiveParserASTNode) child.getChild(2),
@@ -2150,7 +2172,7 @@ public class HiveParserCalcitePlanner {
             String tabAlias;
             String colAlias;
 
-            if (udtfOperator != null) {
+            if (isInTransform || udtfOperator != null) {
                 tabAlias = null;
                 colAlias = semanticAnalyzer.getAutogenColAliasPrfxLbl() + i;
                 expr = child;
@@ -2304,7 +2326,6 @@ public class HiveParserCalcitePlanner {
                     colInfo.setSkewedCol(
                             exprDesc instanceof ExprNodeColumnDesc
                                     && ((ExprNodeColumnDesc) exprDesc).isSkewedCol());
-                    // Hive errors out in case of duplication. We allow it and see what happens.
                     outRR.put(tabAlias, colAlias, colInfo);
 
                     if (exprDesc instanceof ExprNodeColumnDesc) {
@@ -2320,7 +2341,6 @@ public class HiveParserCalcitePlanner {
                 }
             }
         }
-
         // 7. Convert Hive projections to Calcite
         List<RexNode> calciteColLst = new ArrayList<>();
 
@@ -2344,7 +2364,12 @@ public class HiveParserCalcitePlanner {
 
         // 8. Build Calcite Rel
         RelNode res;
-        if (udtfOperator != null) {
+        if (isInTransform) {
+            HiveParserScriptTransformHelper transformHelper =
+                    new HiveParserScriptTransformHelper(
+                            cluster, relToRowResolver, relToHiveColNameCalcitePosMap, hiveConf);
+            res = transformHelper.genScriptPlan(trfm, qb, calciteColLst, srcRel);
+        } else if (udtfOperator != null) {
             // The basic idea for CBO support of UDTF is to treat UDTF as a special project.
             res =
                     genUDTFPlan(
@@ -2395,6 +2420,17 @@ public class HiveParserCalcitePlanner {
             relToHiveColNameCalcitePosMap.put(
                     res, buildHiveToCalciteColumnMap(groupByOutputRowResolver));
             relToRowResolver.put(res, groupByOutputRowResolver);
+        }
+
+        inputRR.setCheckForAmbiguity(false);
+        if (selForWindow != null && res instanceof Project) {
+            // if exist windowing expression, trim the project node with window
+            res =
+                    HiveParserProjectWindowTrimmer.trimProjectWindow(
+                            (Project) res,
+                            (Project) selForWindow,
+                            relToRowResolver,
+                            relToHiveColNameCalcitePosMap);
         }
 
         return res;
@@ -2541,9 +2577,9 @@ public class HiveParserCalcitePlanner {
 
         SqlOperator convertedOperator = convertedCall.getOperator();
         Preconditions.checkState(
-                convertedOperator instanceof SqlUserDefinedTableFunction,
+                convertedOperator instanceof BridgingSqlFunction,
                 "Expect operator to be "
-                        + SqlUserDefinedTableFunction.class.getSimpleName()
+                        + BridgingSqlFunction.class.getSimpleName()
                         + ", actually got "
                         + convertedOperator.getClass().getSimpleName());
 
@@ -2570,9 +2606,7 @@ public class HiveParserCalcitePlanner {
         if (correlUse == null) {
             correlRel =
                     plannerContext
-                            .createRelBuilder(
-                                    catalogManager.getCurrentCatalog(),
-                                    catalogManager.getCurrentDatabase())
+                            .createRelBuilder()
                             .push(input)
                             .push(tableFunctionScan)
                             .join(
@@ -2802,8 +2836,7 @@ public class HiveParserCalcitePlanner {
         }
 
         // 9. In case this HiveParserQB corresponds to subquery then modify its RR to point to
-        // subquery alias
-        // TODO: cleanup this
+        // subquery alias.
         if (qb.getParseInfo().getAlias() != null) {
             HiveParserRowResolver rr = relToRowResolver.get(res);
             HiveParserRowResolver newRR = new HiveParserRowResolver();
@@ -2817,7 +2850,7 @@ public class HiveParserCalcitePlanner {
                 }
                 ColumnInfo newColInfo = new ColumnInfo(colInfo);
                 newColInfo.setTabAlias(alias);
-                newRR.put(alias, tmp[1], newColInfo);
+                newRR.putWithCheck(alias, tmp[1], colInfo.getInternalName(), newColInfo);
             }
             relToRowResolver.put(res, newRR);
             relToHiveColNameCalcitePosMap.put(res, buildHiveToCalciteColumnMap(newRR));

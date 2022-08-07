@@ -78,6 +78,7 @@ import org.apache.flink.table.factories.Factory;
 import org.apache.flink.table.factories.FunctionDefinitionFactory;
 import org.apache.flink.table.factories.ManagedTableFactory;
 import org.apache.flink.table.factories.TableFactory;
+import org.apache.flink.table.resource.ResourceUri;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.hadoop.conf.Configuration;
@@ -97,6 +98,7 @@ import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
+import org.apache.hadoop.hive.metastore.api.ResourceType;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.UnknownDBException;
@@ -189,16 +191,15 @@ public class HiveCatalog extends AbstractCatalog {
             @Nullable String hiveVersion) {
         this(
                 catalogName,
-                defaultDatabase == null ? DEFAULT_DB : defaultDatabase,
+                defaultDatabase,
                 hiveConf,
                 isNullOrWhitespaceOnly(hiveVersion) ? HiveShimLoader.getHiveVersion() : hiveVersion,
                 false);
     }
 
-    @VisibleForTesting
-    protected HiveCatalog(
+    public HiveCatalog(
             String catalogName,
-            String defaultDatabase,
+            @Nullable String defaultDatabase,
             @Nullable HiveConf hiveConf,
             String hiveVersion,
             boolean allowEmbedded) {
@@ -221,8 +222,8 @@ public class HiveCatalog extends AbstractCatalog {
         LOG.info("Created HiveCatalog '{}'", catalogName);
     }
 
-    @VisibleForTesting
-    static HiveConf createHiveConf(@Nullable String hiveConfDir, @Nullable String hadoopConfDir) {
+    public static HiveConf createHiveConf(
+            @Nullable String hiveConfDir, @Nullable String hadoopConfDir) {
         // create HiveConf from hadoop configuration with hadoop conf directory configured.
         Configuration hadoopConf = null;
         if (isNullOrWhitespaceOnly(hadoopConfDir)) {
@@ -908,7 +909,14 @@ public class HiveCatalog extends AbstractCatalog {
                     .listPartitionNames(
                             tablePath.getDatabaseName(), tablePath.getObjectName(), (short) -1)
                     .stream()
-                    .map(HiveCatalog::createPartitionSpec)
+                    .map(
+                            p ->
+                                    createPartitionSpec(
+                                            p,
+                                            getHiveConf()
+                                                    .getVar(
+                                                            HiveConf.ConfVars
+                                                                    .DEFAULTPARTITIONNAME)))
                     .collect(Collectors.toList());
         } catch (TException e) {
             throw new CatalogException(
@@ -944,7 +952,14 @@ public class HiveCatalog extends AbstractCatalog {
                             partialVals,
                             (short) -1)
                     .stream()
-                    .map(HiveCatalog::createPartitionSpec)
+                    .map(
+                            p ->
+                                    createPartitionSpec(
+                                            p,
+                                            getHiveConf()
+                                                    .getVar(
+                                                            HiveConf.ConfVars
+                                                                    .DEFAULTPARTITIONNAME)))
                     .collect(Collectors.toList());
         } catch (TException e) {
             throw new CatalogException(
@@ -1138,21 +1153,28 @@ public class HiveCatalog extends AbstractCatalog {
 
     /**
      * Creates a {@link CatalogPartitionSpec} from a Hive partition name string. Example of Hive
-     * partition name string - "name=bob/year=2019"
+     * partition name string - "name=bob/year=2019". If the partition name for the given partition
+     * column is equal to {@param defaultPartitionName}, the partition value in returned {@link
+     * CatalogPartitionSpec} will be null.
      */
-    private static CatalogPartitionSpec createPartitionSpec(String hivePartitionName) {
+    private static CatalogPartitionSpec createPartitionSpec(
+            String hivePartitionName, String defaultPartitionName) {
         String[] partKeyVals = hivePartitionName.split("/");
         Map<String, String> spec = new HashMap<>(partKeyVals.length);
         for (String keyVal : partKeyVals) {
             String[] kv = keyVal.split("=");
-            spec.put(unescapePathName(kv[0]), unescapePathName(kv[1]));
+            String partitionValue = unescapePathName(kv[1]);
+            spec.put(
+                    unescapePathName(kv[0]),
+                    partitionValue.equals(defaultPartitionName) ? null : partitionValue);
         }
         return new CatalogPartitionSpec(spec);
     }
 
     /**
      * Get a list of ordered partition values by re-arranging them based on the given list of
-     * partition keys.
+     * partition keys. If the partition value is null, it'll be converted into default partition
+     * name.
      *
      * @param partitionSpec a partition spec.
      * @param partitionKeys a list of partition keys.
@@ -1176,7 +1198,11 @@ public class HiveCatalog extends AbstractCatalog {
                 throw new PartitionSpecInvalidException(
                         getName(), partitionKeys, tablePath, partitionSpec);
             } else {
-                values.add(spec.get(key));
+                String value = spec.get(key);
+                if (value == null) {
+                    value = getHiveConf().getVar(HiveConf.ConfVars.DEFAULTPARTITIONNAME);
+                }
+                values.add(value);
             }
         }
 
@@ -1332,21 +1358,55 @@ public class HiveCatalog extends AbstractCatalog {
             Function function =
                     client.getFunction(
                             functionPath.getDatabaseName(), functionPath.getObjectName());
+            List<ResourceUri> resources = new ArrayList<>();
+            for (org.apache.hadoop.hive.metastore.api.ResourceUri resourceUri :
+                    function.getResourceUris()) {
+                switch (resourceUri.getResourceType()) {
+                    case JAR:
+                        resources.add(
+                                new ResourceUri(
+                                        org.apache.flink.table.resource.ResourceType.JAR,
+                                        resourceUri.getUri()));
+                        break;
+                    case FILE:
+                        resources.add(
+                                new ResourceUri(
+                                        org.apache.flink.table.resource.ResourceType.FILE,
+                                        resourceUri.getUri()));
+                        break;
+                    case ARCHIVE:
+                        resources.add(
+                                new ResourceUri(
+                                        org.apache.flink.table.resource.ResourceType.ARCHIVE,
+                                        resourceUri.getUri()));
+                        break;
+                    default:
+                        throw new CatalogException(
+                                String.format(
+                                        "Unknown resource type %s for function %s.",
+                                        resourceUri.getResourceType(), functionPath.getFullName()));
+                }
+            }
 
             if (function.getClassName().startsWith(FLINK_PYTHON_FUNCTION_PREFIX)) {
                 return new CatalogFunctionImpl(
                         function.getClassName().substring(FLINK_PYTHON_FUNCTION_PREFIX.length()),
-                        FunctionLanguage.PYTHON);
+                        FunctionLanguage.PYTHON,
+                        resources);
             } else if (function.getClassName().startsWith(FLINK_SCALA_FUNCTION_PREFIX)) {
                 return new CatalogFunctionImpl(
                         function.getClassName().substring(FLINK_SCALA_FUNCTION_PREFIX.length()),
-                        FunctionLanguage.SCALA);
+                        FunctionLanguage.SCALA,
+                        resources);
             } else if (function.getClassName().startsWith("flink:")) {
                 // to be compatible with old behavior
                 return new CatalogFunctionImpl(
-                        function.getClassName().substring("flink:".length()));
+                        function.getClassName().substring("flink:".length()),
+                        FunctionLanguage.JAVA,
+                        resources);
             } else {
-                return new CatalogFunctionImpl(function.getClassName());
+                return new CatalogFunctionImpl(
+                        function.getClassName(), FunctionLanguage.JAVA, resources);
             }
         } catch (NoSuchObjectException e) {
             throw new FunctionNotExistException(getName(), functionPath, e);
@@ -1391,6 +1451,32 @@ public class HiveCatalog extends AbstractCatalog {
                             + " JAVA/SCALA or PYTHON based function for now");
         }
 
+        List<org.apache.hadoop.hive.metastore.api.ResourceUri> resources = new ArrayList<>();
+        for (ResourceUri resourceUri : function.getFunctionResources()) {
+            switch (resourceUri.getResourceType()) {
+                case JAR:
+                    resources.add(
+                            new org.apache.hadoop.hive.metastore.api.ResourceUri(
+                                    ResourceType.JAR, resourceUri.getUri()));
+                    break;
+                case FILE:
+                    resources.add(
+                            new org.apache.hadoop.hive.metastore.api.ResourceUri(
+                                    ResourceType.FILE, resourceUri.getUri()));
+                    break;
+                case ARCHIVE:
+                    resources.add(
+                            new org.apache.hadoop.hive.metastore.api.ResourceUri(
+                                    ResourceType.ARCHIVE, resourceUri.getUri()));
+                    break;
+                default:
+                    throw new CatalogException(
+                            String.format(
+                                    "Unknown resource type %s for function %s.",
+                                    resourceUri.getResourceType(), functionPath.getFullName()));
+            }
+        }
+
         return new Function(
                 // due to https://issues.apache.org/jira/browse/HIVE-22053, we have to normalize
                 // function name ourselves
@@ -1403,7 +1489,7 @@ public class HiveCatalog extends AbstractCatalog {
                 // change later
                 (int) (System.currentTimeMillis() / 1000),
                 FunctionType.JAVA, // FunctionType only has JAVA now
-                new ArrayList<>() // Resource URIs
+                resources // Resource URIs
                 );
     }
 
@@ -1742,6 +1828,7 @@ public class HiveCatalog extends AbstractCatalog {
                                 listPartitions(
                                         new ObjectPath(
                                                 hiveTable.getDbName(), hiveTable.getTableName()))) {
+
                             Partition partition = getHivePartition(hiveTable, spec);
                             HiveTableUtil.alterColumns(partition.getSd(), catalogTable);
                             client.alter_partition(

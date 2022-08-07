@@ -35,7 +35,7 @@ This page describes the API calls available in Flink CEP. We start by presenting
 which allows you to specify the patterns that you want to detect in your stream, before presenting how you can
 [detect and act upon matching event sequences](#detecting-patterns). We then present the assumptions the CEP
 library makes when [dealing with lateness](#handling-lateness-in-event-time) in event time and how you can
-[migrate your job](#migrating-from-an-older-flink-versionpre-13) from an older Flink version to Flink-1.3.
+[migrate your job](#migrating-from-an-older-flink-versionpre-13) from an older Flink version to Flink-1.13.
 
 ## Getting Started
 
@@ -636,7 +636,7 @@ or
 2. `notFollowedBy()`, if you do not want an event type to be anywhere between two other event types.
 
 {{< hint warning >}}
-A pattern sequence cannot end in `notFollowedBy()`.
+A pattern sequence cannot end with `notFollowedBy()` if the time interval is not defined via `withIn()`.
 {{< /hint >}}
 
 {{< hint warning >}}
@@ -714,6 +714,35 @@ next.within(Time.seconds(10));
 {{< tab "Scala" >}}
 ```scala
 next.within(Time.seconds(10))
+```
+{{< /tab >}}
+{{< /tabs >}}
+
+Notice that a pattern sequence can end with `notFollowedBy()` with temporal constraint
+E.g. a pattern like:
+
+{{< tabs "df27eb6d-c532-430a-b56f-98ad4082e6d5" >}}
+{{< tab "Java" >}}
+```java
+Pattern.<Event>begin("start")
+    .next("middle").where(new SimpleCondition<Event>() {
+    @Override
+    public boolean filter(Event value) throws Exception {
+        return value.getName().equals("a");
+    }
+}).notFollowedBy("end").where(new SimpleCondition<Event>() {
+    @Override
+    public boolean filter(Event value) throws Exception {
+        return value.getName().equals("b");
+    }
+}).within(Time.seconds(10));
+```
+{{< /tab >}}
+{{< tab "Scala" >}}
+```scala
+Pattern.begin("start").where(_.getName().equals("a"))
+.notFollowedBy("end").where(_.getName == "b")
+.within(Time.seconds(10))
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -1261,8 +1290,7 @@ Pattern.begin("patternName", skipStrategy)
 {{< /tabs >}}
 
 {{< hint info >}}
-For `SKIP_TO_FIRST`/`LAST` there are two options how to handle cases when there are no elements mapped to
-the specified variable. By default a NO_SKIP strategy will be used in this case. The other option is to throw exception in such situation.
+For `SKIP_TO_FIRST`/`LAST` there are two options how to handle cases when there are no events mapped to the PatternName. By default a NO_SKIP strategy will be used in this case. The other option is to throw exception in such situation.
 One can enable this option by:
 {{< /hint >}}
 

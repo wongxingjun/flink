@@ -34,25 +34,22 @@ import org.apache.flink.table.client.gateway.Executor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
 import org.apache.flink.table.client.gateway.TypedResult;
 import org.apache.flink.table.client.gateway.context.DefaultContext;
-import org.apache.flink.table.client.gateway.utils.UserDefinedFunctions;
-import org.apache.flink.table.client.gateway.utils.UserDefinedFunctions.TableUDF;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.ScalarFunction;
 import org.apache.flink.table.operations.Operation;
 import org.apache.flink.table.operations.QueryOperation;
-import org.apache.flink.table.utils.TestUserClassLoaderJar;
+import org.apache.flink.table.utils.UserDefinedFunctions;
 import org.apache.flink.table.utils.print.RowDataToStringConverter;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.test.util.TestBaseUtils;
 import org.apache.flink.util.StringUtils;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.UserClassLoaderJarTestUtils;
 
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.File;
@@ -73,7 +70,8 @@ import java.util.stream.Stream;
 import static org.apache.flink.configuration.ExecutionOptions.RUNTIME_MODE;
 import static org.apache.flink.table.client.config.SqlClientOptions.EXECUTION_MAX_TABLE_RESULT_ROWS;
 import static org.apache.flink.table.client.config.SqlClientOptions.EXECUTION_RESULT_MODE;
-import static org.apache.flink.table.client.gateway.utils.UserDefinedFunctions.ScalarUDF;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_LOWER_UDF_CLASS;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_LOWER_UDF_CODE;
 import static org.apache.flink.util.Preconditions.checkState;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -103,11 +101,11 @@ public class LocalExecutorITCase extends TestLogger {
     public static void setup() throws IOException {
         clusterClient = MINI_CLUSTER_RESOURCE.getClusterClient();
         File udfJar =
-                TestUserClassLoaderJar.createJarFile(
+                UserClassLoaderJarTestUtils.createJarFile(
                         tempFolder.newFolder("test-jar"),
                         "test-classloader-udf.jar",
-                        UserDefinedFunctions.GENERATED_UDF_CLASS,
-                        UserDefinedFunctions.GENERATED_UDF_CODE);
+                        GENERATED_LOWER_UDF_CLASS,
+                        String.format(GENERATED_LOWER_UDF_CODE, GENERATED_LOWER_UDF_CLASS));
         udfDependency = udfJar.toURI().toURL();
     }
 
@@ -119,8 +117,6 @@ public class LocalExecutorITCase extends TestLogger {
         config.setBoolean(WebOptions.SUBMIT_ENABLE, false);
         return config;
     }
-
-    @Rule public ExpectedException exception = ExpectedException.none();
 
     @Test
     public void testCompleteStatement() {
@@ -140,7 +136,7 @@ public class LocalExecutorITCase extends TestLogger {
         assertThat(executor.completeStatement(sessionId, "SELECT * FROM TableNumber1 WH", 29))
                 .isEqualTo(expectedClause);
 
-        final List<String> expectedField = Arrays.asList("IntegerField1");
+        final List<String> expectedField = Collections.singletonList("IntegerField1");
         assertThat(
                         executor.completeStatement(
                                 sessionId, "SELECT * FROM TableNumber1 WHERE Inte", 37))
@@ -569,11 +565,14 @@ public class LocalExecutorITCase extends TestLogger {
     private List<String> getInitSQL(final Map<String, String> replaceVars) {
         return Stream.of(
                         String.format(
-                                "CREATE FUNCTION scalarUDF AS '%s'", ScalarUDF.class.getName()),
+                                "CREATE FUNCTION scalarUDF AS '%s'",
+                                UserDefinedFunctions.ScalarUDF.class.getName()),
                         String.format(
                                 "CREATE FUNCTION aggregateUDF AS '%s'",
                                 AggregateFunction.class.getName()),
-                        String.format("CREATE FUNCTION tableUDF AS '%s'", TableUDF.class.getName()),
+                        String.format(
+                                "CREATE FUNCTION tableUDF AS '%s'",
+                                UserDefinedFunctions.TableUDF.class.getName()),
                         "CREATE TABLE TableNumber1 (\n"
                                 + "  IntegerField1 INT,\n"
                                 + "  StringField1 STRING,\n"

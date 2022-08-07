@@ -26,6 +26,8 @@ import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
 import org.apache.flink.runtime.io.network.buffer.BufferCompressor;
 import org.apache.flink.runtime.io.network.buffer.BufferPool;
 import org.apache.flink.runtime.io.network.buffer.BufferPoolFactory;
+import org.apache.flink.runtime.io.network.partition.hybrid.HsResultPartition;
+import org.apache.flink.runtime.io.network.partition.hybrid.HybridShuffleConfiguration;
 import org.apache.flink.runtime.shuffle.NettyShuffleUtils;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkRuntimeException;
@@ -63,7 +65,7 @@ public class ResultPartitionFactory {
 
     private final int networkBufferSize;
 
-    private final boolean blockingShuffleCompressionEnabled;
+    private final boolean batchShuffleCompressionEnabled;
 
     private final String compressionCodec;
 
@@ -75,6 +77,8 @@ public class ResultPartitionFactory {
 
     private final boolean sslEnabled;
 
+    private final int maxOverdraftBuffersPerGate;
+
     public ResultPartitionFactory(
             ResultPartitionManager partitionManager,
             FileChannelManager channelManager,
@@ -85,12 +89,13 @@ public class ResultPartitionFactory {
             int configuredNetworkBuffersPerChannel,
             int floatingNetworkBuffersPerGate,
             int networkBufferSize,
-            boolean blockingShuffleCompressionEnabled,
+            boolean batchShuffleCompressionEnabled,
             String compressionCodec,
             int maxBuffersPerChannel,
             int sortShuffleMinBuffers,
             int sortShuffleMinParallelism,
-            boolean sslEnabled) {
+            boolean sslEnabled,
+            int maxOverdraftBuffersPerGate) {
 
         this.partitionManager = partitionManager;
         this.channelManager = channelManager;
@@ -101,12 +106,13 @@ public class ResultPartitionFactory {
         this.batchShuffleReadIOExecutor = batchShuffleReadIOExecutor;
         this.blockingSubpartitionType = blockingSubpartitionType;
         this.networkBufferSize = networkBufferSize;
-        this.blockingShuffleCompressionEnabled = blockingShuffleCompressionEnabled;
+        this.batchShuffleCompressionEnabled = batchShuffleCompressionEnabled;
         this.compressionCodec = compressionCodec;
         this.maxBuffersPerChannel = maxBuffersPerChannel;
         this.sortShuffleMinBuffers = sortShuffleMinBuffers;
         this.sortShuffleMinParallelism = sortShuffleMinParallelism;
         this.sslEnabled = sslEnabled;
+        this.maxOverdraftBuffersPerGate = maxOverdraftBuffersPerGate;
     }
 
     public ResultPartition create(
@@ -133,7 +139,7 @@ public class ResultPartitionFactory {
             int maxParallelism,
             SupplierWithException<BufferPool, IOException> bufferPoolFactory) {
         BufferCompressor bufferCompressor = null;
-        if (type.isBlocking() && blockingShuffleCompressionEnabled) {
+        if (type.supportCompression() && batchShuffleCompressionEnabled) {
             bufferCompressor = new BufferCompressor(networkBufferSize, compressionCodec);
         }
 
@@ -208,6 +214,26 @@ public class ResultPartitionFactory {
 
                 partition = blockingPartition;
             }
+        } else if (type == ResultPartitionType.HYBRID) {
+            partition =
+                    new HsResultPartition(
+                            taskNameWithSubtaskAndId,
+                            partitionIndex,
+                            id,
+                            type,
+                            subpartitions.length,
+                            maxParallelism,
+                            batchShuffleReadBufferPool,
+                            batchShuffleReadIOExecutor,
+                            partitionManager,
+                            channelManager.createChannel().getPath(),
+                            networkBufferSize,
+                            HybridShuffleConfiguration.builder(
+                                            numberOfSubpartitions,
+                                            batchShuffleReadBufferPool.getNumBuffersPerRequest())
+                                    .build(),
+                            bufferCompressor,
+                            bufferPoolFactory);
         } else {
             throw new IllegalArgumentException("Unrecognized ResultPartitionType: " + type);
         }
@@ -277,7 +303,11 @@ public class ResultPartitionFactory {
                             type);
 
             return bufferPoolFactory.createBufferPool(
-                    pair.getLeft(), pair.getRight(), numberOfSubpartitions, maxBuffersPerChannel);
+                    pair.getLeft(),
+                    pair.getRight(),
+                    numberOfSubpartitions,
+                    maxBuffersPerChannel,
+                    maxOverdraftBuffersPerGate);
         };
     }
 

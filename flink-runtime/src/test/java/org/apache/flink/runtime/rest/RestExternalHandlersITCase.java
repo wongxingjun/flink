@@ -26,13 +26,13 @@ import org.apache.flink.runtime.io.network.netty.OutboundChannelHandlerFactory;
 import org.apache.flink.runtime.io.network.netty.Prio0InboundChannelHandlerFactory;
 import org.apache.flink.runtime.io.network.netty.Prio1InboundChannelHandlerFactory;
 import org.apache.flink.runtime.rest.messages.EmptyMessageParameters;
-import org.apache.flink.runtime.rest.messages.MessageHeaders;
 import org.apache.flink.runtime.rest.messages.RequestBody;
 import org.apache.flink.runtime.rest.messages.ResponseBody;
+import org.apache.flink.runtime.rest.messages.RuntimeMessageHeaders;
 import org.apache.flink.runtime.rest.util.TestRestServerEndpoint;
 import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.testutils.junit.extensions.ContextClassLoaderExtension;
-import org.apache.flink.util.ConfigurationException;
 import org.apache.flink.util.TestLogger;
 
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
@@ -47,6 +47,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -77,6 +78,10 @@ public class RestExternalHandlersITCase extends TestLogger {
                             Prio1OutboundChannelHandlerFactory.class.getCanonicalName())
                     .build();
 
+    @RegisterExtension
+    static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorExtension();
+
     private final Configuration config;
 
     public RestExternalHandlersITCase() {
@@ -99,7 +104,7 @@ public class RestExternalHandlersITCase extends TestLogger {
     @BeforeEach
     private void setup() throws Exception {
         serverEndpoint = TestRestServerEndpoint.builder(config).buildAndStart();
-        restClient = new TestRestClient(config);
+        restClient = new RestClient(config, EXECUTOR_RESOURCE.getExecutor());
         serverAddress = serverEndpoint.getServerAddress();
     }
 
@@ -158,19 +163,12 @@ public class RestExternalHandlersITCase extends TestLogger {
         }
     }
 
-    static class TestRestClient extends RestClient {
-
-        TestRestClient(Configuration configuration) throws ConfigurationException {
-            super(configuration, TestingUtils.defaultExecutor());
-        }
-    }
-
     private static class TestRequest implements RequestBody {}
 
     private static class TestResponse implements ResponseBody {}
 
     private static class TestHeaders
-            implements MessageHeaders<TestRequest, TestResponse, EmptyMessageParameters> {
+            implements RuntimeMessageHeaders<TestRequest, TestResponse, EmptyMessageParameters> {
 
         @Override
         public HttpMethodWrapper getHttpMethod() {

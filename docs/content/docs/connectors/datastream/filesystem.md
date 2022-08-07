@@ -157,8 +157,8 @@ The schema for CSV parsing, in this case, is automatically derived based on the 
 If you need more fine-grained control over the CSV schema or the parsing options, use the more low-level `forSchema` static factory method of `CsvReaderFormat`:
 
 ```java
-CsvReaderFormat<T> forSchema(CsvMapper mapper, 
-                             CsvSchema schema, 
+CsvReaderFormat<T> forSchema(Supplier<CsvMapper> mapperFactory, 
+                             Function<CsvMapper, CsvSchema> schemaGenerator, 
                              TypeInformation<T> typeInformation) 
 ```
 
@@ -315,9 +315,9 @@ final FileSink<String> sink = FileSink
     .forRowFormat(new Path(outputPath), new SimpleStringEncoder<String>("UTF-8"))
     .withRollingPolicy(
         DefaultRollingPolicy.builder()
-            .withRolloverInterval(Duration.ofSeconds(10))
-            .withInactivityInterval(Duration.ofSeconds(10))
-            .withMaxPartSize(MemorySize.ofMebiBytes(1))
+            .withRolloverInterval(Duration.ofMinutes(15))
+            .withInactivityInterval(Duration.ofMinutes(5))
+            .withMaxPartSize(MemorySize.ofMebiBytes(1024))
             .build())
 	.build();
 
@@ -341,9 +341,9 @@ val sink: FileSink[String] = FileSink
     .forRowFormat(new Path(outputPath), new SimpleStringEncoder[String]("UTF-8"))
     .withRollingPolicy(
         DefaultRollingPolicy.builder()
-            .withRolloverInterval(Duration.ofSeconds(10))
-            .withInactivityInterval(Duration.ofSeconds(10))
-            .withMaxPartSize(MemorySize.ofMebiBytes(1))
+            .withRolloverInterval(Duration.ofMinutes(15))
+            .withInactivityInterval(Duration.ofMinutes(5))
+            .withMaxPartSize(MemorySize.ofMebiBytes(1024))
             .build())
     .build()
 
@@ -367,7 +367,7 @@ specifying an `Encoder`, we have to specify a {{< javadoc file="org/apache/flink
 The `BulkWriter` logic defines how new elements are added and flushed, and how a batch of records
 is finalized for further encoding purposes.
 
-Flink comes with four built-in BulkWriter factories:
+Flink comes with five built-in BulkWriter factories:
 
 * ParquetWriterFactory
 * AvroWriterFactory
@@ -390,6 +390,8 @@ For writing to other Parquet compatible data formats, users need to create the P
 To use the Parquet bulk encoder in your application you need to add the following dependency:
 
 {{< artifact flink-parquet withScalaVersion >}}
+
+{{< py_download_link "parquet" >}}
 
 A `FileSink` that writes Avro data to Parquet format can be created like this:
 
@@ -427,6 +429,22 @@ val sink: FileSink[GenericRecord] = FileSink
 
 input.sinkTo(sink)
 
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+schema = AvroSchema.parse_string(JSON_SCHEMA)
+# The element could be vanilla Python data structure matching the schema,
+# which is annotated with default Types.PICKLED_BYTE_ARRAY()
+data_stream = ...
+
+avro_type_info = GenericRecordAvroTypeInfo(schema)
+sink = FileSink \
+    .for_bulk_format(OUTPUT_BASE_PATH, AvroParquetWriters.for_generic_record(schema)) \
+    .build()
+
+# A map to indicate its Avro type info is necessary for serialization
+data_stream.map(lambda e: e, output_type=avro_type_info).sink_to(sink)
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -478,6 +496,8 @@ To use the Avro writers in your application you need to add the following depend
 
 {{< artifact flink-avro >}}
 
+{{< py_download_link "avro" >}}
+
 A `FileSink` that writes data to Avro files can be created like this:
 
 {{< tabs "ee5f25e0-180e-43b1-ae91-277bf73d3a6c" >}}
@@ -514,6 +534,22 @@ val sink: FileSink[GenericRecord] = FileSink
 
 input.sinkTo(sink)
 
+```
+{{< /tab >}}
+{{< tab "Python" >}}
+```python
+schema = AvroSchema.parse_string(JSON_SCHEMA)
+# The element could be vanilla Python data structure matching the schema,
+# which is annotated with default Types.PICKLED_BYTE_ARRAY()
+data_stream = ...
+
+avro_type_info = GenericRecordAvroTypeInfo(schema)
+sink = FileSink \
+    .for_bulk_format(OUTPUT_BASE_PATH, AvroWriters.for_generic_record(schema)) \
+    .build()
+
+# A map to indicate its Avro type info is necessary for serialization
+data_stream.map(lambda e: e, output_type=avro_type_info).sink_to(sink)
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -1050,8 +1086,8 @@ Given this, when trying to restore from an old checkpoint/savepoint which assume
 by subsequent successful checkpoints, the `FileSink` will refuse to resume and will throw an exception as it cannot locate the 
 in-progress file.
 
-<span class="label label-danger">Important Note 4</span>: Currently, the `FileSink` only supports three filesystems: 
-HDFS, S3, and Local. Flink will throw an exception when using an unsupported filesystem at runtime.
+<span class="label label-danger">Important Note 4</span>: Currently, the `FileSink` only supports four filesystems: 
+HDFS, S3, OSS, and Local. Flink will throw an exception when using an unsupported filesystem at runtime.
 
 #### BATCH-specific
 
@@ -1085,6 +1121,12 @@ that don't complete within a specified number of days after being initiated. Thi
 aggressively and take a savepoint with some part-files being not fully uploaded, their associated MPUs may time-out
 before the job is restarted. This will result in your job not being able to restore from that savepoint as the
 pending part-files are no longer there and Flink will fail with an exception as it tries to fetch them and fails.
+
+#### OSS-specific
+
+<span class="label label-danger">Important Note</span>: To guarantee exactly-once semantics while
+being efficient, the `FileSink` also uses the [Multi-part Upload](https://help.aliyun.com/document_detail/155825.html)
+feature of OSS(similar with S3).
 
 {{< top >}}
 

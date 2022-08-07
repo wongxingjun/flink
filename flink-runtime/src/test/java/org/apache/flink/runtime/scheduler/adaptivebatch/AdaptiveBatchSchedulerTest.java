@@ -35,16 +35,21 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
+import org.apache.flink.runtime.scheduler.DefaultSchedulerBuilder;
 import org.apache.flink.runtime.scheduler.SchedulerBase;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
+import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 import org.apache.flink.util.TestLogger;
 
+import org.junit.ClassRule;
 import org.junit.Test;
 
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.stream.Collectors;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -55,6 +60,10 @@ public class AdaptiveBatchSchedulerTest extends TestLogger {
 
     private static final int SOURCE_PARALLELISM_1 = 6;
     private static final int SOURCE_PARALLELISM_2 = 4;
+
+    @ClassRule
+    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorResource();
 
     private static final ComponentMainThreadExecutor mainThreadExecutor =
             ComponentMainThreadExecutorServiceAdapter.forMainThread();
@@ -125,7 +134,7 @@ public class AdaptiveBatchSchedulerTest extends TestLogger {
                             state,
                             null,
                             null,
-                            new IOMetrics(0, 0, 0, 0)));
+                            new IOMetrics(0, 0, 0, 0, 0, 0, 0)));
         }
     }
 
@@ -169,13 +178,10 @@ public class AdaptiveBatchSchedulerTest extends TestLogger {
         configuration.set(
                 JobManagerOptions.SCHEDULER, JobManagerOptions.SchedulerType.AdaptiveBatch);
 
-        final AdaptiveBatchSchedulerTestUtils.AdaptiveBatchSchedulerBuilder schedulerBuilder =
-                (AdaptiveBatchSchedulerTestUtils.AdaptiveBatchSchedulerBuilder)
-                        new AdaptiveBatchSchedulerTestUtils.AdaptiveBatchSchedulerBuilder(
-                                        jobGraph, mainThreadExecutor)
-                                .setJobMasterConfiguration(configuration);
-        schedulerBuilder.setVertexParallelismDecider((ignored) -> 10);
-
-        return schedulerBuilder.build();
+        return new DefaultSchedulerBuilder(
+                        jobGraph, mainThreadExecutor, EXECUTOR_RESOURCE.getExecutor())
+                .setJobMasterConfiguration(configuration)
+                .setVertexParallelismDecider((ignored) -> 10)
+                .buildAdaptiveBatchJobScheduler();
     }
 }

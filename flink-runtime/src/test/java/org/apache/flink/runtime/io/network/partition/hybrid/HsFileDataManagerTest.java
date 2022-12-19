@@ -20,12 +20,14 @@ package org.apache.flink.runtime.io.network.partition.hybrid;
 
 import org.apache.flink.core.memory.MemorySegment;
 import org.apache.flink.core.testutils.CheckedThread;
+import org.apache.flink.runtime.concurrent.ManuallyTriggeredScheduledExecutorService;
 import org.apache.flink.runtime.io.disk.BatchShuffleReadBufferPool;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferRecycler;
+import org.apache.flink.runtime.io.network.partition.BufferReaderWriterUtil;
+import org.apache.flink.runtime.io.network.partition.NoOpBufferAvailablityListener;
 import org.apache.flink.runtime.io.network.partition.ResultSubpartition;
 import org.apache.flink.util.TestLoggerExtension;
-import org.apache.flink.util.concurrent.ManuallyTriggeredScheduledExecutor;
 import org.apache.flink.util.function.BiConsumerWithException;
 
 import org.junit.jupiter.api.AfterEach;
@@ -36,6 +38,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,6 +52,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
+import static org.apache.flink.runtime.io.network.partition.hybrid.HsConsumerId.DEFAULT;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,7 +69,7 @@ class HsFileDataManagerTest {
 
     private final byte[] dataBytes = new byte[BUFFER_SIZE];
 
-    private ManuallyTriggeredScheduledExecutor ioExecutor;
+    private ManuallyTriggeredScheduledExecutorService ioExecutor;
 
     private BatchShuffleReadBufferPool bufferPool;
 
@@ -75,7 +79,7 @@ class HsFileDataManagerTest {
 
     private HsFileDataManager fileDataManager;
 
-    private TestingSubpartitionViewInternalOperation subpartitionViewOperation;
+    private TestingSubpartitionConsumerInternalOperation subpartitionViewOperation;
 
     private TestingHsSubpartitionFileReader.Factory factory;
 
@@ -84,7 +88,7 @@ class HsFileDataManagerTest {
         Random random = new Random();
         random.nextBytes(dataBytes);
         bufferPool = new BatchShuffleReadBufferPool(BUFFER_POOL_SIZE * BUFFER_SIZE, BUFFER_SIZE);
-        ioExecutor = new ManuallyTriggeredScheduledExecutor();
+        ioExecutor = new ManuallyTriggeredScheduledExecutorService();
         dataFilePath = Files.createFile(tempDir.resolve(".data"));
         dataFileChannel = openFileChannel(dataFilePath);
         factory = new TestingHsSubpartitionFileReader.Factory();
@@ -98,7 +102,7 @@ class HsFileDataManagerTest {
                         HybridShuffleConfiguration.builder(
                                         NUM_SUBPARTITIONS, bufferPool.getNumBuffersPerRequest())
                                 .build());
-        subpartitionViewOperation = new TestingSubpartitionViewInternalOperation();
+        subpartitionViewOperation = new TestingSubpartitionConsumerInternalOperation();
     }
 
     @AfterEach
@@ -120,7 +124,7 @@ class HsFileDataManagerTest {
 
         assertThat(reader.readBuffers).isEmpty();
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
         ioExecutor.trigger();
 
@@ -139,7 +143,7 @@ class HsFileDataManagerTest {
 
         factory.allReaders.add(reader);
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
         ioExecutor.trigger();
 
@@ -171,7 +175,7 @@ class HsFileDataManagerTest {
                 });
         factory.allReaders.add(reader);
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
         ioExecutor.trigger();
 
@@ -204,8 +208,8 @@ class HsFileDataManagerTest {
         factory.allReaders.add(reader1);
         factory.allReaders.add(reader2);
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
-        fileDataManager.registerNewSubpartition(1, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(1, DEFAULT, subpartitionViewOperation);
 
         // trigger run.
         ioExecutor.trigger();
@@ -240,7 +244,7 @@ class HsFileDataManagerTest {
         reader.setFailConsumer((cause::complete));
         factory.allReaders.add(reader);
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
         ioExecutor.trigger();
 
@@ -266,7 +270,7 @@ class HsFileDataManagerTest {
                 });
         factory.allReaders.add(reader);
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
         ioExecutor.trigger();
 
@@ -311,7 +315,7 @@ class HsFileDataManagerTest {
                 };
         releaseThread.start();
 
-        fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+        fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
         ioExecutor.trigger();
 
@@ -332,11 +336,73 @@ class HsFileDataManagerTest {
         fileDataManager.release();
         assertThatThrownBy(
                         () -> {
-                            fileDataManager.registerNewSubpartition(0, subpartitionViewOperation);
+                            fileDataManager.registerNewConsumer(
+                                    0, DEFAULT, subpartitionViewOperation);
                             ioExecutor.trigger();
                         })
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("HsFileDataManager is already released.");
+    }
+
+    /**
+     * When the result partition fails, the view lock may be obtained when the FileDataManager lock
+     * is held. In the same time, the downstream thread will acquire the lock of the FileDataManager
+     * when acquiring the view lock. To avoid this deadlock, the logical of subpartition view
+     * release subpartition reader and subpartition reader fail should not be inside lock.
+     */
+    @Test
+    void testConsumeWhileReleaseNoDeadlock() throws Exception {
+        CompletableFuture<Void> consumerStart = new CompletableFuture<>();
+        CompletableFuture<Void> readerFail = new CompletableFuture<>();
+        HsSubpartitionConsumer subpartitionView =
+                new HsSubpartitionConsumer(new NoOpBufferAvailablityListener());
+
+        HsSubpartitionFileReaderImpl subpartitionFileReader =
+                new HsSubpartitionFileReaderImpl(
+                        0,
+                        DEFAULT,
+                        dataFileChannel,
+                        subpartitionView,
+                        new HsFileDataIndexImpl(NUM_SUBPARTITIONS),
+                        5,
+                        fileDataManager::releaseSubpartitionReader,
+                        BufferReaderWriterUtil.allocatedHeaderBuffer()) {
+                    @Override
+                    public synchronized void fail(Throwable failureCause) {
+                        try {
+                            readerFail.complete(null);
+                            consumerStart.get();
+                            super.fail(failureCause);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    }
+                };
+        factory.allReaders.add(subpartitionFileReader);
+        HsDataView diskDataView = fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionView);
+        subpartitionView.setDiskDataView(diskDataView);
+        TestingHsDataView memoryDataView =
+                TestingHsDataView.builder()
+                        .setConsumeBufferFunction(
+                                (ignore) -> {
+                                    // throw an exception to trigger the release of file reader.
+                                    throw new RuntimeException("expected exception.");
+                                })
+                        .build();
+        subpartitionView.setMemoryDataView(memoryDataView);
+
+        CheckedThread consumerThread =
+                new CheckedThread() {
+                    @Override
+                    public void go() throws Exception {
+                        readerFail.get();
+                        consumerStart.complete(null);
+                        subpartitionView.getNextBuffer();
+                    }
+                };
+        consumerThread.start();
+        fileDataManager.release();
+        consumerThread.sync();
     }
 
     private static FileChannel openFileChannel(Path path) throws IOException {
@@ -350,6 +416,8 @@ class HsFileDataManagerTest {
                 readBuffersConsumer = (ignore1, ignore2) -> {};
 
         private Consumer<Throwable> failConsumer = (ignore) -> {};
+
+        private Runnable releaseDataViewRunnable = () -> {};
 
         private final Queue<MemorySegment> readBuffers;
 
@@ -399,6 +467,10 @@ class HsFileDataManagerTest {
             this.failConsumer = failConsumer;
         }
 
+        public void setReleaseDataViewRunnable(Runnable releaseDataViewRunnable) {
+            this.releaseDataViewRunnable = releaseDataViewRunnable;
+        }
+
         @Override
         public Optional<ResultSubpartition.BufferAndBacklog> consumeBuffer(
                 int nextBufferToConsume) {
@@ -417,7 +489,7 @@ class HsFileDataManagerTest {
 
         @Override
         public void releaseDataView() {
-            // do nothing.
+            releaseDataViewRunnable.run();
         }
 
         /** Factory for {@link TestingHsSubpartitionFileReader}. */
@@ -427,11 +499,13 @@ class HsFileDataManagerTest {
             @Override
             public HsSubpartitionFileReader createFileReader(
                     int subpartitionId,
+                    HsConsumerId consumerId,
                     FileChannel dataFileChannel,
-                    HsSubpartitionViewInternalOperations operation,
+                    HsSubpartitionConsumerInternalOperations operation,
                     HsFileDataIndex dataIndex,
                     int maxBuffersReadAhead,
-                    Consumer<HsSubpartitionFileReader> fileReaderReleaser) {
+                    Consumer<HsSubpartitionFileReader> fileReaderReleaser,
+                    ByteBuffer headerBuffer) {
                 return checkNotNull(allReaders.poll());
             }
         }

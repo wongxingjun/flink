@@ -307,7 +307,8 @@ public final class RelTimeIndicatorConverter extends RelHomogeneousShuttle {
                                             }
                                         }
                                     });
-            return FlinkLogicalJoin.create(newLeft, newRight, newCondition, join.getJoinType());
+            return FlinkLogicalJoin.create(
+                    newLeft, newRight, newCondition, join.getHints(), join.getJoinType());
         }
     }
 
@@ -452,6 +453,7 @@ public final class RelTimeIndicatorConverter extends RelHomogeneousShuttle {
                                         false,
                                         call.getArgList(),
                                         call.filterArg,
+                                        null,
                                         RelCollations.EMPTY,
                                         callType,
                                         call.name);

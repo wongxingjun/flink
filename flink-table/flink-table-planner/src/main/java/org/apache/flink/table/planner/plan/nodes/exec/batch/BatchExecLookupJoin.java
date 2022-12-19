@@ -50,6 +50,7 @@ public class BatchExecLookupJoin extends CommonExecLookupJoin implements BatchEx
             Map<Integer, LookupJoinUtil.LookupKey> lookupKeys,
             @Nullable List<RexNode> projectionOnTemporalTable,
             @Nullable RexNode filterOnTemporalTable,
+            @Nullable LookupJoinUtil.AsyncLookupOptions asyncLookupOptions,
             InputProperty inputProperty,
             RowType outputType,
             String description) {
@@ -63,6 +64,9 @@ public class BatchExecLookupJoin extends CommonExecLookupJoin implements BatchEx
                 lookupKeys,
                 projectionOnTemporalTable,
                 filterOnTemporalTable,
+                asyncLookupOptions,
+                // batch lookup join does not support retry hint currently
+                null,
                 ChangelogMode.insertOnly(),
                 Collections.singletonList(inputProperty),
                 outputType,

@@ -39,7 +39,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.apache.flink.runtime.io.network.partition.hybrid.HybridShuffleTestUtils.createTestingOutputMetrics;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link HsMemoryDataManager}. */
 class HsMemoryDataManagerTest {
@@ -64,7 +66,7 @@ class HsMemoryDataManagerTest {
         HsSpillingStrategy spillingStrategy =
                 TestingSpillingStrategy.builder()
                         .setOnBufferFinishedFunction(
-                                (numTotalUnSpillBuffers) -> {
+                                (numTotalUnSpillBuffers, currentPoolSize) -> {
                                     finishedBuffers.incrementAndGet();
                                     return Optional.of(Decision.NO_ACTION);
                                 })
@@ -119,7 +121,7 @@ class HsMemoryDataManagerTest {
         HsSpillingStrategy spillingStrategy =
                 TestingSpillingStrategy.builder()
                         .setOnBufferFinishedFunction(
-                                (numFinishedBuffers) -> {
+                                (numFinishedBuffers, poolSize) -> {
                                     if (numFinishedBuffers < numFinishedBufferToTriggerDecision) {
                                         return Optional.of(Decision.NO_ACTION);
                                     }
@@ -159,7 +161,7 @@ class HsMemoryDataManagerTest {
         HsSpillingStrategy spillingStrategy =
                 TestingSpillingStrategy.builder()
                         .setOnBufferFinishedFunction(
-                                (finishedBuffer) -> {
+                                (finishedBuffer, poolSize) -> {
                                     // return empty optional to trigger global decision.
                                     return Optional.empty();
                                 })
@@ -191,32 +193,86 @@ class HsMemoryDataManagerTest {
         assertThat(resultPartitionReleaseFuture).isCompleted();
     }
 
+    @Test
+    void testSubpartitionConsumerRelease() throws Exception {
+        HsSpillingStrategy spillingStrategy = TestingSpillingStrategy.builder().build();
+        HsMemoryDataManager memoryDataManager = createMemoryDataManager(spillingStrategy);
+        memoryDataManager.registerNewConsumer(
+                0, HsConsumerId.DEFAULT, new TestingSubpartitionConsumerInternalOperation());
+        assertThatThrownBy(
+                        () ->
+                                memoryDataManager.registerNewConsumer(
+                                        0,
+                                        HsConsumerId.DEFAULT,
+                                        new TestingSubpartitionConsumerInternalOperation()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Each subpartition view should have unique consumerId.");
+        memoryDataManager.onConsumerReleased(0, HsConsumerId.DEFAULT);
+        memoryDataManager.registerNewConsumer(
+                0, HsConsumerId.DEFAULT, new TestingSubpartitionConsumerInternalOperation());
+    }
+
+    @Test
+    void testPoolSizeCheck() throws Exception {
+        final int requiredBuffers = 10;
+        final int maxBuffers = 100;
+        CompletableFuture<Void> triggerGlobalDecision = new CompletableFuture<>();
+
+        NetworkBufferPool networkBufferPool = new NetworkBufferPool(maxBuffers, bufferSize);
+        BufferPool bufferPool = networkBufferPool.createBufferPool(requiredBuffers, maxBuffers);
+        assertThat(bufferPool.getNumBuffers()).isEqualTo(maxBuffers);
+
+        HsSpillingStrategy spillingStrategy =
+                TestingSpillingStrategy.builder()
+                        .setDecideActionWithGlobalInfoFunction(
+                                (spillingInfoProvider) -> {
+                                    assertThat(spillingInfoProvider.getPoolSize())
+                                            .isEqualTo(requiredBuffers);
+                                    triggerGlobalDecision.complete(null);
+                                    return Decision.NO_ACTION;
+                                })
+                        .build();
+
+        createMemoryDataManager(spillingStrategy, bufferPool);
+        networkBufferPool.createBufferPool(maxBuffers - requiredBuffers, maxBuffers);
+        assertThat(bufferPool.getNumBuffers()).isEqualTo(requiredBuffers);
+
+        assertThat(triggerGlobalDecision).succeedsWithin(10, TimeUnit.SECONDS);
+    }
+
     private HsMemoryDataManager createMemoryDataManager(HsSpillingStrategy spillStrategy)
             throws Exception {
-        NetworkBufferPool networkBufferPool = new NetworkBufferPool(NUM_BUFFERS, bufferSize);
-        BufferPool bufferPool = networkBufferPool.createBufferPool(poolSize, poolSize);
-        return new HsMemoryDataManager(
-                NUM_SUBPARTITIONS,
-                bufferSize,
-                bufferPool,
-                spillStrategy,
-                new HsFileDataIndexImpl(NUM_SUBPARTITIONS),
-                dataFilePath,
-                null);
+        return createMemoryDataManager(spillStrategy, new HsFileDataIndexImpl(NUM_SUBPARTITIONS));
     }
 
     private HsMemoryDataManager createMemoryDataManager(
             HsSpillingStrategy spillStrategy, HsFileDataIndex fileDataIndex) throws Exception {
         NetworkBufferPool networkBufferPool = new NetworkBufferPool(NUM_BUFFERS, bufferSize);
         BufferPool bufferPool = networkBufferPool.createBufferPool(poolSize, poolSize);
-        return new HsMemoryDataManager(
-                NUM_SUBPARTITIONS,
-                bufferSize,
-                bufferPool,
-                spillStrategy,
-                fileDataIndex,
-                dataFilePath,
-                null);
+        return createMemoryDataManager(bufferPool, spillStrategy, fileDataIndex);
+    }
+
+    private HsMemoryDataManager createMemoryDataManager(
+            HsSpillingStrategy spillingStrategy, BufferPool bufferPool) throws Exception {
+        return createMemoryDataManager(
+                bufferPool, spillingStrategy, new HsFileDataIndexImpl(NUM_SUBPARTITIONS));
+    }
+
+    private HsMemoryDataManager createMemoryDataManager(
+            BufferPool bufferPool, HsSpillingStrategy spillStrategy, HsFileDataIndex fileDataIndex)
+            throws Exception {
+        HsMemoryDataManager memoryDataManager =
+                new HsMemoryDataManager(
+                        NUM_SUBPARTITIONS,
+                        bufferSize,
+                        bufferPool,
+                        spillStrategy,
+                        fileDataIndex,
+                        dataFilePath,
+                        null,
+                        1000);
+        memoryDataManager.setOutputMetrics(createTestingOutputMetrics());
+        return memoryDataManager;
     }
 
     private static ByteBuffer createRecord(int value) {

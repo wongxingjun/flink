@@ -22,7 +22,7 @@ under the License.
     <parent>
         <artifactId>flink-end-to-end-tests</artifactId>
         <groupId>org.apache.flink</groupId>
-        <version>1.16-SNAPSHOT</version>
+        <version>1.17-SNAPSHOT</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -63,6 +63,10 @@ under the License.
             <version>${hive.version}</version>
             <scope>test</scope>
             <exclusions>
+				<exclusion>
+					<groupId>org.jamon</groupId>
+					<artifactId>jamon-runtime</artifactId>
+				</exclusion>
                 <exclusion>
                     <groupId>log4j</groupId>
                     <artifactId>log4j</artifactId>
@@ -83,6 +87,12 @@ under the License.
             <groupId>org.apache.flink</groupId>
             <artifactId>flink-test-utils-junit</artifactId>
         </dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-sql-gateway</artifactId>
+			<version>${project.version}</version>
+		</dependency>
 
         <!-- hadoop dependencies for end-to-end test -->
         <dependency>

@@ -28,7 +28,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -64,6 +63,10 @@ public class TestingSchedulingResultPartition implements SchedulingResultPartiti
         this.consumedPartitionGroups = new ArrayList<>();
     }
 
+    public int getNumConsumers() {
+        return consumerVertexGroup == null ? 1 : consumerVertexGroup.size();
+    }
+
     @Override
     public IntermediateResultPartitionID getId() {
         return intermediateResultPartitionID;
@@ -90,8 +93,8 @@ public class TestingSchedulingResultPartition implements SchedulingResultPartiti
     }
 
     @Override
-    public Optional<ConsumerVertexGroup> getConsumerVertexGroup() {
-        return Optional.of(consumerVertexGroup);
+    public List<ConsumerVertexGroup> getConsumerVertexGroups() {
+        return Collections.singletonList(consumerVertexGroup);
     }
 
     @Override
@@ -99,14 +102,17 @@ public class TestingSchedulingResultPartition implements SchedulingResultPartiti
         return Collections.unmodifiableList(consumedPartitionGroups);
     }
 
-    void addConsumerGroup(Collection<TestingSchedulingExecutionVertex> consumerVertices) {
+    void addConsumerGroup(
+            Collection<TestingSchedulingExecutionVertex> consumerVertices,
+            ResultPartitionType resultPartitionType) {
         checkState(this.consumerVertexGroup == null);
 
         final ConsumerVertexGroup consumerVertexGroup =
                 ConsumerVertexGroup.fromMultipleVertices(
                         consumerVertices.stream()
                                 .map(TestingSchedulingExecutionVertex::getId)
-                                .collect(Collectors.toList()));
+                                .collect(Collectors.toList()),
+                        resultPartitionType);
 
         this.consumerVertexGroup = consumerVertexGroup;
     }

@@ -18,7 +18,6 @@
 
 package org.apache.flink.table.planner.delegation.hive;
 
-import org.apache.flink.connectors.hive.FlinkHiveException;
 import org.apache.flink.connectors.hive.HiveInternalOptions;
 import org.apache.flink.table.api.SqlParserException;
 import org.apache.flink.table.api.TableConfig;
@@ -28,7 +27,6 @@ import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.hive.HiveCatalog;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
-import org.apache.flink.table.catalog.hive.util.HiveReflectionUtils;
 import org.apache.flink.table.module.hive.udf.generic.HiveGenericUDFGrouping;
 import org.apache.flink.table.operations.ExplainOperation;
 import org.apache.flink.table.operations.HiveSetOperation;
@@ -48,31 +46,22 @@ import org.apache.flink.table.planner.delegation.hive.copy.HiveParserQueryState;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveASTParser;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserCreateViewInfo;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserDDLSemanticAnalyzer;
+import org.apache.flink.table.planner.delegation.hive.parse.HiveParserLoadSemanticAnalyzer;
 import org.apache.flink.table.planner.operations.PlannerQueryOperation;
 import org.apache.flink.table.planner.parse.CalciteParser;
 import org.apache.flink.table.planner.plan.FlinkCalciteCatalogReader;
-import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.tools.FrameworkConfig;
-import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.VariableSubstitution;
-import org.apache.hadoop.hive.ql.lockmgr.LockException;
-import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.processors.HiveCommand;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.sql.Timestamp;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -89,13 +78,6 @@ import static org.apache.flink.table.planner.delegation.hive.copy.HiveSetProcess
 public class HiveParser extends ParserImpl {
 
     private static final Logger LOG = LoggerFactory.getLogger(HiveParser.class);
-
-    private static final Method setCurrentTSMethod =
-            HiveReflectionUtils.tryGetMethod(
-                    SessionState.class, "setupQueryCurrentTimestamp", new Class[0]);
-    private static final Method getCurrentTSMethod =
-            HiveReflectionUtils.tryGetMethod(
-                    SessionState.class, "getQueryCurrentTimestamp", new Class[0]);
 
     // need to maintain the HiveParserASTNode types for DDLs
     private static final Set<Integer> DDL_NODES;
@@ -225,25 +207,26 @@ public class HiveParser extends ParserImpl {
             // substitute variables for the statement
             statement = substituteVariables(hiveConf, statement);
             // creates SessionState
-            startSessionState(hiveConf, catalogManager);
+            HiveSessionState.startSessionState(hiveConf, catalogManager);
             // We override Hive's grouping function. Refer to the implementation for more details.
             hiveShim.registerTemporaryFunction("grouping", HiveGenericUDFGrouping.class);
             return processCmd(statement, hiveConf, hiveShim, (HiveCatalog) currentCatalog);
         } finally {
-            clearSessionState();
+            HiveSessionState.clearSessionState();
         }
     }
 
     private Optional<Operation> tryProcessHiveNonSqlStatement(HiveConf hiveConf, String statement) {
+        statement = statement.trim();
+        if (statement.endsWith(";")) {
+            // the command may end with ";" since it won't be removed by Flink SQL CLI,
+            // so, we need to remove ";"
+            statement = statement.substring(0, statement.length() - 1);
+        }
         String[] commandTokens = statement.split("\\s+");
         HiveCommand hiveCommand = HiveCommand.find(commandTokens);
         if (hiveCommand != null) {
             String cmdArgs = statement.substring(commandTokens[0].length()).trim();
-            // the command may end with ";" since it won't be removed by Flink SQL CLI,
-            // so, we need to remove ";"
-            if (cmdArgs.endsWith(";")) {
-                cmdArgs = cmdArgs.substring(0, cmdArgs.length() - 1);
-            }
             if (hiveCommand == HiveCommand.SET) {
                 return Optional.of(processSetCmd(statement, cmdArgs));
             } else if (hiveCommand == HiveCommand.RESET) {
@@ -260,9 +243,14 @@ public class HiveParser extends ParserImpl {
 
     private Operation processSetCmd(String originCmd, String setCmdArgs) {
         if (setCmdArgs.equals("")) {
-            return new HiveSetOperation();
+            // the command is "set", if we follow Hive's behavior, it will output all configurations
+            // including hiveconf, hivevar, env, ... which are too many.
+            // So in here, for this case, just delegate to Flink's own behavior
+            // which will only output the flink configuration.
+            return super.parse(originCmd).get(0);
         }
         if (setCmdArgs.equals("-v")) {
+            // the command is "set -v", for such case, we will follow Hive's behavior.
             return new HiveSetOperation(true);
         }
 
@@ -348,7 +336,7 @@ public class HiveParser extends ParserImpl {
                                 dmlHelper,
                                 frameworkConfig,
                                 plannerContext.getCluster(),
-                                plannerContext.getFlinkContext().getClassLoader());
+                                plannerContext.getFlinkContext());
                 return Collections.singletonList(ddlAnalyzer.convertToOperation(node));
             } else {
                 return processQuery(context, hiveConf, hiveShim, node);
@@ -389,6 +377,15 @@ public class HiveParser extends ParserImpl {
             HiveShim hiveShim,
             HiveParserASTNode input)
             throws SemanticException {
+        if (isLoadData(input)) {
+            HiveParserLoadSemanticAnalyzer loadSemanticAnalyzer =
+                    new HiveParserLoadSemanticAnalyzer(
+                            hiveConf,
+                            frameworkConfig,
+                            plannerContext.getCluster(),
+                            getCatalogManager());
+            return loadSemanticAnalyzer.convertToOperation(input);
+        }
         if (isMultiDestQuery(input)) {
             return processMultiDestQuery(context, hiveConf, hiveShim, input);
         } else {
@@ -396,10 +393,26 @@ public class HiveParser extends ParserImpl {
         }
     }
 
+    private boolean isLoadData(HiveParserASTNode input) {
+        return input.getType() == HiveASTParser.TOK_LOAD;
+    }
+
     private boolean isMultiDestQuery(HiveParserASTNode astNode) {
         // Hive's multi dest insert will always be [FROM, INSERT+]
-        // so, if it's children count is more than 2, it should be a multi-dest query
-        return astNode.getChildCount() > 2;
+        // so, if it's children count is more than 2, and the first one
+        // is FROM, others are INSERT nodes, it should be multi dest query
+        if (astNode.getChildCount() > 2) {
+            if (astNode.getChild(0).getType() == HiveASTParser.TOK_FROM) {
+                // the others should be insert tokens
+                for (int i = 1; i < astNode.getChildCount(); i++) {
+                    if (astNode.getChild(i).getType() != HiveASTParser.TOK_INSERT) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
+        return false;
     }
 
     private Operation processMultiDestQuery(
@@ -437,16 +450,14 @@ public class HiveParser extends ParserImpl {
     }
 
     public HiveParserCalcitePlanner createCalcitePlanner(
-            HiveParserContext context, HiveParserQueryState queryState, HiveShim hiveShim)
-            throws SemanticException {
+            HiveParserContext context, HiveParserQueryState queryState) throws SemanticException {
         HiveParserCalcitePlanner calciteAnalyzer =
                 new HiveParserCalcitePlanner(
                         queryState,
                         plannerContext,
                         catalogReader,
                         frameworkConfig,
-                        getCatalogManager(),
-                        hiveShim);
+                        getCatalogManager());
         calciteAnalyzer.initCtx(context);
         calciteAnalyzer.init(false);
         return calciteAnalyzer;
@@ -455,11 +466,9 @@ public class HiveParser extends ParserImpl {
     public void analyzeCreateView(
             HiveParserCreateViewInfo createViewInfo,
             HiveParserContext context,
-            HiveParserQueryState queryState,
-            HiveShim hiveShim)
+            HiveParserQueryState queryState)
             throws SemanticException {
-        HiveParserCalcitePlanner calciteAnalyzer =
-                createCalcitePlanner(context, queryState, hiveShim);
+        HiveParserCalcitePlanner calciteAnalyzer = createCalcitePlanner(context, queryState);
         calciteAnalyzer.setCreatViewInfo(createViewInfo);
         calciteAnalyzer.genLogicalPlan(createViewInfo.getQuery());
     }
@@ -468,7 +477,7 @@ public class HiveParser extends ParserImpl {
             HiveParserContext context, HiveConf hiveConf, HiveShim hiveShim, HiveParserASTNode node)
             throws SemanticException {
         HiveParserCalcitePlanner analyzer =
-                createCalcitePlanner(context, new HiveParserQueryState(hiveConf), hiveShim);
+                createCalcitePlanner(context, new HiveParserQueryState(hiveConf));
         RelNode relNode = analyzer.genLogicalPlan(node);
         if (relNode == null) {
             return new NopOperation();
@@ -479,128 +488,6 @@ public class HiveParser extends ParserImpl {
             return dmlHelper.createInsertOperation(analyzer, relNode);
         } else {
             return new PlannerQueryOperation(relNode);
-        }
-    }
-
-    private void startSessionState(HiveConf hiveConf, CatalogManager catalogManager) {
-        final ClassLoader contextCL = Thread.currentThread().getContextClassLoader();
-        try {
-            HiveParserSessionState sessionState = new HiveParserSessionState(hiveConf, contextCL);
-            sessionState.initTxnMgr(hiveConf);
-            sessionState.setCurrentDatabase(catalogManager.getCurrentDatabase());
-            // some Hive functions needs the timestamp
-            setCurrentTimestamp(sessionState);
-            SessionState.setCurrentSessionState(sessionState);
-        } catch (LockException e) {
-            throw new FlinkHiveException("Failed to init SessionState", e);
-        } finally {
-            // don't let SessionState mess up with our context classloader
-            Thread.currentThread().setContextClassLoader(contextCL);
-        }
-    }
-
-    private static void setCurrentTimestamp(HiveParserSessionState sessionState) {
-        if (setCurrentTSMethod != null) {
-            try {
-                setCurrentTSMethod.invoke(sessionState);
-                Object currentTs = getCurrentTSMethod.invoke(sessionState);
-                if (currentTs instanceof Instant) {
-                    sessionState.hiveParserCurrentTS = Timestamp.from((Instant) currentTs);
-                } else {
-                    sessionState.hiveParserCurrentTS = (Timestamp) currentTs;
-                }
-            } catch (IllegalAccessException | InvocationTargetException e) {
-                throw new FlinkHiveException("Failed to set current timestamp for session", e);
-            }
-        } else {
-            sessionState.hiveParserCurrentTS = new Timestamp(System.currentTimeMillis());
-        }
-    }
-
-    private void clearSessionState() {
-        SessionState sessionState = SessionState.get();
-        if (sessionState != null) {
-            try {
-                sessionState.close();
-            } catch (Exception e) {
-                LOG.warn("Error closing SessionState", e);
-            }
-        }
-    }
-
-    /** Sub-class of SessionState to meet our needs. */
-    public static class HiveParserSessionState extends SessionState {
-
-        private static final Class registryClz;
-        private static final Method getRegistry;
-        private static final Method clearRegistry;
-        private static final Method closeRegistryLoaders;
-
-        private Timestamp hiveParserCurrentTS;
-
-        static {
-            registryClz =
-                    HiveReflectionUtils.tryGetClass("org.apache.hadoop.hive.ql.exec.Registry");
-            if (registryClz != null) {
-                getRegistry =
-                        HiveReflectionUtils.tryGetMethod(
-                                SessionState.class, "getRegistry", new Class[0]);
-                clearRegistry =
-                        HiveReflectionUtils.tryGetMethod(registryClz, "clear", new Class[0]);
-                closeRegistryLoaders =
-                        HiveReflectionUtils.tryGetMethod(
-                                registryClz, "closeCUDFLoaders", new Class[0]);
-            } else {
-                getRegistry = null;
-                clearRegistry = null;
-                closeRegistryLoaders = null;
-            }
-        }
-
-        private final ClassLoader originContextLoader;
-        private final ClassLoader hiveLoader;
-
-        public HiveParserSessionState(HiveConf conf, ClassLoader contextLoader) {
-            super(conf);
-            this.originContextLoader = contextLoader;
-            this.hiveLoader = getConf().getClassLoader();
-            // added jars are handled by context class loader, so we always use it as the session
-            // class loader
-            getConf().setClassLoader(contextLoader);
-        }
-
-        @Override
-        public void close() throws IOException {
-            clearSessionRegistry();
-            if (getTxnMgr() != null) {
-                getTxnMgr().closeTxnManager();
-            }
-            // close the classloader created in hive
-            JavaUtils.closeClassLoadersTo(hiveLoader, originContextLoader);
-            File resourceDir =
-                    new File(getConf().getVar(HiveConf.ConfVars.DOWNLOADED_RESOURCES_DIR));
-            LOG.debug("Removing resource dir " + resourceDir);
-            FileUtils.deleteDirectoryQuietly(resourceDir);
-            Hive.closeCurrent();
-            detachSession();
-        }
-
-        public Timestamp getHiveParserCurrentTS() {
-            return hiveParserCurrentTS;
-        }
-
-        private void clearSessionRegistry() {
-            if (getRegistry != null) {
-                try {
-                    Object registry = getRegistry.invoke(this);
-                    if (registry != null) {
-                        clearRegistry.invoke(registry);
-                        closeRegistryLoaders.invoke(registry);
-                    }
-                } catch (IllegalAccessException | InvocationTargetException e) {
-                    LOG.warn("Failed to clear session registry", e);
-                }
-            }
         }
     }
 }

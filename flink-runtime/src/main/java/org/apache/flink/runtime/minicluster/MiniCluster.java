@@ -90,7 +90,7 @@ import org.apache.flink.runtime.rpc.RpcSystem;
 import org.apache.flink.runtime.rpc.RpcUtils;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.security.token.DelegationTokenManager;
-import org.apache.flink.runtime.security.token.KerberosDelegationTokenManagerFactory;
+import org.apache.flink.runtime.security.token.hadoop.KerberosDelegationTokenManagerFactory;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
 import org.apache.flink.runtime.taskexecutor.TaskManagerRunner;
 import org.apache.flink.runtime.webmonitor.retriever.LeaderRetriever;
@@ -706,7 +706,7 @@ public class MiniCluster implements AutoCloseableAsync {
 
             // metrics shutdown
             if (metricRegistry != null) {
-                terminationFutures.add(metricRegistry.shutdown());
+                terminationFutures.add(metricRegistry.closeAsync());
                 metricRegistry = null;
             }
 
@@ -1103,7 +1103,8 @@ public class MiniCluster implements AutoCloseableAsync {
             Configuration config, long maximumMessageSizeInBytes) {
         return new MetricRegistryImpl(
                 MetricRegistryConfiguration.fromConfiguration(config, maximumMessageSizeInBytes),
-                ReporterSetup.fromConfiguration(config, null));
+                ReporterSetup.fromConfiguration(
+                        config, miniClusterConfiguration.getPluginManager()));
     }
 
     /**
@@ -1283,10 +1284,10 @@ public class MiniCluster implements AutoCloseableAsync {
             final Collection<CompletableFuture<?>> rpcTerminationFutures =
                     new ArrayList<>(numRpcServices);
 
-            rpcTerminationFutures.add(commonRpcService.stopService());
+            rpcTerminationFutures.add(commonRpcService.closeAsync());
 
             for (RpcService rpcService : rpcServices) {
-                rpcTerminationFutures.add(rpcService.stopService());
+                rpcTerminationFutures.add(rpcService.closeAsync());
             }
 
             commonRpcService = null;

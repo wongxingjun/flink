@@ -74,11 +74,13 @@ public class StreamExecLookupJoin extends CommonExecLookupJoin implements Stream
             Map<Integer, LookupJoinUtil.LookupKey> lookupKeys,
             @Nullable List<RexNode> projectionOnTemporalTable,
             @Nullable RexNode filterOnTemporalTable,
+            boolean lookupKeyContainsPrimaryKey,
+            boolean upsertMaterialize,
+            @Nullable LookupJoinUtil.AsyncLookupOptions asyncLookupOptions,
+            @Nullable LookupJoinUtil.RetryLookupOptions retryOptions,
             ChangelogMode inputChangelogMode,
             InputProperty inputProperty,
             RowType outputType,
-            boolean lookupKeyContainsPrimaryKey,
-            boolean upsertMaterialize,
             String description) {
         this(
                 ExecNodeContext.newNodeId(),
@@ -90,11 +92,13 @@ public class StreamExecLookupJoin extends CommonExecLookupJoin implements Stream
                 lookupKeys,
                 projectionOnTemporalTable,
                 filterOnTemporalTable,
+                lookupKeyContainsPrimaryKey,
+                upsertMaterialize,
+                asyncLookupOptions,
+                retryOptions,
                 inputChangelogMode,
                 Collections.singletonList(inputProperty),
                 outputType,
-                lookupKeyContainsPrimaryKey,
-                upsertMaterialize,
                 description);
     }
 
@@ -112,13 +116,17 @@ public class StreamExecLookupJoin extends CommonExecLookupJoin implements Stream
                     List<RexNode> projectionOnTemporalTable,
             @JsonProperty(FIELD_NAME_FILTER_ON_TEMPORAL_TABLE) @Nullable
                     RexNode filterOnTemporalTable,
+            @JsonProperty(FIELD_NAME_LOOKUP_KEY_CONTAINS_PRIMARY_KEY)
+                    boolean lookupKeyContainsPrimaryKey,
+            @JsonProperty(FIELD_NAME_REQUIRE_UPSERT_MATERIALIZE) boolean upsertMaterialize,
+            @JsonProperty(FIELD_NAME_ASYNC_OPTIONS) @Nullable
+                    LookupJoinUtil.AsyncLookupOptions asyncLookupOptions,
+            @JsonProperty(FIELD_NAME_RETRY_OPTIONS) @Nullable
+                    LookupJoinUtil.RetryLookupOptions retryOptions,
             @JsonProperty(FIELD_NAME_INPUT_CHANGELOG_MODE) @Nullable
                     ChangelogMode inputChangelogMode,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
-            @JsonProperty(FIELD_NAME_LOOKUP_KEY_CONTAINS_PRIMARY_KEY)
-                    boolean lookupKeyContainsPrimaryKey,
-            @JsonProperty(FIELD_NAME_REQUIRE_UPSERT_MATERIALIZE) boolean upsertMaterialize,
             @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
         super(
                 id,
@@ -130,6 +138,8 @@ public class StreamExecLookupJoin extends CommonExecLookupJoin implements Stream
                 lookupKeys,
                 projectionOnTemporalTable,
                 filterOnTemporalTable,
+                asyncLookupOptions,
+                retryOptions,
                 inputChangelogMode,
                 inputProperties,
                 outputType,

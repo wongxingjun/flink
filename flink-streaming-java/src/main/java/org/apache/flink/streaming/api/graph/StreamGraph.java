@@ -468,7 +468,7 @@ public class StreamGraph implements Pipeline {
                 outSerializer);
 
         if (taskOperatorFactory.isOutputTypeConfigurable()) {
-            // sets the output type which must be know at StreamGraph creation time
+            // sets the output type which must be known at StreamGraph creation time
             taskOperatorFactory.setOutputType(outTypeInfo, executionConfig);
         }
 
@@ -499,7 +499,7 @@ public class StreamGraph implements Pipeline {
         setSerializers(vertexID, inTypeInfos, createSerializer(outTypeInfo));
 
         if (operatorFactory.isOutputTypeConfigurable()) {
-            // sets the output type which must be know at StreamGraph creation time
+            // sets the output type which must be known at StreamGraph creation time
             operatorFactory.setOutputType(outTypeInfo, executionConfig);
         }
 
@@ -1007,13 +1007,14 @@ public class StreamGraph implements Pipeline {
     }
 
     /** Gets the assembled {@link JobGraph} with a random {@link JobID}. */
+    @VisibleForTesting
     public JobGraph getJobGraph() {
-        return getJobGraph(null);
+        return getJobGraph(Thread.currentThread().getContextClassLoader(), null);
     }
 
     /** Gets the assembled {@link JobGraph} with a specified {@link JobID}. */
-    public JobGraph getJobGraph(@Nullable JobID jobID) {
-        return StreamingJobGraphGenerator.createJobGraph(this, jobID);
+    public JobGraph getJobGraph(ClassLoader userClassLoader, @Nullable JobID jobID) {
+        return StreamingJobGraphGenerator.createJobGraph(userClassLoader, this, jobID);
     }
 
     public String getStreamingPlanAsJSON() {

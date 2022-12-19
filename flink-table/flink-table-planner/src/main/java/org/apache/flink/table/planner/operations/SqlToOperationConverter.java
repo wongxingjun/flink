@@ -52,6 +52,7 @@ import org.apache.flink.sql.parser.ddl.SqlDropView;
 import org.apache.flink.sql.parser.ddl.SqlRemoveJar;
 import org.apache.flink.sql.parser.ddl.SqlReset;
 import org.apache.flink.sql.parser.ddl.SqlSet;
+import org.apache.flink.sql.parser.ddl.SqlStopJob;
 import org.apache.flink.sql.parser.ddl.SqlTableOption;
 import org.apache.flink.sql.parser.ddl.SqlUseCatalog;
 import org.apache.flink.sql.parser.ddl.SqlUseDatabase;
@@ -154,6 +155,7 @@ import org.apache.flink.table.operations.command.RemoveJarOperation;
 import org.apache.flink.table.operations.command.ResetOperation;
 import org.apache.flink.table.operations.command.SetOperation;
 import org.apache.flink.table.operations.command.ShowJarsOperation;
+import org.apache.flink.table.operations.command.StopJobOperation;
 import org.apache.flink.table.operations.ddl.AddPartitionsOperation;
 import org.apache.flink.table.operations.ddl.AlterCatalogFunctionOperation;
 import org.apache.flink.table.operations.ddl.AlterDatabaseOperation;
@@ -201,6 +203,7 @@ import org.apache.calcite.sql.SqlNodeList;
 import org.apache.calcite.sql.SqlUtil;
 import org.apache.calcite.sql.dialect.CalciteSqlDialect;
 import org.apache.calcite.sql.parser.SqlParser;
+import org.apache.calcite.util.NlsString;
 
 import java.math.BigDecimal;
 import java.sql.Date;
@@ -374,6 +377,8 @@ public class SqlToOperationConverter {
             return Optional.of(converter.convertSqlQuery(validated));
         } else if (validated instanceof SqlAnalyzeTable) {
             return Optional.of(converter.convertAnalyzeTable((SqlAnalyzeTable) validated));
+        } else if (validated instanceof SqlStopJob) {
+            return Optional.of(converter.convertStopJob((SqlStopJob) validated));
         } else {
             return Optional.empty();
         }
@@ -414,7 +419,7 @@ public class SqlToOperationConverter {
                             "View %s doesn't exist or is a temporary view.",
                             viewIdentifier.toString()));
         }
-        CatalogBaseTable baseTable = optionalCatalogTable.get().getTable();
+        CatalogBaseTable baseTable = optionalCatalogTable.get().getResolvedTable();
         if (baseTable instanceof CatalogTable) {
             throw new ValidationException("ALTER VIEW for a table is not allowed");
         }
@@ -471,7 +476,7 @@ public class SqlToOperationConverter {
                     String.format(
                             "Table %s doesn't exist or is a temporary table.", tableIdentifier));
         }
-        CatalogBaseTable baseTable = optionalCatalogTable.get().getTable();
+        CatalogBaseTable baseTable = optionalCatalogTable.get().getResolvedTable();
         if (baseTable instanceof CatalogView) {
             throw new ValidationException("ALTER TABLE for a view is not allowed");
         }
@@ -906,7 +911,7 @@ public class SqlToOperationConverter {
         String databaseComment =
                 sqlCreateDatabase
                         .getComment()
-                        .map(comment -> comment.getNlsString().getValue())
+                        .map(comment -> comment.getValueAs(NlsString.class).getValue())
                         .orElse(null);
         // set with properties
         Map<String, String> properties = new HashMap<>();
@@ -1090,7 +1095,10 @@ public class SqlToOperationConverter {
         ObjectIdentifier identifier = catalogManager.qualifyIdentifier(unresolvedIdentifier);
 
         String comment =
-                sqlCreateView.getComment().map(c -> c.getNlsString().getValue()).orElse(null);
+                sqlCreateView
+                        .getComment()
+                        .map(c -> c.getValueAs(NlsString.class).getValue())
+                        .orElse(null);
         CatalogView catalogView =
                 convertViewQuery(
                         query,
@@ -1285,7 +1293,7 @@ public class SqlToOperationConverter {
                     String.format(
                             "Table %s doesn't exist or is a temporary table.", tableIdentifier));
         }
-        CatalogBaseTable baseTable = optionalCatalogTable.get().getTable();
+        CatalogBaseTable baseTable = optionalCatalogTable.get().getResolvedTable();
         if (baseTable instanceof CatalogView) {
             throw new ValidationException("ANALYZE TABLE for a view is not allowed.");
         }
@@ -1465,6 +1473,11 @@ public class SqlToOperationConverter {
                         "Unsupported partition value type: " + dataType.getLogicalType());
         }
         return new ValueLiteralExpression(value, dataType.notNull());
+    }
+
+    private Operation convertStopJob(SqlStopJob sqlStopJob) {
+        return new StopJobOperation(
+                sqlStopJob.getId(), sqlStopJob.isWithSavepoint(), sqlStopJob.isWithDrain());
     }
 
     private void validateTableConstraint(SqlTableConstraint constraint) {

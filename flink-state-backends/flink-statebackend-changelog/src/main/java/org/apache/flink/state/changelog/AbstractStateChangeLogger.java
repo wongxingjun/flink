@@ -50,10 +50,9 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 
 abstract class AbstractStateChangeLogger<Key, Value, Ns>
         implements StateChangeLogger<Value, Ns>, Closeable {
-    static final int COMMON_KEY_GROUP = -1;
     protected final StateChangelogWriter<?> stateChangelogWriter;
     protected final InternalKeyContext<Key> keyContext;
-    protected final RegisteredStateMetaInfoBase metaInfo;
+    protected RegisteredStateMetaInfoBase metaInfo;
     private final StateMetaInfoSnapshot.BackendStateType stateType;
     private final ByteArrayOutputStream out = new ByteArrayOutputStream();
     private final DataOutputViewStreamWrapper wrapper = new DataOutputViewStreamWrapper(out);
@@ -135,6 +134,12 @@ abstract class AbstractStateChangeLogger<Key, Value, Ns>
         metaDataWritten = false;
     }
 
+    protected AbstractStateChangeLogger<Key, Value, Ns> setMetaInfo(
+            RegisteredStateMetaInfoBase metaInfo) {
+        this.metaInfo = metaInfo;
+        return this;
+    }
+
     protected void log(StateChangeOperation op, Ns ns) throws IOException {
         logMetaIfNeeded();
         stateChangelogWriter.append(keyContext.getCurrentKeyGroupIndex(), serialize(op, ns, null));
@@ -152,10 +157,7 @@ abstract class AbstractStateChangeLogger<Key, Value, Ns>
 
     private void logMetaIfNeeded() throws IOException {
         if (!metaDataWritten) {
-            // todo: add StateChangelogWriter.append() version without a keygroup
-            //     when all callers and implementers are merged (FLINK-21356 or later)
-            stateChangelogWriter.append(
-                    COMMON_KEY_GROUP,
+            stateChangelogWriter.appendMeta(
                     serializeRaw(
                             out -> {
                                 out.writeByte(METADATA.getCode());

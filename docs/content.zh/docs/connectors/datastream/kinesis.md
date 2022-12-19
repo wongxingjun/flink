@@ -52,6 +52,8 @@ Kinesis 连接器提供访问 [Amazon Kinesis Data Streams](http://aws.amazon.co
 
 由于许可证问题，以前的版本中 `flink-connector-kinesis` 工件没有部署到Maven中心库。有关更多信息，请参阅特定版本的文档。
 
+{{< py_download_link "kinesis" >}}
+
 ## 使用亚马逊 Kinesis 流服务
 遵循 [Amazon Kinesis Streams Developer Guide](https://docs.aws.amazon.com/streams/latest/dev/learning-kinesis-module-one-create-stream.html) 的指令建立 Kinesis 流。
 
@@ -336,10 +338,10 @@ kinesis = env.add_source(FlinkKinesisConsumer(
     调用 [RegisterStreamConsumer](https://docs.aws.amazon.com/kinesis/latest/APIReference/API_RegisterStreamConsumer.html) 。
     应通过消费者配置向作业提供流消费者 ARN。
 - 注销
-  - `LAZY|EAGER` (默认):当作业正常关闭时，将注销流消费者。
+  - `LAZY` (默认):当作业正常关闭时，将注销流消费者。
     如果作业在执行关闭钩子程序时终止，流消费者将保持活动状态。
     在这种情况下，当应用程序重新启动时，流消费者将被优雅地重用。
-  - `NONE`: 流消费者注销不是由 `FlinkKinesisConsumer` 执行的。
+  - `EAGER|NONE`: 流消费者注销不是由 `FlinkKinesisConsumer` 执行的。
 
 下面是一个使用 `EAGER` 注册策略的配置例子：
 

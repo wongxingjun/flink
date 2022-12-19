@@ -257,8 +257,11 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
                 generateWindowAssignerAndTrigger();
         WindowAssigner<?> windowAssigner = windowAssignerAndTrigger.f0;
         Trigger<?> trigger = windowAssignerAndTrigger.f1;
-        Configuration pythonConfig =
-                CommonPythonUtil.extractPythonConfiguration(planner.getExecEnv(), config);
+        final Configuration pythonConfig =
+                CommonPythonUtil.extractPythonConfiguration(
+                        planner.getExecEnv(), config, planner.getFlinkContext().getClassLoader());
+        final ExecNodeConfig pythonNodeConfig =
+                ExecNodeConfig.ofNodeConfig(pythonConfig, config.isCompiled());
         boolean isGeneralPythonUDAF =
                 Arrays.stream(aggCalls)
                         .anyMatch(x -> PythonUtil.isPythonAggregate(x, PythonFunctionKind.GENERAL));
@@ -286,6 +289,8 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
                             aggInfoList,
                             emitStrategy.getAllowLateness(),
                             pythonConfig,
+                            pythonNodeConfig,
+                            planner.getFlinkContext().getClassLoader(),
                             shiftTimeZone);
         } else {
             transform =
@@ -298,12 +303,13 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
                             trigger,
                             emitStrategy.getAllowLateness(),
                             pythonConfig,
-                            config,
+                            pythonNodeConfig,
                             planner.getFlinkContext().getClassLoader(),
                             shiftTimeZone);
         }
 
-        if (CommonPythonUtil.isPythonWorkerUsingManagedMemory(pythonConfig)) {
+        if (CommonPythonUtil.isPythonWorkerUsingManagedMemory(
+                pythonConfig, planner.getFlinkContext().getClassLoader())) {
             transform.declareManagedMemoryUseCaseAtSlotScope(ManagedMemoryUseCase.PYTHON);
         }
         // set KeyType and Selector for state
@@ -431,7 +437,9 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
                     WindowAssigner<?> windowAssigner,
                     AggregateInfoList aggInfoList,
                     long allowance,
-                    Configuration config,
+                    Configuration pythonConfig,
+                    ExecNodeConfig pythonNodeConfig,
+                    ClassLoader classLoader,
                     ZoneId shiftTimeZone) {
         final int inputCountIndex = aggInfoList.getIndexOfCountStar();
         final boolean countStarInserted = aggInfoList.countStarInserted();
@@ -441,7 +449,8 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
         DataViewSpec[][] dataViewSpecs = aggInfosAndDataViewSpecs.f1;
         OneInputStreamOperator<RowData, RowData> pythonOperator =
                 getGeneralPythonStreamGroupWindowAggregateFunctionOperator(
-                        config,
+                        pythonConfig,
+                        classLoader,
                         inputRowType,
                         outputRowType,
                         windowAssigner,
@@ -456,7 +465,8 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
 
         return ExecNodeUtil.createOneInputTransformation(
                 inputTransform,
-                createTransformationMeta(PYTHON_GROUP_WINDOW_AGGREGATE_TRANSFORMATION, config),
+                createTransformationMeta(
+                        PYTHON_GROUP_WINDOW_AGGREGATE_TRANSFORMATION, pythonNodeConfig),
                 pythonOperator,
                 InternalTypeInfo.of(outputRowType),
                 inputTransform.getParallelism());
@@ -479,7 +489,8 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
                     ZoneId shiftTimeZone) {
         Class clazz =
                 CommonPythonUtil.loadClass(
-                        ARROW_STREAM_PYTHON_GROUP_WINDOW_AGGREGATE_FUNCTION_OPERATOR_NAME);
+                        ARROW_STREAM_PYTHON_GROUP_WINDOW_AGGREGATE_FUNCTION_OPERATOR_NAME,
+                        classLoader);
         RowType userDefinedFunctionInputType =
                 (RowType) Projection.of(udafInputOffsets).project(inputRowType);
         RowType userDefinedFunctionOutputType =
@@ -537,6 +548,7 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
     private OneInputStreamOperator<RowData, RowData>
             getGeneralPythonStreamGroupWindowAggregateFunctionOperator(
                     Configuration config,
+                    ClassLoader classLoader,
                     RowType inputType,
                     RowType outputType,
                     WindowAssigner<?> windowAssigner,
@@ -550,7 +562,8 @@ public class StreamExecPythonGroupWindowAggregate extends StreamExecAggregateBas
                     ZoneId shiftTimeZone) {
         Class clazz =
                 CommonPythonUtil.loadClass(
-                        GENERAL_STREAM_PYTHON_GROUP_WINDOW_AGGREGATE_FUNCTION_OPERATOR_NAME);
+                        GENERAL_STREAM_PYTHON_GROUP_WINDOW_AGGREGATE_FUNCTION_OPERATOR_NAME,
+                        classLoader);
 
         boolean isRowTime = AggregateUtil.isRowtimeAttribute(window.timeAttribute());
 

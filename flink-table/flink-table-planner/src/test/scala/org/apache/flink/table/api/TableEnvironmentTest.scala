@@ -36,7 +36,9 @@ import org.apache.flink.table.planner.runtime.stream.table.FunctionITCase.Simple
 import org.apache.flink.table.planner.utils.{TableTestUtil, TestTableSourceSinks}
 import org.apache.flink.table.planner.utils.TableTestUtil.{replaceNodeIdInOperator, replaceStageId, replaceStreamNodeId}
 import org.apache.flink.table.types.DataType
+import org.apache.flink.table.utils.UserDefinedFunctions.{GENERATED_LOWER_UDF_CLASS, GENERATED_LOWER_UDF_CODE}
 import org.apache.flink.types.Row
+import org.apache.flink.util.UserClassLoaderJarTestUtils
 
 import _root_.java.util
 import _root_.scala.collection.JavaConverters._
@@ -45,7 +47,12 @@ import org.apache.calcite.sql.SqlExplainLevel
 import org.assertj.core.api.Assertions.{assertThat, assertThatThrownBy}
 import org.junit.{Rule, Test}
 import org.junit.Assert.{assertEquals, assertFalse, assertTrue, fail}
-import org.junit.rules.ExpectedException
+import org.junit.rules.{ExpectedException, TemporaryFolder}
+
+import java.io.File
+import java.util.UUID
+
+import scala.annotation.meta.getter
 
 class TableEnvironmentTest {
 
@@ -54,6 +61,9 @@ class TableEnvironmentTest {
 
   @Rule
   def thrown: ExpectedException = expectedException
+
+  @(Rule @getter)
+  val tempFolder: TemporaryFolder = new TemporaryFolder()
 
   val env = new StreamExecutionEnvironment(new LocalStreamEnvironment())
   val tableEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
@@ -153,6 +163,48 @@ class TableEnvironmentTest {
     val tEnv = StreamTableEnvironment.create(execEnv, settings)
 
     verifyTableEnvironmentExecutionExplain(tEnv)
+  }
+
+  @Test
+  def testAddJarWithFullPath(): Unit = {
+    validateAddJar(true)
+  }
+
+  @Test
+  def testAddJarWithRelativePath(): Unit = {
+    validateAddJar(false)
+  }
+
+  @Test
+  def testAddIllegalJar(): Unit = {
+    try {
+      tableEnv.executeSql(String.format("ADD JAR '%s'", "/path/to/illegal.jar"))
+      fail("Should fail.")
+    } catch {
+      case _: TableException => // expected
+    }
+  }
+
+  private def validateAddJar(useFullPath: Boolean): Unit = {
+    val udfJar = UserClassLoaderJarTestUtils
+      .createJarFile(
+        tempFolder.newFolder(String.format("test-jar-%s", UUID.randomUUID)),
+        "test-classloader-udf.jar",
+        GENERATED_LOWER_UDF_CLASS,
+        String.format(GENERATED_LOWER_UDF_CODE, GENERATED_LOWER_UDF_CLASS)
+      )
+
+    val jarPath = if (useFullPath) {
+      udfJar.getPath
+    } else {
+      new File(".").getCanonicalFile.toPath.relativize(udfJar.toPath).toString
+    }
+
+    tableEnv.executeSql(String.format("ADD JAR '%s'", jarPath))
+    val tableResult = tableEnv.executeSql("SHOW JARS")
+
+    assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult.getResultKind)
+    checkData(util.Arrays.asList(Row.of(udfJar.getPath)).iterator(), tableResult.collect())
   }
 
   private def verifyTableEnvironmentExecutionExplain(tEnv: TableEnvironment): Unit = {
@@ -717,6 +769,12 @@ class TableEnvironmentTest {
     val tableResult2 = tableEnv.executeSql("USE CATALOG my_catalog")
     assertEquals(ResultKind.SUCCESS, tableResult2.getResultKind)
     assertEquals("my_catalog", tableEnv.getCurrentCatalog)
+
+    assertThatThrownBy(() => tableEnv.executeSql("DROP CATALOG my_catalog"))
+      .isInstanceOf(classOf[ValidationException])
+      .hasRootCauseMessage("Cannot drop a catalog which is currently in use.")
+
+    tableEnv.executeSql("USE CATALOG default_catalog")
 
     val tableResult3 = tableEnv.executeSql("DROP CATALOG my_catalog")
     assertEquals(ResultKind.SUCCESS, tableResult3.getResultKind)
@@ -1878,6 +1936,131 @@ class TableEnvironmentTest {
     val tableResult6 = tableEnv.executeSql("desc T2")
     assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult6.getResultKind)
     checkData(expectedResult3.iterator(), tableResult6.collect())
+  }
+
+  @Test
+  def testDescribeTableWithComment(): Unit = {
+    val sourceDDL =
+      """
+        |CREATE TABLE T1(
+        |  c0 char(10) comment 'this is the first column',
+        |  c1 varchar(10) comment 'this is the second column',
+        |  c2 string,
+        |  c3 BOOLEAN,
+        |  c4 BINARY(10),
+        |  c5 VARBINARY(10),
+        |  c6 BYTES,
+        |  c7 DECIMAL(10, 3),
+        |  c8 TINYINT,
+        |  c9 SMALLINT,
+        |  c10 INTEGER,
+        |  c11 BIGINT,
+        |  c12 FLOAT,
+        |  c13 DOUBLE,
+        |  c14 DATE,
+        |  c15 TIME,
+        |  c16 TIMESTAMP,
+        |  c17 TIMESTAMP(3),
+        |  c18 TIMESTAMP WITHOUT TIME ZONE,
+        |  c19 TIMESTAMP(3) WITH LOCAL TIME ZONE,
+        |  c20 TIMESTAMP WITH LOCAL TIME ZONE,
+        |  c21 ARRAY<INT>,
+        |  c22 MAP<INT, STRING>,
+        |  c23 ROW<f0 INT, f1 STRING>,
+        |  c24 int not null comment 'this is c24 and part of pk',
+        |  c25 varchar not null,
+        |  c26 row<f0 int not null, f1 int> not null comment 'this is c26 and part of pk',
+        |  c27 AS LOCALTIME,
+        |  c28 AS CURRENT_TIME,
+        |  c29 AS LOCALTIMESTAMP,
+        |  c30 AS CURRENT_TIMESTAMP comment 'notice: computed column',
+        |  c31 AS CURRENT_ROW_TIMESTAMP(),
+        |  ts AS to_timestamp(c25) comment 'notice: watermark',
+        |  PRIMARY KEY(c24, c26) NOT ENFORCED,
+        |  WATERMARK FOR ts AS ts - INTERVAL '1' SECOND
+        |) with (
+        |  'connector' = 'COLLECTION'
+        |)
+      """.stripMargin
+
+    tableEnv.executeSql(sourceDDL)
+
+    val expectedResult1 = util.Arrays.asList(
+      Row.of("c0", "CHAR(10)", Boolean.box(true), null, null, null, "this is the first column"),
+      Row.of("c1", "VARCHAR(10)", Boolean.box(true), null, null, null, "this is the second column"),
+      Row.of("c2", "STRING", Boolean.box(true), null, null, null, null),
+      Row.of("c3", "BOOLEAN", Boolean.box(true), null, null, null, null),
+      Row.of("c4", "BINARY(10)", Boolean.box(true), null, null, null, null),
+      Row.of("c5", "VARBINARY(10)", Boolean.box(true), null, null, null, null),
+      Row.of("c6", "BYTES", Boolean.box(true), null, null, null, null),
+      Row.of("c7", "DECIMAL(10, 3)", Boolean.box(true), null, null, null, null),
+      Row.of("c8", "TINYINT", Boolean.box(true), null, null, null, null),
+      Row.of("c9", "SMALLINT", Boolean.box(true), null, null, null, null),
+      Row.of("c10", "INT", Boolean.box(true), null, null, null, null),
+      Row.of("c11", "BIGINT", Boolean.box(true), null, null, null, null),
+      Row.of("c12", "FLOAT", Boolean.box(true), null, null, null, null),
+      Row.of("c13", "DOUBLE", Boolean.box(true), null, null, null, null),
+      Row.of("c14", "DATE", Boolean.box(true), null, null, null, null),
+      Row.of("c15", "TIME(0)", Boolean.box(true), null, null, null, null),
+      Row.of("c16", "TIMESTAMP(6)", Boolean.box(true), null, null, null, null),
+      Row.of("c17", "TIMESTAMP(3)", Boolean.box(true), null, null, null, null),
+      Row.of("c18", "TIMESTAMP(6)", Boolean.box(true), null, null, null, null),
+      Row.of("c19", "TIMESTAMP_LTZ(3)", Boolean.box(true), null, null, null, null),
+      Row.of("c20", "TIMESTAMP_LTZ(6)", Boolean.box(true), null, null, null, null),
+      Row.of("c21", "ARRAY<INT>", Boolean.box(true), null, null, null, null),
+      Row.of("c22", "MAP<INT, STRING>", Boolean.box(true), null, null, null, null),
+      Row.of("c23", "ROW<`f0` INT, `f1` STRING>", Boolean.box(true), null, null, null, null),
+      Row.of(
+        "c24",
+        "INT",
+        Boolean.box(false),
+        "PRI(c24, c26)",
+        null,
+        null,
+        "this is c24 and part of pk"),
+      Row.of("c25", "STRING", Boolean.box(false), null, null, null, null),
+      Row.of(
+        "c26",
+        "ROW<`f0` INT NOT NULL, `f1` INT>",
+        Boolean.box(false),
+        "PRI(c24, c26)",
+        null,
+        null,
+        "this is c26 and part of pk"),
+      Row.of("c27", "TIME(0)", Boolean.box(false), null, "AS LOCALTIME", null, null),
+      Row.of("c28", "TIME(0)", Boolean.box(false), null, "AS CURRENT_TIME", null, null),
+      Row.of("c29", "TIMESTAMP(3)", Boolean.box(false), null, "AS LOCALTIMESTAMP", null, null),
+      Row.of(
+        "c30",
+        "TIMESTAMP_LTZ(3)",
+        Boolean.box(false),
+        null,
+        "AS CURRENT_TIMESTAMP",
+        null,
+        "notice: computed column"),
+      Row.of(
+        "c31",
+        "TIMESTAMP_LTZ(3)",
+        Boolean.box(false),
+        null,
+        "AS CURRENT_ROW_TIMESTAMP()",
+        null,
+        null),
+      Row.of(
+        "ts",
+        "TIMESTAMP(3) *ROWTIME*",
+        Boolean.box(true),
+        null,
+        "AS TO_TIMESTAMP(`c25`)",
+        "`ts` - INTERVAL '1' SECOND",
+        "notice: watermark")
+    )
+    val tableResult1 = tableEnv.executeSql("describe T1")
+    assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult1.getResultKind)
+    checkData(expectedResult1.iterator(), tableResult1.collect())
+    val tableResult2 = tableEnv.executeSql("desc T1")
+    assertEquals(ResultKind.SUCCESS_WITH_CONTENT, tableResult2.getResultKind)
+    checkData(expectedResult1.iterator(), tableResult2.collect())
   }
 
   @Test

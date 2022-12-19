@@ -18,10 +18,15 @@
 
 package org.apache.flink.table.endpoint.hive;
 
-import org.apache.flink.core.testutils.FlinkAssertions;
+import org.apache.flink.FlinkVersion;
+import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.client.program.ClusterClient;
+import org.apache.flink.client.program.rest.RestClusterClient;
+import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.SqlDialect;
-import org.apache.flink.table.api.config.TableConfigOptions;
+import org.apache.flink.table.catalog.CatalogBaseTable.TableKind;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.hive.util.HiveTypeUtil;
@@ -29,21 +34,28 @@ import org.apache.flink.table.endpoint.hive.util.HiveServer2EndpointExtension;
 import org.apache.flink.table.endpoint.hive.util.ThriftObjectConversions;
 import org.apache.flink.table.gateway.api.operation.OperationHandle;
 import org.apache.flink.table.gateway.api.operation.OperationStatus;
-import org.apache.flink.table.gateway.api.operation.OperationType;
 import org.apache.flink.table.gateway.api.results.ResultSet;
 import org.apache.flink.table.gateway.api.session.SessionEnvironment;
 import org.apache.flink.table.gateway.api.session.SessionHandle;
 import org.apache.flink.table.gateway.api.utils.SqlGatewayException;
+import org.apache.flink.table.gateway.service.SqlGatewayServiceImpl;
 import org.apache.flink.table.gateway.service.session.SessionManager;
 import org.apache.flink.table.gateway.service.utils.SqlGatewayServiceExtension;
+import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.JavaFunc0;
+import org.apache.flink.test.junit5.InjectClusterClient;
 import org.apache.flink.test.junit5.MiniClusterExtension;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.function.BiConsumerWithException;
 import org.apache.flink.util.function.FunctionWithException;
+import org.apache.flink.util.function.FutureTaskWithException;
 import org.apache.flink.util.function.ThrowingConsumer;
 
 import org.apache.hadoop.hive.common.auth.HiveAuthUtils;
-import org.apache.hive.jdbc.JdbcColumn;
+import org.apache.hadoop.hive.serde2.thrift.Type;
+import org.apache.hive.jdbc.HiveConnection;
+import org.apache.hive.jdbc.HiveStatement;
+import org.apache.hive.service.cli.RowSet;
+import org.apache.hive.service.cli.RowSetFactory;
 import org.apache.hive.service.rpc.thrift.TCLIService;
 import org.apache.hive.service.rpc.thrift.TCancelOperationReq;
 import org.apache.hive.service.rpc.thrift.TCancelOperationResp;
@@ -51,35 +63,58 @@ import org.apache.hive.service.rpc.thrift.TCloseOperationReq;
 import org.apache.hive.service.rpc.thrift.TCloseOperationResp;
 import org.apache.hive.service.rpc.thrift.TCloseSessionReq;
 import org.apache.hive.service.rpc.thrift.TCloseSessionResp;
+import org.apache.hive.service.rpc.thrift.TExecuteStatementReq;
+import org.apache.hive.service.rpc.thrift.TExecuteStatementResp;
+import org.apache.hive.service.rpc.thrift.TFetchOrientation;
+import org.apache.hive.service.rpc.thrift.TFetchResultsReq;
+import org.apache.hive.service.rpc.thrift.TGetInfoReq;
+import org.apache.hive.service.rpc.thrift.TGetInfoResp;
+import org.apache.hive.service.rpc.thrift.TGetInfoType;
+import org.apache.hive.service.rpc.thrift.TGetOperationStatusReq;
 import org.apache.hive.service.rpc.thrift.TOpenSessionReq;
 import org.apache.hive.service.rpc.thrift.TOpenSessionResp;
 import org.apache.hive.service.rpc.thrift.TOperationHandle;
+import org.apache.hive.service.rpc.thrift.TOperationState;
+import org.apache.hive.service.rpc.thrift.TOperationType;
+import org.apache.hive.service.rpc.thrift.TSessionHandle;
 import org.apache.hive.service.rpc.thrift.TStatusCode;
 import org.apache.thrift.protocol.TBinaryProtocol;
 import org.apache.thrift.transport.TTransport;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.net.InetAddress;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.ResultSetMetaData;
 import java.sql.Statement;
+import java.sql.Types;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.api.common.RuntimeExecutionMode.BATCH;
 import static org.apache.flink.configuration.ExecutionOptions.RUNTIME_MODE;
+import static org.apache.flink.configuration.PipelineOptionsInternal.PIPELINE_FIXED_JOB_ID;
+import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
 import static org.apache.flink.table.api.config.TableConfigOptions.MAX_LENGTH_GENERATED_CODE;
 import static org.apache.flink.table.api.config.TableConfigOptions.TABLE_DML_SYNC;
+import static org.apache.flink.table.api.config.TableConfigOptions.TABLE_SQL_DIALECT;
+import static org.apache.flink.table.endpoint.hive.util.ThriftObjectConversions.toSessionHandle;
 import static org.apache.flink.table.endpoint.hive.util.ThriftObjectConversions.toTOperationHandle;
+import static org.apache.hive.service.rpc.thrift.TProtocolVersion.HIVE_CLI_SERVICE_PROTOCOL_V10;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -100,6 +135,11 @@ public class HiveServer2EndpointITCase extends TestLogger {
     public static final HiveServer2EndpointExtension ENDPOINT_EXTENSION =
             new HiveServer2EndpointExtension(SQL_GATEWAY_SERVICE_EXTENSION::getService);
 
+    @BeforeAll
+    public static void setup() throws Exception {
+        initializeEnvironment();
+    }
+
     @Test
     public void testOpenCloseJdbcConnection() throws Exception {
         SessionManager sessionManager = SQL_GATEWAY_SERVICE_EXTENSION.getSessionManager();
@@ -119,7 +159,9 @@ public class HiveServer2EndpointITCase extends TestLogger {
         configs.put(MAX_LENGTH_GENERATED_CODE.key(), "-1");
         // simulate to set config using hive jdbc
         configs.put("set:hiveconf:key", "value");
-        // TODO: set hivevar when FLINK-28096 is fixed
+        configs.put("set:system:ks", "vs");
+        configs.put("set:key1", "value1");
+        configs.put("set:hivevar:key2", "${hiveconf:common-key}");
         openSessionReq.setConfiguration(configs);
         TOpenSessionResp openSessionResp = client.OpenSession(openSessionReq);
         SessionHandle sessionHandle =
@@ -130,11 +172,12 @@ public class HiveServer2EndpointITCase extends TestLogger {
         assertThat(actualConfig.entrySet())
                 .contains(
                         new AbstractMap.SimpleEntry<>(
-                                TableConfigOptions.TABLE_SQL_DIALECT.key(), SqlDialect.HIVE.name()),
+                                TABLE_SQL_DIALECT.key(), SqlDialect.HIVE.name()),
                         new AbstractMap.SimpleEntry<>(TABLE_DML_SYNC.key(), "true"),
                         new AbstractMap.SimpleEntry<>(RUNTIME_MODE.key(), BATCH.name()),
                         new AbstractMap.SimpleEntry<>(MAX_LENGTH_GENERATED_CODE.key(), "-1"),
-                        new AbstractMap.SimpleEntry<>("key", "value"));
+                        new AbstractMap.SimpleEntry<>("key1", "value1"),
+                        new AbstractMap.SimpleEntry<>("key2", "common-val"));
     }
 
     @Test
@@ -151,6 +194,47 @@ public class HiveServer2EndpointITCase extends TestLogger {
                                 error.contains(
                                         String.format(
                                                 "Session '%s' does not exist", sessionHandle)));
+    }
+
+    @Test
+    public void testGetUnsupportedException() throws Exception {
+        try (HiveConnection connection = (HiveConnection) ENDPOINT_EXTENSION.getConnection();
+                HiveStatement statement = (HiveStatement) connection.createStatement()) {
+            assertThatThrownBy(() -> connection.renewDelegationToken("TokenMessage"))
+                    .satisfies(
+                            anyCauseMatches(
+                                    "The HiveServer2 Endpoint currently doesn't support to RenewDelegationToken."));
+            assertThatThrownBy(() -> connection.cancelDelegationToken("TokenMessage"))
+                    .satisfies(
+                            anyCauseMatches(
+                                    "The HiveServer2 Endpoint currently doesn't support to CancelDelegationToken."));
+            assertThatThrownBy(() -> connection.getDelegationToken("Flink", "TokenMessage"))
+                    .satisfies(
+                            anyCauseMatches(
+                                    "The HiveServer2 Endpoint currently doesn't support to GetDelegationToken."));
+            assertThatThrownBy(
+                            () ->
+                                    connection
+                                            .getMetaData()
+                                            .getCrossReference(
+                                                    "hive",
+                                                    "schema",
+                                                    "table",
+                                                    "default_catalog",
+                                                    "default_database",
+                                                    "table"))
+                    .satisfies(
+                            anyCauseMatches(
+                                    "The HiveServer2 Endpoint currently doesn't support to GetCrossReference."));
+            assertThatThrownBy(
+                            () -> {
+                                statement.execute("SHOW TABLES");
+                                statement.getQueryLog();
+                            })
+                    .satisfies(
+                            anyCauseMatches(
+                                    "The HiveServer2 endpoint currently doesn't support to fetch logs."));
+        }
     }
 
     @Test
@@ -192,7 +276,7 @@ public class HiveServer2EndpointITCase extends TestLogger {
                                                         .getOperationInfo(
                                                                 sessionHandle, operationHandle))
                                 .satisfies(
-                                        FlinkAssertions.anyCauseMatches(
+                                        anyCauseMatches(
                                                 SqlGatewayException.class,
                                                 String.format(
                                                         "Can not find the submitted operation in the OperationManager with the %s",
@@ -204,70 +288,483 @@ public class HiveServer2EndpointITCase extends TestLogger {
         runGetObjectTest(
                 connection -> connection.getMetaData().getCatalogs(),
                 ResolvedSchema.of(Column.physical("TABLE_CAT", DataTypes.STRING())),
-                Arrays.asList(
-                        Collections.singletonList("hive"),
-                        Collections.singletonList("default_catalog")));
+                Collections.singletonList(Collections.singletonList("hive")));
     }
 
     @Test
     public void testGetSchemas() throws Exception {
         runGetObjectTest(
-                connection -> connection.getMetaData().getSchemas("default_catalog", null),
-                ResolvedSchema.of(
-                        Column.physical("TABLE_SCHEMA", DataTypes.STRING()),
-                        Column.physical("TABLE_CAT", DataTypes.STRING())),
+                connection -> connection.getMetaData().getSchemas("hive", null),
+                getExpectedGetSchemasOperationSchema(),
                 Arrays.asList(
-                        Arrays.asList("default_database", "default_catalog"),
-                        Arrays.asList("db_test1", "default_catalog"),
-                        Arrays.asList("db_test2", "default_catalog"),
-                        Arrays.asList("db_diff", "default_catalog")));
+                        Arrays.asList("db_diff", "hive"),
+                        Arrays.asList("db_test1", "hive"),
+                        Arrays.asList("db_test2", "hive"),
+                        Arrays.asList("default", "hive")));
     }
 
     @Test
     public void testGetSchemasWithPattern() throws Exception {
         runGetObjectTest(
                 connection -> connection.getMetaData().getSchemas(null, "db\\_test%"),
-                ResolvedSchema.of(
-                        Column.physical("TABLE_SCHEMA", DataTypes.STRING()),
-                        Column.physical("TABLE_CAT", DataTypes.STRING())),
+                getExpectedGetSchemasOperationSchema(),
                 Arrays.asList(
-                        Arrays.asList("db_test1", "default_catalog"),
-                        Arrays.asList("db_test2", "default_catalog")));
+                        Arrays.asList("db_test1", "hive"), Arrays.asList("db_test2", "hive")));
+    }
+
+    @Test
+    public void testGetTables() throws Exception {
+        runGetObjectTest(
+                connection ->
+                        connection
+                                .getMetaData()
+                                .getTables(
+                                        null,
+                                        null,
+                                        null,
+                                        new String[] {"MANAGED_TABLE", "VIRTUAL_VIEW"}),
+                getExpectedGetTablesOperationSchema(),
+                Arrays.asList(
+                        Arrays.asList("hive", "db_diff", "tbl_1", "TABLE"),
+                        Arrays.asList("hive", "db_test1", "tbl_1", "TABLE"),
+                        Arrays.asList("hive", "db_test1", "tbl_2", "TABLE"),
+                        Arrays.asList("hive", "db_test2", "diff_1", "TABLE"),
+                        Arrays.asList("hive", "db_test2", "tbl_1", "TABLE"),
+                        Arrays.asList("hive", "db_diff", "tbl_2", "VIEW"),
+                        Arrays.asList("hive", "db_test1", "tbl_3", "VIEW"),
+                        Arrays.asList("hive", "db_test1", "tbl_4", "VIEW"),
+                        Arrays.asList("hive", "db_test2", "diff_2", "VIEW"),
+                        Arrays.asList("hive", "db_test2", "tbl_2", "VIEW")));
+    }
+
+    @Test
+    public void testGetTablesWithPattern() throws Exception {
+        runGetObjectTest(
+                connection ->
+                        connection
+                                .getMetaData()
+                                .getTables(
+                                        "hive",
+                                        "db\\_test_",
+                                        "tbl%",
+                                        new String[] {"VIRTUAL_VIEW"}),
+                getExpectedGetTablesOperationSchema(),
+                Arrays.asList(
+                        Arrays.asList("hive", "db_test1", "tbl_3", "VIEW"),
+                        Arrays.asList("hive", "db_test1", "tbl_4", "VIEW"),
+                        Arrays.asList("hive", "db_test2", "tbl_2", "VIEW")));
+    }
+
+    @Test
+    public void testGetTableTypes() throws Exception {
+        runGetObjectTest(
+                connection -> connection.getMetaData().getTableTypes(),
+                ResolvedSchema.of(Column.physical("TABLE_TYPE", DataTypes.STRING())),
+                Arrays.stream(TableKind.values())
+                        .map(kind -> Collections.singletonList((Object) kind.name()))
+                        .collect(Collectors.toList()));
+    }
+
+    @Test
+    void testGetColumns() throws Exception {
+        runGetObjectTest(
+                connection -> connection.getMetaData().getColumns(null, null, null, null),
+                getExpectedGetColumnsOperationSchema(),
+                rows ->
+                        assertThat(
+                                        rows.stream()
+                                                .map(
+                                                        row ->
+                                                                Arrays.asList(
+                                                                        row.get(0), // CATALOG NAME
+                                                                        row.get(1), // SCHEMA NAME
+                                                                        row.get(2), // TABLE NAME
+                                                                        row.get(3), // COLUMN NAME
+                                                                        row.get(5))) // TYPE NAME
+                                                .collect(Collectors.toList()))
+                                .isEqualTo(
+                                        Arrays.asList(
+                                                Arrays.asList(
+                                                        "hive", "db_diff", "tbl_2", "EXPR$0",
+                                                        "INT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_1",
+                                                        "user",
+                                                        "BIGINT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_1",
+                                                        "product",
+                                                        "STRING"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_1",
+                                                        "amount",
+                                                        "INT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_2",
+                                                        "user",
+                                                        "STRING"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_2",
+                                                        "id",
+                                                        "BIGINT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_2",
+                                                        "timestamp",
+                                                        "TIMESTAMP"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_3",
+                                                        "EXPR$0",
+                                                        "INT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test1",
+                                                        "tbl_4",
+                                                        "EXPR$0",
+                                                        "INT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test2",
+                                                        "diff_2",
+                                                        "EXPR$0",
+                                                        "INT"),
+                                                Arrays.asList(
+                                                        "hive",
+                                                        "db_test2",
+                                                        "tbl_2",
+                                                        "EXPR$0",
+                                                        "INT"))));
+    }
+
+    @Test
+    public void testGetColumnsWithPattern() throws Exception {
+        runGetObjectTest(
+                connection ->
+                        connection
+                                .getMetaData()
+                                .getColumns("hive", "db\\_test_", "tbl\\_1", "user"),
+                getExpectedGetColumnsOperationSchema(),
+                Collections.singletonList(
+                        Arrays.asList(
+                                "hive",
+                                "db_test1",
+                                "tbl_1",
+                                "user",
+                                Types.BIGINT,
+                                "BIGINT",
+                                String.valueOf(Long.MAX_VALUE).length(),
+                                0, // digits number
+                                10, // radix
+                                0, // nullable
+                                1, // position
+                                "NO", // isNullable
+                                "NO"))); // isAutoIncrement
+    }
+
+    @Test
+    public void testGetPrimaryKey() throws Exception {
+        runGetObjectTest(
+                connection -> connection.getMetaData().getPrimaryKeys(null, null, null),
+                getExpectedGetPrimaryKeysOperationSchema(),
+                Arrays.asList(
+                        Arrays.asList("hive", "db_test1", "tbl_1", "user", 1, "pk"),
+                        Arrays.asList("hive", "db_test1", "tbl_2", "user", 1, "pk"),
+                        Arrays.asList("hive", "db_test1", "tbl_2", "id", 2, "pk")));
+    }
+
+    @Test
+    public void testGetPrimaryKeyWithPattern() throws Exception {
+        runGetObjectTest(
+                connection -> connection.getMetaData().getPrimaryKeys(null, null, "tbl_2"),
+                getExpectedGetPrimaryKeysOperationSchema(),
+                Arrays.asList(
+                        Arrays.asList("hive", "db_test1", "tbl_2", "user", 1, "pk"),
+                        Arrays.asList("hive", "db_test1", "tbl_2", "id", 2, "pk")));
+    }
+
+    @Test
+    public void testGetTypeInfo() throws Exception {
+        runGetObjectTest(
+                connection -> connection.getMetaData().getTypeInfo(),
+                getExpectedGetTypeInfoSchema(),
+                types ->
+                        assertThat(
+                                        types.stream()
+                                                .map(type -> type.get(0))
+                                                .collect(Collectors.toList()))
+                                .isEqualTo(
+                                        Arrays.asList(
+                                                "VOID",
+                                                "BOOLEAN",
+                                                "STRING",
+                                                "BINARY",
+                                                "TINYINT",
+                                                "SMALLINT",
+                                                "INT",
+                                                "BIGINT",
+                                                "FLOAT",
+                                                "DOUBLE",
+                                                "DECIMAL",
+                                                "DATE",
+                                                "TIMESTAMP",
+                                                "ARRAY",
+                                                "MAP",
+                                                "STRUCT",
+                                                "CHAR",
+                                                "VARCHAR",
+                                                "INTERVAL_YEAR_MONTH",
+                                                "INTERVAL_DAY_TIME")));
+    }
+
+    @Test
+    public void testGetFunctions() throws Exception {
+        runGetObjectTest(
+                connection -> connection.getMetaData().getFunctions(null, null, ".*"),
+                ResolvedSchema.of(
+                        Column.physical("FUNCTION_CAT", DataTypes.STRING()),
+                        Column.physical("FUNCTION_SCHEM", DataTypes.STRING()),
+                        Column.physical("FUNCTION_NAME", DataTypes.STRING()),
+                        Column.physical("REMARKS", DataTypes.STRING()),
+                        Column.physical("FUNCTION_TYPE", DataTypes.INT()),
+                        Column.physical("SPECIFIC_NAME", DataTypes.STRING())),
+                compactedResult ->
+                        assertThat(compactedResult)
+                                .contains(
+                                        Arrays.asList(
+                                                "withColumns",
+                                                "",
+                                                0,
+                                                "org.apache.flink.table.functions.BuiltInFunctionDefinition"),
+                                        Arrays.asList(
+                                                "bin",
+                                                "",
+                                                1,
+                                                "org.apache.hadoop.hive.ql.udf.UDFBin"),
+                                        Arrays.asList(
+                                                "parse_url_tuple",
+                                                "",
+                                                2,
+                                                "org.apache.hadoop.hive.ql.udf.generic.GenericUDTFParseUrlTuple")));
+    }
+
+    @Test
+    public void testGetFunctionWithPattern() throws Exception {
+        runGetObjectTest(
+                connection -> {
+                    try (Statement statement = connection.createStatement()) {
+                        statement.execute(
+                                String.format(
+                                        "CREATE FUNCTION `hive`.`db_test2`.`my_abs` as '%s'",
+                                        JavaFunc0.class.getName()));
+                        statement.execute(
+                                String.format(
+                                        "CREATE FUNCTION `hive`.`db_diff`.`your_abs` as '%s'",
+                                        JavaFunc0.class.getName()));
+                    }
+                    return connection.getMetaData().getFunctions("hive", "db.*", "my.*");
+                },
+                ResolvedSchema.of(
+                        Column.physical("FUNCTION_CAT", DataTypes.STRING()),
+                        Column.physical("FUNCTION_SCHEM", DataTypes.STRING()),
+                        Column.physical("FUNCTION_NAME", DataTypes.STRING()),
+                        Column.physical("REMARKS", DataTypes.STRING()),
+                        Column.physical("FUNCTION_TYPE", DataTypes.INT()),
+                        Column.physical("SPECIFIC_NAME", DataTypes.STRING())),
+                Collections.singletonList(
+                        Arrays.asList(
+                                "hive", "db_test2", "my_abs", "", 0, JavaFunc0.class.getName())));
+    }
+
+    @Test
+    public void testGetInfo() throws Exception {
+        try (Connection connection = ENDPOINT_EXTENSION.getConnection()) {
+            DatabaseMetaData metaData = connection.getMetaData();
+            assertThat(metaData.getDatabaseProductName()).isEqualTo("Apache Flink");
+            assertThat(metaData.getDatabaseProductVersion())
+                    .isEqualTo(FlinkVersion.current().toString());
+        }
+    }
+
+    @Test
+    public void testUnknownGetInfoType() throws Exception {
+        TCLIService.Client client = createClient();
+        TOpenSessionReq openSessionReq = new TOpenSessionReq();
+        TOpenSessionResp openSessionResp = client.OpenSession(openSessionReq);
+        TSessionHandle tSessionHandle = openSessionResp.getSessionHandle();
+
+        // send GetInfoReq using a GetInfoType which is unknown to HiveServer2 endpoint
+        TGetInfoReq getInfoReq =
+                new TGetInfoReq(tSessionHandle, TGetInfoType.CLI_MAX_IDENTIFIER_LEN);
+        TGetInfoResp getInfoResp = client.GetInfo(getInfoReq);
+        assertThat(getInfoResp.getStatus().getStatusCode()).isEqualTo(TStatusCode.ERROR_STATUS);
+
+        try (Connection connection = ENDPOINT_EXTENSION.getConnection()) {
+            DatabaseMetaData metaData = connection.getMetaData();
+            connection.createStatement().execute("CREATE SCHEMA test;");
+
+            assertThat(collectAndCompact(metaData.getSchemas("hive", null), 2))
+                    .contains(Arrays.asList("test", "hive"));
+        }
+    }
+
+    @Test
+    public void testExecuteStatementInSyncMode() throws Exception {
+        TCLIService.Client client = createClient();
+        TSessionHandle sessionHandle = client.OpenSession(new TOpenSessionReq()).getSessionHandle();
+        TOperationHandle operationHandle =
+                client.ExecuteStatement(new TExecuteStatementReq(sessionHandle, "SHOW CATALOGS"))
+                        .getOperationHandle();
+
+        assertThat(
+                        client.GetOperationStatus(new TGetOperationStatusReq(operationHandle))
+                                .getOperationState())
+                .isEqualTo(TOperationState.FINISHED_STATE);
+
+        RowSet rowSet =
+                RowSetFactory.create(
+                        client.FetchResults(
+                                        new TFetchResultsReq(
+                                                operationHandle,
+                                                TFetchOrientation.FETCH_NEXT,
+                                                Integer.MAX_VALUE))
+                                .getResults(),
+                        HIVE_CLI_SERVICE_PROTOCOL_V10);
+        Iterator<Object[]> iterator = rowSet.iterator();
+        List<List<Object>> actual = new ArrayList<>();
+        while (iterator.hasNext()) {
+            actual.add(new ArrayList<>(Arrays.asList(iterator.next())));
+        }
+        assertThat(actual).isEqualTo(Collections.singletonList(Collections.singletonList("hive")));
+    }
+
+    @Test
+    public void testExecuteStatementInSyncModeWithCompileException() throws Exception {
+        TCLIService.Client client = createClient();
+        TSessionHandle tSessionHandle =
+                client.OpenSession(new TOpenSessionReq()).getSessionHandle();
+        TExecuteStatementReq req =
+                new TExecuteStatementReq(tSessionHandle, "SELECT * FROM `non_exist_table`");
+        TExecuteStatementResp resp = client.ExecuteStatement(req);
+        assertThat(resp.getStatus().getInfoMessages())
+                .matches(
+                        causes ->
+                                causes.stream()
+                                        .anyMatch(
+                                                cause ->
+                                                        cause.contains(
+                                                                "Table not found 'non_exist_table'")));
+        assertThat(
+                        ((SqlGatewayServiceImpl) (SQL_GATEWAY_SERVICE_EXTENSION.getService()))
+                                .getSession(toSessionHandle(tSessionHandle))
+                                .getOperationManager()
+                                .getOperationCount())
+                .isEqualTo(0);
+    }
+
+    @Test
+    public void testExecuteStatementInSyncModeWithRuntimeException1() throws Exception {
+        runExecuteStatementInSyncModeWithRuntimeException(
+                (tSessionHandle, future) -> {
+                    createClient().CloseSession(new TCloseSessionReq(tSessionHandle));
+
+                    TExecuteStatementResp resp = future.get(10, TimeUnit.SECONDS);
+                    assertThat(resp.getStatus().getInfoMessages())
+                            .matches(
+                                    causes ->
+                                            causes.stream()
+                                                    .anyMatch(
+                                                            cause ->
+                                                                    // Close the session before or
+                                                                    // after
+                                                                    // submitting the job
+                                                                    cause.contains(
+                                                                                    "Failed to execute statement.")
+                                                                            || cause.contains(
+                                                                                    "Failed to getOperationInfo")));
+                });
+    }
+
+    @Test
+    public void testExecuteStatementInSyncModeWithRuntimeException2(
+            @InjectClusterClient RestClusterClient<?> restClusterClient) throws Exception {
+        runExecuteStatementInSyncModeWithRuntimeException(
+                (tSessionHandle, future) -> {
+                    waitUntilJobIsRunning(restClusterClient);
+                    JobID jobID =
+                            JobID.fromHexString(
+                                    SQL_GATEWAY_SERVICE_EXTENSION
+                                            .getService()
+                                            .getSessionConfig(toSessionHandle(tSessionHandle))
+                                            .get(PIPELINE_FIXED_JOB_ID.key()));
+
+                    restClusterClient.cancel(jobID).get();
+
+                    TExecuteStatementResp resp = future.get(10, TimeUnit.SECONDS);
+                    assertThat(resp.getStatus().getInfoMessages())
+                            .matches(
+                                    causes ->
+                                            causes.stream()
+                                                    .anyMatch(
+                                                            cause ->
+                                                                    cause.contains(
+                                                                            String.format(
+                                                                                    "Job failed (JobID: %s)",
+                                                                                    jobID))));
+                });
     }
 
     // --------------------------------------------------------------------------------------------
 
-    private Connection getInitializedConnection() throws Exception {
-        Connection connection = ENDPOINT_EXTENSION.getConnection();
-        Statement statement = connection.createStatement();
-        statement.execute("SET table.sql-dialect=default");
-        statement.execute("USE CATALOG `default_catalog`");
+    private static void initializeEnvironment() throws Exception {
+        try (Connection connection = ENDPOINT_EXTENSION.getConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("SET table.sql-dialect=default");
 
-        // default_catalog: db_test1 | db_test2 | db_diff | default
-        //     db_test1: temporary table tb_1, table tb_2, temporary view tb_3, view tb_4
-        //     db_test2: table tb_1, table diff_1, view tb_2, view diff_2
-        //     db_diff:  table tb_1, view tb_2
+            // hive: db_test1 | db_test2 | db_diff | default
+            //     db_test1: temporary table tbl_1, table tbl_2, temporary view tbl_3, view tbl_4
+            //     db_test2: table tbl_1, table diff_1, view tbl_2, view diff_2
+            //     db_diff:  table tbl_1, view tbl_2
 
-        statement.execute("CREATE DATABASE db_test1");
-        statement.execute("CREATE DATABASE db_test2");
-        statement.execute("CREATE DATABASE db_diff");
+            statement.execute("CREATE DATABASE db_test1");
+            statement.execute("CREATE DATABASE db_test2");
+            statement.execute("CREATE DATABASE db_diff");
 
-        statement.execute("CREATE TEMPORARY TABLE db_test1.tb_1 COMMENT 'temporary table tb_1'");
-        statement.execute("CREATE TABLE db_test1.tb_2 COMMENT 'table tb_2'");
-        statement.execute(
-                "CREATE TEMPORARY VIEW db_test1.tb_3 COMMENT 'temporary view tb_3' AS SELECT 1");
-        statement.execute("CREATE VIEW db_test1.tb_4 COMMENT 'view tb_4' AS SELECT 1");
+            statement.execute(
+                    "CREATE TABLE db_test1.tbl_1(\n"
+                            + "`user` BIGINT CONSTRAINT `pk` PRIMARY KEY COMMENT 'user id.',\n"
+                            + "`product` STRING NOT NULL,\n"
+                            + "`amount`  INT) COMMENT 'temporary table tbl_1'");
+            statement.execute(
+                    "CREATE TABLE db_test1.tbl_2(\n"
+                            + "`user` STRING COMMENT 'user name.',\n"
+                            + "`id` BIGINT COMMENT 'user id.',\n"
+                            + "`timestamp` TIMESTAMP,"
+                            + "CONSTRAINT `pk` PRIMARY KEY(`user`, `id`) NOT ENFORCED) COMMENT 'table tbl_2'");
+            statement.execute(
+                    "CREATE VIEW db_test1.tbl_3 COMMENT 'temporary view tbl_3' AS SELECT 1");
+            statement.execute("CREATE VIEW db_test1.tbl_4 COMMENT 'view tbl_4' AS SELECT 1");
 
-        statement.execute("CREATE TABLE db_test2.tb_1 COMMENT 'table tb_1'");
-        statement.execute("CREATE TABLE db_test2.diff_1 COMMENT 'table diff_1'");
-        statement.execute("CREATE VIEW db_test2.tb_2 COMMENT 'view tb_2' AS SELECT 1");
-        statement.execute("CREATE VIEW db_test2.diff_2 COMMENT 'view diff_2' AS SELECT 1");
+            statement.execute("CREATE TABLE db_test2.tbl_1 COMMENT 'table tbl_1'");
+            statement.execute("CREATE TABLE db_test2.diff_1 COMMENT 'table diff_1'");
+            statement.execute("CREATE VIEW db_test2.tbl_2 COMMENT 'view tbl_2' AS SELECT 1");
+            statement.execute("CREATE VIEW db_test2.diff_2 COMMENT 'view diff_2' AS SELECT 1");
 
-        statement.execute("CREATE TABLE db_diff.tb_1 COMMENT 'table tb_1'");
-        statement.execute("CREATE VIEW db_diff.tb_2 COMMENT 'view tb_2' AS SELECT 1");
-
-        statement.close();
-        return connection;
+            statement.execute("CREATE TABLE db_diff.tbl_1 COMMENT 'table tbl_1'");
+            statement.execute("CREATE VIEW db_diff.tbl_2 COMMENT 'view tbl_2' AS SELECT 1");
+        }
     }
 
     private void runGetObjectTest(
@@ -275,11 +772,21 @@ public class HiveServer2EndpointITCase extends TestLogger {
             ResolvedSchema expectedSchema,
             List<List<Object>> expectedResults)
             throws Exception {
-        try (Connection connection = getInitializedConnection();
+        runGetObjectTest(
+                resultSetSupplier,
+                expectedSchema,
+                result -> assertThat(result).isEqualTo(expectedResults));
+    }
+
+    private void runGetObjectTest(
+            FunctionWithException<Connection, java.sql.ResultSet, Exception> resultSetSupplier,
+            ResolvedSchema expectedSchema,
+            Consumer<List<List<Object>>> validator)
+            throws Exception {
+        try (Connection connection = ENDPOINT_EXTENSION.getConnection();
                 java.sql.ResultSet result = resultSetSupplier.apply(connection)) {
             assertSchemaEquals(expectedSchema, result.getMetaData());
-            assertThat(new HashSet<>(collect(result, expectedSchema.getColumnCount())))
-                    .isEqualTo(new HashSet<>(expectedResults));
+            validator.accept(collectAndCompact(result, expectedSchema.getColumnCount()));
         }
     }
 
@@ -302,13 +809,12 @@ public class HiveServer2EndpointITCase extends TestLogger {
                         .getService()
                         .submitOperation(
                                 sessionHandle,
-                                OperationType.UNKNOWN,
                                 () -> {
                                     latch.await();
                                     return ResultSet.NOT_READY_RESULTS;
                                 });
         manipulateOp.accept(
-                toTOperationHandle(sessionHandle, operationHandle, OperationType.UNKNOWN));
+                toTOperationHandle(sessionHandle, operationHandle, TOperationType.UNKNOWN));
         operationValidator.accept(sessionHandle, operationHandle);
         SQL_GATEWAY_SERVICE_EXTENSION.getService().closeSession(sessionHandle);
     }
@@ -323,6 +829,85 @@ public class HiveServer2EndpointITCase extends TestLogger {
         return new TCLIService.Client(new TBinaryProtocol(transport));
     }
 
+    private ResolvedSchema getExpectedGetSchemasOperationSchema() {
+        return ResolvedSchema.of(
+                Column.physical("TABLE_SCHEM", DataTypes.STRING()),
+                Column.physical("TABLE_CATALOG", DataTypes.STRING()));
+    }
+
+    private ResolvedSchema getExpectedGetTablesOperationSchema() {
+        return ResolvedSchema.of(
+                Column.physical("TABLE_CAT", DataTypes.STRING()),
+                Column.physical("TABLE_SCHEM", DataTypes.STRING()),
+                Column.physical("TABLE_NAME", DataTypes.STRING()),
+                Column.physical("TABLE_TYPE", DataTypes.STRING()),
+                Column.physical("REMARKS", DataTypes.STRING()),
+                Column.physical("TYPE_CAT", DataTypes.STRING()),
+                Column.physical("TYPE_SCHEM", DataTypes.STRING()),
+                Column.physical("TYPE_NAME", DataTypes.STRING()),
+                Column.physical("SELF_REFERENCING_COL_NAME", DataTypes.STRING()),
+                Column.physical("REF_GENERATION", DataTypes.STRING()));
+    }
+
+    private ResolvedSchema getExpectedGetColumnsOperationSchema() {
+        return ResolvedSchema.of(
+                Column.physical("TABLE_CAT", DataTypes.STRING()),
+                Column.physical("TABLE_SCHEM", DataTypes.STRING()),
+                Column.physical("TABLE_NAME", DataTypes.STRING()),
+                Column.physical("COLUMN_NAME", DataTypes.STRING()),
+                Column.physical("DATA_TYPE", DataTypes.INT()),
+                Column.physical("TYPE_NAME", DataTypes.STRING()),
+                Column.physical("COLUMN_SIZE", DataTypes.INT()),
+                Column.physical("BUFFER_LENGTH", DataTypes.TINYINT()),
+                Column.physical("DECIMAL_DIGITS", DataTypes.INT()),
+                Column.physical("NUM_PREC_RADIX", DataTypes.INT()),
+                Column.physical("NULLABLE", DataTypes.INT()),
+                Column.physical("REMARKS", DataTypes.STRING()),
+                Column.physical("COLUMN_DEF", DataTypes.STRING()),
+                Column.physical("SQL_DATA_TYPE", DataTypes.INT()),
+                Column.physical("SQL_DATETIME_SUB", DataTypes.INT()),
+                Column.physical("CHAR_OCTET_LENGTH", DataTypes.INT()),
+                Column.physical("ORDINAL_POSITION", DataTypes.INT()),
+                Column.physical("IS_NULLABLE", DataTypes.STRING()),
+                Column.physical("SCOPE_CATALOG", DataTypes.STRING()),
+                Column.physical("SCOPE_SCHEMA", DataTypes.STRING()),
+                Column.physical("SCOPE_TABLE", DataTypes.STRING()),
+                Column.physical("SOURCE_DATA_TYPE", DataTypes.SMALLINT()),
+                Column.physical("IS_AUTO_INCREMENT", DataTypes.STRING()));
+    }
+
+    private ResolvedSchema getExpectedGetPrimaryKeysOperationSchema() {
+        return ResolvedSchema.of(
+                Column.physical("TABLE_CAT", DataTypes.STRING()),
+                Column.physical("TABLE_SCHEM", DataTypes.STRING()),
+                Column.physical("TABLE_NAME", DataTypes.STRING()),
+                Column.physical("COLUMN_NAME", DataTypes.STRING()),
+                Column.physical("KEY_SEQ", DataTypes.INT()),
+                Column.physical("PK_NAME", DataTypes.STRING()));
+    }
+
+    private ResolvedSchema getExpectedGetTypeInfoSchema() {
+        return ResolvedSchema.of(
+                Column.physical("TYPE_NAME", DataTypes.STRING()),
+                Column.physical("DATA_TYPE", DataTypes.INT()),
+                Column.physical("PRECISION", DataTypes.INT()),
+                Column.physical("LITERAL_PREFIX", DataTypes.STRING()),
+                Column.physical("LITERAL_SUFFIX", DataTypes.STRING()),
+                Column.physical("CREATE_PARAMS", DataTypes.STRING()),
+                Column.physical("NULLABLE", DataTypes.SMALLINT()),
+                Column.physical("CASE_SENSITIVE", DataTypes.BOOLEAN()),
+                Column.physical("SEARCHABLE", DataTypes.SMALLINT()),
+                Column.physical("UNSIGNED_ATTRIBUTE", DataTypes.BOOLEAN()),
+                Column.physical("FIXED_PREC_SCALE", DataTypes.BOOLEAN()),
+                Column.physical("AUTO_INCREMENT", DataTypes.BOOLEAN()),
+                Column.physical("LOCAL_TYPE_NAME", DataTypes.STRING()),
+                Column.physical("MINIMUM_SCALE", DataTypes.SMALLINT()),
+                Column.physical("MAXIMUM_SCALE", DataTypes.SMALLINT()),
+                Column.physical("SQL_DATA_TYPE", DataTypes.INT()),
+                Column.physical("SQL_DATETIME_SUB", DataTypes.INT()),
+                Column.physical("NUM_PREC_RADIX", DataTypes.INT()));
+    }
+
     private void assertSchemaEquals(ResolvedSchema expected, ResultSetMetaData metaData)
             throws Exception {
         assertThat(metaData.getColumnCount()).isEqualTo(expected.getColumnCount());
@@ -332,22 +917,93 @@ public class HiveServer2EndpointITCase extends TestLogger {
                             .orElseThrow(() -> new RuntimeException("Can not get column."));
             assertThat(metaData.getColumnName(i)).isEqualTo(column.getName());
             int jdbcType =
-                    JdbcColumn.hiveTypeToSqlType(
-                            HiveTypeUtil.toHiveTypeInfo(column.getDataType(), false).getTypeName());
+                    Type.getType(HiveTypeUtil.toHiveTypeInfo(column.getDataType(), false))
+                            .toJavaSQLType();
             assertThat(metaData.getColumnType(i)).isEqualTo(jdbcType);
         }
     }
 
-    private List<List<Object>> collect(java.sql.ResultSet result, int columnCount)
+    private List<List<Object>> collectAndCompact(java.sql.ResultSet result, int columnCount)
             throws Exception {
         List<List<Object>> actual = new ArrayList<>();
         while (result.next()) {
             List<Object> row = new ArrayList<>();
             for (int i = 1; i <= columnCount; i++) {
-                row.add(result.getObject(i));
+                Object value = result.getObject(i);
+                // ignore the null value for better presentation
+                if (value == null) {
+                    continue;
+                }
+                row.add(value);
             }
             actual.add(row);
         }
         return actual;
+    }
+
+    private void runExecuteStatementInSyncModeWithRuntimeException(
+            BiConsumerWithException<
+                            TSessionHandle,
+                            FutureTaskWithException<TExecuteStatementResp>,
+                            Exception>
+                    checker)
+            throws Exception {
+        TCLIService.Client client = createClient();
+        TOpenSessionReq openSessionReq = new TOpenSessionReq();
+        openSessionReq.putToConfiguration(
+                RUNTIME_MODE.key(), RuntimeExecutionMode.STREAMING.name());
+        openSessionReq.putToConfiguration(TABLE_SQL_DIALECT.key(), SqlDialect.DEFAULT.name());
+        openSessionReq.putToConfiguration(PIPELINE_FIXED_JOB_ID.key(), JobID.generate().toString());
+        TSessionHandle tSessionHandle = client.OpenSession(openSessionReq).getSessionHandle();
+
+        List<String> initSql =
+                Arrays.asList(
+                        "CREATE TEMPORARY TABLE source(\n"
+                                + "  a INT\n"
+                                + ") WITH (\n"
+                                + "  'connector' = 'datagen'"
+                                + ")",
+                        "CREATE TEMPORARY TABLE sink(\n"
+                                + "  a INT\n"
+                                + ") WITH (\n"
+                                + "  'connector' = 'blackhole'"
+                                + ")");
+
+        for (String sql : initSql) {
+            TExecuteStatementReq statementReq = new TExecuteStatementReq(tSessionHandle, sql);
+            client.ExecuteStatement(statementReq);
+        }
+
+        CountDownLatch countDownLatch = new CountDownLatch(1);
+        FutureTaskWithException<TExecuteStatementResp> future =
+                new FutureTaskWithException<>(
+                        () -> {
+                            countDownLatch.countDown();
+                            // Thrift client is not thread-safe.
+                            return createClient()
+                                    .ExecuteStatement(
+                                            new TExecuteStatementReq(
+                                                    tSessionHandle,
+                                                    "INSERT INTO sink SELECT * FROM source"));
+                        });
+        Thread submitter = new Thread(future);
+        submitter.start();
+        countDownLatch.await();
+
+        checker.accept(tSessionHandle, future);
+    }
+
+    private void waitUntilJobIsRunning(ClusterClient<?> client) throws Exception {
+        while (getRunningJobs(client).isEmpty()) {
+            Thread.sleep(50);
+        }
+    }
+
+    private List<JobID> getRunningJobs(ClusterClient<?> client) throws Exception {
+        Collection<JobStatusMessage> statusMessages = client.listJobs().get();
+        return statusMessages.stream()
+                .filter(status -> !status.getJobState().isGloballyTerminalState())
+                .map(JobStatusMessage::getJobId)
+                .collect(Collectors.toList());
     }
 }

@@ -40,6 +40,7 @@ import org.apache.flink.orc.util.OrcFormatStatisticsReportUtil;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectPath;
@@ -52,6 +53,7 @@ import org.apache.flink.table.connector.format.FileBasedStatisticsReportableInpu
 import org.apache.flink.table.connector.source.DataStreamScanProvider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
+import org.apache.flink.table.connector.source.abilities.SupportsDynamicFiltering;
 import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsPartitionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
@@ -60,6 +62,7 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.plan.stats.TableStats;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
@@ -72,6 +75,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -89,7 +93,8 @@ public class HiveTableSource
                 SupportsPartitionPushDown,
                 SupportsProjectionPushDown,
                 SupportsLimitPushDown,
-                SupportsStatisticReport {
+                SupportsStatisticReport,
+                SupportsDynamicFiltering {
 
     private static final Logger LOG = LoggerFactory.getLogger(HiveTableSource.class);
     private static final String HIVE_TRANSFORMATION = "hive";
@@ -103,9 +108,10 @@ public class HiveTableSource
 
     // Remaining partition specs after partition pruning is performed. Null if pruning is not pushed
     // down.
-    @Nullable private List<Map<String, String>> remainingPartitions = null;
+    @Nullable protected List<Map<String, String>> remainingPartitions = null;
+    @Nullable protected List<String> dynamicFilterPartitionKeys = null;
     protected int[] projectedFields;
-    private Long limit = null;
+    protected Long limit = null;
 
     public HiveTableSource(
             JobConf jobConf,
@@ -161,8 +167,6 @@ public class HiveTableSource
                             catalogTable.getPartitionKeys(),
                             remainingPartitions);
 
-            int threadNum =
-                    flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_LOAD_PARTITION_SPLITS_THREAD_NUM);
             int parallelism =
                     new HiveParallelismInference(tablePath, flinkConf)
                             .infer(
@@ -171,16 +175,14 @@ public class HiveTableSource
                                                     hivePartitionsToRead, jobConf),
                                     () ->
                                             HiveSourceFileEnumerator.createInputSplits(
-                                                            0,
-                                                            hivePartitionsToRead,
-                                                            threadNum,
-                                                            jobConf)
+                                                            0, hivePartitionsToRead, jobConf, true)
                                                     .size())
                             .limit(limit);
             return toDataStreamSource(
                             execEnv,
                             sourceBuilder
                                     .setPartitions(hivePartitionsToRead)
+                                    .setDynamicFilterPartitionKeys(dynamicFilterPartitionKeys)
                                     .buildWithDefaultBulkFormat())
                     .setParallelism(parallelism);
         }
@@ -248,6 +250,37 @@ public class HiveTableSource
     }
 
     @Override
+    public List<String> listAcceptedFilterFields() {
+        List<String> acceptedFilterFields = new ArrayList<>();
+        for (String partitionKey : catalogTable.getPartitionKeys()) {
+            // Only partition keys with supported types can be returned as accepted filter fields.
+            if (HiveSourceDynamicFileEnumerator.SUPPORTED_TYPES.contains(
+                    catalogTable
+                            .getSchema()
+                            .getFieldDataType(partitionKey)
+                            .map(DataType::getLogicalType)
+                            .map(LogicalType::getTypeRoot)
+                            .orElse(null))) {
+                acceptedFilterFields.add(partitionKey);
+            }
+        }
+
+        return acceptedFilterFields;
+    }
+
+    @Override
+    public void applyDynamicFiltering(List<String> candidateFilterFields) {
+        if (catalogTable.isPartitioned()) {
+            dynamicFilterPartitionKeys = candidateFilterFields;
+        } else {
+            throw new TableException(
+                    String.format(
+                            "Hive source table : %s is not a partition table, but try to apply dynamic filtering.",
+                            catalogTable));
+        }
+    }
+
+    @Override
     public boolean supportsNestedProjection() {
         return false;
     }
@@ -273,6 +306,7 @@ public class HiveTableSource
         source.remainingPartitions = remainingPartitions;
         source.projectedFields = projectedFields;
         source.limit = limit;
+        source.dynamicFilterPartitionKeys = dynamicFilterPartitionKeys;
         return source;
     }
 
@@ -291,8 +325,6 @@ public class HiveTableSource
             HiveSourceBuilder sourceBuilder =
                     new HiveSourceBuilder(jobConf, flinkConf, tablePath, hiveVersion, catalogTable)
                             .setProjectedFields(projectedFields);
-            int threadNum =
-                    flinkConf.get(HiveOptions.TABLE_EXEC_HIVE_LOAD_PARTITION_SPLITS_THREAD_NUM);
             List<HiveTablePartition> hivePartitionsToRead =
                     getAllPartitions(
                             jobConf,
@@ -304,7 +336,7 @@ public class HiveTableSource
                     sourceBuilder.createDefaultBulkFormat();
             List<HiveSourceSplit> inputSplits =
                     HiveSourceFileEnumerator.createInputSplits(
-                            0, hivePartitionsToRead, threadNum, jobConf);
+                            1, hivePartitionsToRead, jobConf, false);
             if (inputSplits.size() != 0) {
                 TableStats tableStats;
                 if (defaultBulkFormat instanceof FileBasedStatisticsReportableInputFormat) {

@@ -104,6 +104,9 @@ abstract class PlannerBase(
   private var parser: Parser = _
   private var extendedOperationExecutor: ExtendedOperationExecutor = _
   private var currentDialect: SqlDialect = getTableConfig.getSqlDialect
+  // the transformations generated in translateToPlan method, they are not connected
+  // with sink transformations but also are needed in the final graph.
+  private[flink] val extraTransformations = new util.ArrayList[Transformation[_]]()
 
   @VisibleForTesting
   private[flink] val plannerContext: PlannerContext =
@@ -190,7 +193,7 @@ abstract class PlannerBase(
 
     val relNodes = modifyOperations.map(translateToRel)
     val optimizedRelNodes = optimize(relNodes)
-    val execGraph = translateToExecNodeGraph(optimizedRelNodes)
+    val execGraph = translateToExecNodeGraph(optimizedRelNodes, isCompiled = false)
     val transformations = translateToPlan(execGraph)
     afterTranslation()
     transformations
@@ -326,7 +329,9 @@ abstract class PlannerBase(
    * transforms the graph based on the given processors.
    */
   @VisibleForTesting
-  private[flink] def translateToExecNodeGraph(optimizedRelNodes: Seq[RelNode]): ExecNodeGraph = {
+  private[flink] def translateToExecNodeGraph(
+      optimizedRelNodes: Seq[RelNode],
+      isCompiled: Boolean): ExecNodeGraph = {
     val nonPhysicalRel = optimizedRelNodes.filterNot(_.isInstanceOf[FlinkPhysicalRel])
     if (nonPhysicalRel.nonEmpty) {
       throw new TableException(
@@ -338,7 +343,8 @@ abstract class PlannerBase(
 
     // convert FlinkPhysicalRel DAG to ExecNodeGraph
     val generator = new ExecNodeGraphGenerator()
-    val execGraph = generator.generate(optimizedRelNodes.map(_.asInstanceOf[FlinkPhysicalRel]))
+    val execGraph =
+      generator.generate(optimizedRelNodes.map(_.asInstanceOf[FlinkPhysicalRel]), isCompiled)
 
     // process the graph
     val context = new ProcessorContext(this)
@@ -357,6 +363,12 @@ abstract class PlannerBase(
    *   The [[Transformation]] DAG that corresponds to the node DAG.
    */
   protected def translateToPlan(execGraph: ExecNodeGraph): util.List[Transformation[_]]
+
+  def addExtraTransformation(transformation: Transformation[_]): Unit = {
+    if (!extraTransformations.contains(transformation)) {
+      extraTransformations.add(transformation)
+    }
+  }
 
   private def getTableSink(
       contextResolvedTable: ContextResolvedTable,
@@ -397,14 +409,14 @@ abstract class PlannerBase(
             tableConfig,
             isStreamingMode,
             objectIdentifier,
-            resolvedTable.getOrigin,
+            resolvedTable,
             isTemporary
           )
         ) {
           val tableSink = TableFactoryUtil.findAndCreateTableSink(
             catalog.orNull,
             objectIdentifier,
-            tableToFind.getOrigin,
+            tableToFind,
             getTableConfig,
             isStreamingMode,
             isTemporary)
@@ -461,7 +473,7 @@ abstract class PlannerBase(
     tableConfig.set(TABLE_QUERY_CURRENT_DATABASE, currentDatabase)
 
     // We pass only the configuration to avoid reconfiguration with the rootConfiguration
-    getExecEnv.configure(tableConfig.getConfiguration, Thread.currentThread().getContextClassLoader)
+    getExecEnv.configure(tableConfig.getConfiguration, classLoader)
 
     // Use config parallelism to override env parallelism.
     val defaultParallelism =
@@ -480,6 +492,7 @@ abstract class PlannerBase(
 
     // Clean caches that might have filled up during optimization
     CompileUtils.cleanUp()
+    extraTransformations.clear()
   }
 
   /** Returns all the graphs required to execute EXPLAIN */
@@ -512,8 +525,7 @@ abstract class PlannerBase(
       case o => throw new TableException(s"Unsupported operation: ${o.getClass.getCanonicalName}")
     }
     val optimizedRelNodes = optimize(sinkRelNodes)
-    val execGraph = translateToExecNodeGraph(optimizedRelNodes)
-
+    val execGraph = translateToExecNodeGraph(optimizedRelNodes, isCompiled = false)
     val transformations = translateToPlan(execGraph)
     afterTranslation()
 

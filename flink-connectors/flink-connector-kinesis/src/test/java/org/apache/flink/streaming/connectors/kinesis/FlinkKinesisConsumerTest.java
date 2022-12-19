@@ -819,13 +819,9 @@ public class FlinkKinesisConsumerTest extends TestLogger {
         java.lang.reflect.Constructor<KinesisDataFetcher> ctor =
                 (java.lang.reflect.Constructor<KinesisDataFetcher>)
                         KinesisDataFetcher.class.getConstructors()[0];
-        Class<?>[] otherParamTypes = new Class<?>[ctor.getParameterTypes().length - 1];
+        Class<?>[] otherParamTypes = new Class<?>[ctor.getParameterCount() - 1];
         System.arraycopy(
-                ctor.getParameterTypes(),
-                1,
-                otherParamTypes,
-                0,
-                ctor.getParameterTypes().length - 1);
+                ctor.getParameterTypes(), 1, otherParamTypes, 0, ctor.getParameterCount() - 1);
 
         Supplier<Object[]> argumentSupplier =
                 () -> {
@@ -1182,6 +1178,14 @@ public class FlinkKinesisConsumerTest extends TestLogger {
 
         sourceFunc.cancel();
         testHarness.close();
+    }
+
+    @Test
+    public void testCloseConnectorBeforeSubtaskStart() throws Exception {
+        Properties config = TestUtils.getStandardProperties();
+        FlinkKinesisConsumer<String> consumer =
+                new FlinkKinesisConsumer<>("fakeStream", new SimpleStringSchema(), config);
+        consumer.close();
     }
 
     private void awaitRecordCount(ConcurrentLinkedQueue<? extends Object> queue, int count)

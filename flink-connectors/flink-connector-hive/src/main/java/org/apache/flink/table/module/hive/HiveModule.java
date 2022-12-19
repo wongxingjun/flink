@@ -29,6 +29,7 @@ import org.apache.flink.table.module.hive.udf.generic.GenericUDFLegacyGroupingID
 import org.apache.flink.table.module.hive.udf.generic.HiveGenericUDFArrayAccessStructField;
 import org.apache.flink.table.module.hive.udf.generic.HiveGenericUDFGrouping;
 import org.apache.flink.table.module.hive.udf.generic.HiveGenericUDFInternalInterval;
+import org.apache.flink.table.module.hive.udf.generic.HiveGenericUDFToDecimal;
 import org.apache.flink.util.StringUtils;
 
 import org.apache.hadoop.hive.ql.exec.FunctionInfo;
@@ -50,7 +51,6 @@ public class HiveModule implements Module {
             Collections.unmodifiableSet(
                     new HashSet<>(
                             Arrays.asList(
-                                    "count",
                                     "cume_dist",
                                     "current_date",
                                     "current_timestamp",
@@ -114,6 +114,7 @@ public class HiveModule implements Module {
             functionNames.add("grouping");
             functionNames.add(GenericUDFLegacyGroupingID.NAME);
             functionNames.add(HiveGenericUDFArrayAccessStructField.NAME);
+            functionNames.add(HiveGenericUDFToDecimal.NAME);
         }
         return functionNames;
     }
@@ -150,6 +151,13 @@ public class HiveModule implements Module {
             return Optional.of(
                     factory.createFunctionDefinitionFromHiveFunction(
                             name, HiveGenericUDFArrayAccessStructField.class.getName(), context));
+        }
+
+        // We add a custom to_decimal function. Refer to the implementation for more details.
+        if (name.equalsIgnoreCase(HiveGenericUDFToDecimal.NAME)) {
+            return Optional.of(
+                    factory.createFunctionDefinitionFromHiveFunction(
+                            name, HiveGenericUDFToDecimal.class.getName(), context));
         }
 
         Optional<FunctionInfo> info = hiveShim.getBuiltInFunctionInfo(name);

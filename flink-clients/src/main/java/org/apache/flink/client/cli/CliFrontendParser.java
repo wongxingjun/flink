@@ -265,7 +265,7 @@ public class CliFrontendParser {
                     true,
                     "Specify the path of the python interpreter used to execute the python UDF worker "
                             + "(e.g.: --pyExecutable /usr/local/bin/python3). "
-                            + "The python UDF worker depends on Python 3.6+, Apache Beam (version == 2.38.0), "
+                            + "The python UDF worker depends on Python 3.7+, Apache Beam (version == 2.43.0), "
                             + "Pip (version >= 20.3) and SetupTools (version >= 37.0.0). "
                             + "Please ensure that the specified environment meets the above requirements.");
 
@@ -277,6 +277,15 @@ public class CliFrontendParser {
                     "The path of the Python interpreter used to launch the Python "
                             + "process when submitting the Python jobs via \"flink run\" or compiling "
                             + "the Java/Scala jobs containing Python UDFs.");
+
+    public static final Option PYTHON_PATH =
+            new Option(
+                    "pypath",
+                    "pyPythonPath",
+                    true,
+                    "Specify the path of the python installation in worker nodes."
+                            + "(e.g.: --pyPythonPath /python/lib64/python3.7/)."
+                            + "User can specify multiple paths using the separator \":\".");
 
     static {
         HELP_OPTION.setRequired(false);
@@ -344,6 +353,8 @@ public class CliFrontendParser {
         PYEXEC_OPTION.setRequired(false);
 
         PYCLIENTEXEC_OPTION.setRequired(false);
+
+        PYTHON_PATH.setRequired(false);
     }
 
     static final Options RUN_OPTIONS = getRunCommandOptions();
@@ -371,6 +382,7 @@ public class CliFrontendParser {
         options.addOption(PYARCHIVE_OPTION);
         options.addOption(PYEXEC_OPTION);
         options.addOption(PYCLIENTEXEC_OPTION);
+        options.addOption(PYTHON_PATH);
         return options;
     }
 
@@ -387,6 +399,7 @@ public class CliFrontendParser {
         options.addOption(PYARCHIVE_OPTION);
         options.addOption(PYEXEC_OPTION);
         options.addOption(PYCLIENTEXEC_OPTION);
+        options.addOption(PYTHON_PATH);
         return options;
     }
 

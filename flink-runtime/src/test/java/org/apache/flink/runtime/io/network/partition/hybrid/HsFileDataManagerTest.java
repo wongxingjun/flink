@@ -45,6 +45,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.Collection;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Random;
@@ -96,7 +97,8 @@ class HsFileDataManagerTest {
                 new HsFileDataManager(
                         bufferPool,
                         ioExecutor,
-                        new HsFileDataIndexImpl(NUM_SUBPARTITIONS),
+                        new HsFileDataIndexImpl(
+                                NUM_SUBPARTITIONS, tempDir.resolve(".index"), 256, Long.MAX_VALUE),
                         dataFilePath,
                         factory,
                         HybridShuffleConfiguration.builder(
@@ -218,18 +220,15 @@ class HsFileDataManagerTest {
     }
 
     @Test
-    void testRunRequestBufferTimeout() throws Exception {
+    void testRunRequestBufferTimeout(@TempDir Path tempDir) throws Exception {
         Duration bufferRequestTimeout = Duration.ofSeconds(3);
-
-        // request all buffer first.
-        bufferPool.requestBuffers();
-        assertThat(bufferPool.getAvailableBuffers()).isZero();
 
         fileDataManager =
                 new HsFileDataManager(
                         bufferPool,
                         ioExecutor,
-                        new HsFileDataIndexImpl(NUM_SUBPARTITIONS),
+                        new HsFileDataIndexImpl(
+                                NUM_SUBPARTITIONS, tempDir.resolve(".index"), 256, Long.MAX_VALUE),
                         dataFilePath,
                         factory,
                         HybridShuffleConfiguration.builder(
@@ -242,11 +241,23 @@ class HsFileDataManagerTest {
         CompletableFuture<Throwable> cause = new CompletableFuture<>();
         reader.setPrepareForSchedulingRunnable(() -> prepareForSchedulingFinished.complete(null));
         reader.setFailConsumer((cause::complete));
+        reader.setReadBuffersConsumer(
+                (requestedBuffers, ignore) -> {
+                    assertThat(requestedBuffers).hasSize(bufferPool.getNumTotalBuffers());
+                    // discard all buffers so that they cannot be recycled.
+                    requestedBuffers.clear();
+                });
         factory.allReaders.add(reader);
 
+        // register a new consumer, this will trigger io scheduler run a round.
         fileDataManager.registerNewConsumer(0, DEFAULT, subpartitionViewOperation);
 
+        // first round run will allocate and use all buffers.
         ioExecutor.trigger();
+        assertThat(bufferPool.getAvailableBuffers()).isZero();
+
+        // second round run will trigger timeout.
+        fileDataManager.run();
 
         assertThat(prepareForSchedulingFinished).isCompleted();
         assertThat(cause).isCompleted();
@@ -351,7 +362,7 @@ class HsFileDataManagerTest {
      * release subpartition reader and subpartition reader fail should not be inside lock.
      */
     @Test
-    void testConsumeWhileReleaseNoDeadlock() throws Exception {
+    void testConsumeWhileReleaseNoDeadlock(@TempDir Path tempDir) throws Exception {
         CompletableFuture<Void> consumerStart = new CompletableFuture<>();
         CompletableFuture<Void> readerFail = new CompletableFuture<>();
         HsSubpartitionConsumer subpartitionView =
@@ -363,7 +374,8 @@ class HsFileDataManagerTest {
                         DEFAULT,
                         dataFileChannel,
                         subpartitionView,
-                        new HsFileDataIndexImpl(NUM_SUBPARTITIONS),
+                        new HsFileDataIndexImpl(
+                                NUM_SUBPARTITIONS, tempDir.resolve(".index"), 256, Long.MAX_VALUE),
                         5,
                         fileDataManager::releaseSubpartitionReader,
                         BufferReaderWriterUtil.allocatedHeaderBuffer()) {
@@ -473,12 +485,13 @@ class HsFileDataManagerTest {
 
         @Override
         public Optional<ResultSubpartition.BufferAndBacklog> consumeBuffer(
-                int nextBufferToConsume) {
+                int nextBufferToConsume, Collection<Buffer> buffersToRecycle) {
             return Optional.empty();
         }
 
         @Override
-        public Buffer.DataType peekNextToConsumeDataType(int nextBufferToConsume) {
+        public Buffer.DataType peekNextToConsumeDataType(
+                int nextBufferToConsume, Collection<Buffer> buffersToRecycle) {
             return Buffer.DataType.NONE;
         }
 

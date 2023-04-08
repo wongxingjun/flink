@@ -61,6 +61,60 @@ class KubernetesResourceManagerDriverTest
                     new KubernetesResourceManagerDriverConfiguration(CLUSTER_ID, "localhost:9000");
 
     @Test
+    void testCancelRequestedResource() throws Exception {
+        new Context() {
+            {
+                final CompletableFuture<KubernetesPod> createPodFuture = new CompletableFuture<>();
+                final CompletableFuture<Void> createTaskManagerPodFuture =
+                        new CompletableFuture<>();
+                final CompletableFuture<String> stopPodFuture = new CompletableFuture<>();
+
+                flinkKubeClientBuilder
+                        .setCreateTaskManagerPodFunction(
+                                (pod) -> {
+                                    createPodFuture.complete(pod);
+                                    return createTaskManagerPodFuture;
+                                })
+                        .setStopPodFunction(
+                                (podName) -> {
+                                    stopPodFuture.complete(podName);
+                                    return FutureUtils.completedVoidFuture();
+                                });
+
+                runTest(
+                        () -> {
+                            // request new pod and then cancel it.
+                            runInMainThread(
+                                    () -> {
+                                        CompletableFuture<KubernetesWorkerNode> requestFuture =
+                                                getDriver()
+                                                        .requestResource(
+                                                                TASK_EXECUTOR_PROCESS_SPEC);
+                                        requestFuture.cancel(true);
+                                    });
+
+                            final KubernetesPod pod =
+                                    new TestingKubernetesPod(
+                                            createPodFuture
+                                                    .get(TIMEOUT_SEC, TimeUnit.SECONDS)
+                                                    .getName(),
+                                            false,
+                                            true);
+
+                            assertThat(stopPodFuture.isDone()).isFalse();
+                            runInMainThread(() -> createTaskManagerPodFuture.complete(null));
+                            // pod should be stopped when create pod rpc finished.
+                            final CompletableFuture<Void> validationFuture =
+                                    stopPodFuture.thenAccept(
+                                            (podName) ->
+                                                    assertThat(podName).isEqualTo(pod.getName()));
+                            validationFuture.get(TIMEOUT_SEC, TimeUnit.SECONDS);
+                        });
+            }
+        };
+    }
+
+    @Test
     void testOnPodAdded() throws Exception {
         new Context() {
             {
@@ -126,6 +180,18 @@ class KubernetesResourceManagerDriverTest
         new Context() {
             {
                 testOnPodTerminated((pod) -> getPodCallbackHandler().onDeleted(pod));
+            }
+        };
+    }
+
+    @Test
+    void testOnPodDeletedBeforeScheduled() throws Exception {
+        new Context() {
+            {
+                // If the pod is deleted during the pending phase, we cannot detect the pod is
+                // terminated because its status won't be updated, but should handle the deleted
+                // event
+                testOnPodTerminated((pod) -> getPodCallbackHandler().onDeleted(pod), false, false);
             }
         };
     }
@@ -445,6 +511,14 @@ class KubernetesResourceManagerDriverTest
 
         void testOnPodTerminated(Consumer<List<KubernetesPod>> sendPodTerminatedEvent)
                 throws Exception {
+            testOnPodTerminated(sendPodTerminatedEvent, true, true);
+        }
+
+        void testOnPodTerminated(
+                Consumer<List<KubernetesPod>> sendPodTerminatedEvent,
+                boolean isPodScheduled,
+                boolean isPodTerminated)
+                throws Exception {
             final CompletableFuture<KubernetesWorkerNode> requestResourceFuture =
                     new CompletableFuture<>();
             final CompletableFuture<ResourceID> onWorkerTerminatedConsumer =
@@ -483,7 +557,8 @@ class KubernetesResourceManagerDriverTest
 
                         sendPodTerminatedEvent.accept(
                                 Collections.singletonList(
-                                        new TestingKubernetesPod(pod.getName(), true, true)));
+                                        new TestingKubernetesPod(
+                                                pod.getName(), isPodScheduled, isPodTerminated)));
 
                         // make sure finishing validation
                         validationFuture.get(TIMEOUT_SEC, TimeUnit.SECONDS);

@@ -36,7 +36,7 @@ import java.util.concurrent.Executor;
 
 /** Builder for {@link DeclarativeSlotManager}. */
 public class DeclarativeSlotManagerBuilder {
-    private SlotMatchingStrategy slotMatchingStrategy;
+    private boolean evenlySpreadOutSlots;
     private final ScheduledExecutor scheduledExecutor;
     private Time taskManagerRequestTimeout;
     private Time slotRequestTimeout;
@@ -50,9 +50,10 @@ public class DeclarativeSlotManagerBuilder {
     private ResourceTracker resourceTracker;
     private SlotTracker slotTracker;
     private Duration requirementCheckDelay;
+    private Duration declareNeededResourceDelay;
 
     private DeclarativeSlotManagerBuilder(ScheduledExecutor scheduledExecutor) {
-        this.slotMatchingStrategy = AnyMatchingSlotMatchingStrategy.INSTANCE;
+        this.evenlySpreadOutSlots = false;
         this.scheduledExecutor = scheduledExecutor;
         this.taskManagerRequestTimeout = TestingUtils.infiniteTime();
         this.slotRequestTimeout = TestingUtils.infiniteTime();
@@ -68,6 +69,7 @@ public class DeclarativeSlotManagerBuilder {
         this.resourceTracker = new DefaultResourceTracker();
         this.slotTracker = new DefaultSlotTracker();
         this.requirementCheckDelay = Duration.ZERO;
+        this.declareNeededResourceDelay = Duration.ZERO;
     }
 
     public static DeclarativeSlotManagerBuilder newBuilder(ScheduledExecutor scheduledExecutor) {
@@ -96,9 +98,8 @@ public class DeclarativeSlotManagerBuilder {
         return this;
     }
 
-    public DeclarativeSlotManagerBuilder setSlotMatchingStrategy(
-            SlotMatchingStrategy slotMatchingStrategy) {
-        this.slotMatchingStrategy = slotMatchingStrategy;
+    public DeclarativeSlotManagerBuilder setEvenlySpreadOutSlots(boolean evenlySpreadOutSlots) {
+        this.evenlySpreadOutSlots = evenlySpreadOutSlots;
         return this;
     }
 
@@ -144,6 +145,12 @@ public class DeclarativeSlotManagerBuilder {
         return this;
     }
 
+    public DeclarativeSlotManagerBuilder setDeclareNeededResourceDelay(
+            Duration declareNeededResourceDelay) {
+        this.declareNeededResourceDelay = declareNeededResourceDelay;
+        return this;
+    }
+
     public DeclarativeSlotManager build() {
         final SlotManagerConfiguration slotManagerConfiguration =
                 new SlotManagerConfiguration(
@@ -151,8 +158,9 @@ public class DeclarativeSlotManagerBuilder {
                         slotRequestTimeout,
                         taskManagerTimeout,
                         requirementCheckDelay,
+                        declareNeededResourceDelay,
                         waitResultConsumedBeforeRelease,
-                        slotMatchingStrategy,
+                        evenlySpreadOutSlots,
                         defaultWorkerResourceSpec,
                         numSlotsPerWorker,
                         maxSlotNum,

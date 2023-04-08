@@ -18,30 +18,27 @@
 
 package org.apache.flink.runtime.resourcemanager.slotmanager;
 
-import org.apache.flink.runtime.instance.InstanceID;
-import org.apache.flink.runtime.resourcemanager.WorkerResourceSpec;
-
-import java.util.function.BiConsumer;
+import java.util.Collection;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /** Builder for the {@link TestingResourceAllocator}. */
 public class TestingResourceAllocatorBuilder {
-    private BiConsumer<InstanceID, Exception> releaseResourceConsumer = (ignoredA, ignoredB) -> {};
-    private Consumer<WorkerResourceSpec> allocateResourceConsumer = (ignored) -> {};
+    private Consumer<Collection<ResourceDeclaration>> declareResourceNeededConsumer =
+            (ignored) -> {};
+    private Supplier<Boolean> isSupportedSupplier = () -> true;
 
-    public TestingResourceAllocatorBuilder setReleaseResourceConsumer(
-            BiConsumer<InstanceID, Exception> releaseResourceConsumer) {
-        this.releaseResourceConsumer = releaseResourceConsumer;
+    public TestingResourceAllocatorBuilder setDeclareResourceNeededConsumer(
+            Consumer<Collection<ResourceDeclaration>> declareResourceNeededConsumer) {
+        this.declareResourceNeededConsumer = declareResourceNeededConsumer;
         return this;
     }
 
-    public TestingResourceAllocatorBuilder setAllocateResourceConsumer(
-            Consumer<WorkerResourceSpec> allocateResourceConsumer) {
-        this.allocateResourceConsumer = allocateResourceConsumer;
-        return this;
+    public void setIsSupportedSupplier(Supplier<Boolean> isSupportedSupplier) {
+        this.isSupportedSupplier = isSupportedSupplier;
     }
 
     public TestingResourceAllocator build() {
-        return new TestingResourceAllocator(releaseResourceConsumer, allocateResourceConsumer);
+        return new TestingResourceAllocator(declareResourceNeededConsumer, isSupportedSupplier);
     }
 }

@@ -418,7 +418,7 @@ For writing to other Parquet compatible data formats, users need to create the P
 
 To use the Parquet bulk encoder in your application you need to add the following dependency:
 
-{{< artifact flink-parquet withScalaVersion >}}
+{{< artifact flink-parquet >}}
 
 {{< py_download_link "parquet" >}}
 
@@ -725,7 +725,7 @@ class PersonVectorizer(schema: String) extends Vectorizer[Person](schema) {
 
 To use the ORC bulk encoder in an application, users need to add the following dependency:
 
-{{< artifact flink-orc withScalaVersion >}}
+{{< artifact flink-orc >}}
 
 
 And then a `FileSink` that writes data in ORC format can be created like this:
@@ -1197,8 +1197,8 @@ Given this, when trying to restore from an old checkpoint/savepoint which assume
 by subsequent successful checkpoints, the `FileSink` will refuse to resume and will throw an exception as it cannot locate the 
 in-progress file.
 
-<span class="label label-danger">Important Note 4</span>: Currently, the `FileSink` only supports four filesystems: 
-HDFS, S3, OSS, and Local. Flink will throw an exception when using an unsupported filesystem at runtime.
+<span class="label label-danger">Important Note 4</span>: Currently, the `FileSink` only supports five filesystems: 
+HDFS, S3, OSS, ABFS and Local. Flink will throw an exception when using an unsupported filesystem at runtime.
 
 #### BATCH-specific
 

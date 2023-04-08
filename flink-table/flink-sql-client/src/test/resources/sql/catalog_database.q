@@ -36,7 +36,6 @@ Was expecting one of:
     <EOF>
     "WITH" ...
     ";" ...
-
 !error
 
 create database my.db;
@@ -105,8 +104,8 @@ show databases;
 +---------------+
 | database name |
 +---------------+
-|       default |
 |           db1 |
+|       default |
 +---------------+
 2 rows in set
 !ok
@@ -147,9 +146,9 @@ show databases;
 +---------------+
 | database name |
 +---------------+
-|       default |
 |           db1 |
 |           db2 |
+|       default |
 +---------------+
 3 rows in set
 !ok
@@ -162,8 +161,8 @@ show databases;
 +---------------+
 | database name |
 +---------------+
-|       default |
 |           db1 |
+|       default |
 +---------------+
 2 rows in set
 !ok
@@ -282,11 +281,11 @@ describe hivecatalog.`default`.param_types_table;
 !ok
 
 SET 'execution.runtime-mode' = 'batch';
-[INFO] Session property has been set.
+[INFO] Execute statement succeed.
 !info
 
 SET 'sql-client.execution.result-mode' = 'tableau';
-[INFO] Session property has been set.
+[INFO] Execute statement succeed.
 !info
 
 # test the SELECT query can run successfully, even result is empty
@@ -501,7 +500,7 @@ show views;
 # ==========================================================================
 
 SET 'sql-client.execution.result-mode' = 'changelog';
-[INFO] Session property has been set.
+[INFO] Execute statement succeed.
 !info
 
 create table MyTable7 (a int, b string) with ('connector' = 'values');
@@ -520,7 +519,7 @@ show tables;
 !ok
 
 reset;
-[INFO] All session properties have been set to their default values.
+[INFO] Execute statement succeed.
 !info
 
 drop table MyTable5;

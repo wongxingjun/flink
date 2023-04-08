@@ -18,12 +18,13 @@
 
 package org.apache.flink.runtime.security.token.hadoop;
 
-import org.apache.flink.annotation.Experimental;
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.ConfigUtils;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.SecurityOptions;
+import org.apache.flink.core.security.token.DelegationTokenProvider;
 import org.apache.flink.runtime.util.HadoopUtils;
 import org.apache.flink.util.FlinkRuntimeException;
 
@@ -46,8 +47,8 @@ import java.util.Optional;
 import java.util.Set;
 
 /** Delegation token provider for Hadoop filesystems. */
-@Experimental
-public class HadoopFSDelegationTokenProvider implements HadoopDelegationTokenProvider {
+@Internal
+public class HadoopFSDelegationTokenProvider implements DelegationTokenProvider {
 
     private static final Logger LOG =
             LoggerFactory.getLogger(HadoopFSDelegationTokenProvider.class);
@@ -68,43 +69,67 @@ public class HadoopFSDelegationTokenProvider implements HadoopDelegationTokenPro
     @Override
     public void init(Configuration configuration) throws Exception {
         flinkConfiguration = configuration;
-        hadoopConfiguration = HadoopUtils.getHadoopConfiguration(configuration);
-        kerberosLoginProvider = new KerberosLoginProvider(configuration);
+        try {
+            hadoopConfiguration = HadoopUtils.getHadoopConfiguration(configuration);
+            kerberosLoginProvider = new KerberosLoginProvider(configuration);
+        } catch (NoClassDefFoundError e) {
+            LOG.info(
+                    "Hadoop FS is not available (not packaged with this application): {} : \"{}\".",
+                    e.getClass().getSimpleName(),
+                    e.getMessage());
+        }
     }
 
     @Override
     public boolean delegationTokensRequired() throws Exception {
-        return HadoopUtils.isKerberosSecurityEnabled(UserGroupInformation.getCurrentUser());
+        /**
+         * The general rule how a provider/receiver must behave is the following: The provider and
+         * the receiver must be added to the classpath together with all the additionally required
+         * dependencies.
+         *
+         * <p>This null check is required because the Hadoop FS provider is always on classpath but
+         * Hadoop FS jars are optional. Such case configuration is not able to be loaded. This
+         * construct is intended to be removed when HBase provider/receiver pair can be externalized
+         * (namely if a provider/receiver throws an exception then workload must be stopped).
+         */
+        if (hadoopConfiguration == null) {
+            LOG.debug(
+                    "Hadoop FS is not available (not packaged with this application), hence no "
+                            + "tokens will be acquired.");
+            return false;
+        }
+        return HadoopUtils.isKerberosSecurityEnabled(UserGroupInformation.getCurrentUser())
+                && kerberosLoginProvider.isLoginPossible(false);
     }
 
     @Override
-    public Optional<Long> obtainDelegationTokens(Credentials credentials) throws Exception {
-        if (kerberosLoginProvider.isLoginPossible()) {
-            UserGroupInformation freshUGI = kerberosLoginProvider.doLoginAndReturnUGI();
-            return freshUGI.doAs(
-                    (PrivilegedExceptionAction<Optional<Long>>)
-                            () -> {
-                                Clock clock = Clock.systemDefaultZone();
-                                Set<FileSystem> fileSystemsToAccess = getFileSystemsToAccess();
+    public ObtainedDelegationTokens obtainDelegationTokens() throws Exception {
+        UserGroupInformation freshUGI = kerberosLoginProvider.doLoginAndReturnUGI();
+        return freshUGI.doAs(
+                (PrivilegedExceptionAction<ObtainedDelegationTokens>)
+                        () -> {
+                            Credentials credentials = new Credentials();
+                            Clock clock = Clock.systemDefaultZone();
+                            Set<FileSystem> fileSystemsToAccess = getFileSystemsToAccess();
 
-                                obtainDelegationTokens(
-                                        getRenewer(), fileSystemsToAccess, credentials);
+                            obtainDelegationTokens(getRenewer(), fileSystemsToAccess, credentials);
 
-                                // Get the token renewal interval if it is not set. It will be
-                                // called
-                                // only once.
-                                if (tokenRenewalInterval == null) {
-                                    tokenRenewalInterval =
-                                            getTokenRenewalInterval(clock, fileSystemsToAccess);
-                                }
-                                return tokenRenewalInterval.flatMap(
-                                        interval ->
-                                                getTokenRenewalDate(clock, credentials, interval));
-                            });
-        } else {
-            LOG.info("Real user has no kerberos credentials so no tokens obtained");
-            return Optional.empty();
-        }
+                            // Get the token renewal interval if it is not set. It will be
+                            // called
+                            // only once.
+                            if (tokenRenewalInterval == null) {
+                                tokenRenewalInterval =
+                                        getTokenRenewalInterval(clock, fileSystemsToAccess);
+                            }
+                            Optional<Long> validUntil =
+                                    tokenRenewalInterval.flatMap(
+                                            interval ->
+                                                    getTokenRenewalDate(
+                                                            clock, credentials, interval));
+                            return new ObtainedDelegationTokens(
+                                    HadoopDelegationTokenConverter.serialize(credentials),
+                                    validUntil);
+                        });
     }
 
     @VisibleForTesting

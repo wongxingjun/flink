@@ -34,14 +34,14 @@ import org.apache.flink.connectors.hive.util.HiveConfUtils;
 import org.apache.flink.connectors.hive.util.HivePartitionUtils;
 import org.apache.flink.connectors.hive.util.JobConfUtils;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.table.api.TableSchema;
-import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.ObjectPath;
+import org.apache.flink.table.catalog.ResolvedCatalogTable;
 import org.apache.flink.table.catalog.hive.HiveCatalog;
 import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientWrapper;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.client.HiveShimLoader;
 import org.apache.flink.table.catalog.hive.util.HiveTableUtil;
+import org.apache.flink.table.connector.Projection;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -57,7 +57,6 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -84,11 +83,12 @@ public class HiveSourceBuilder {
 
     private final ObjectPath tablePath;
     private final Map<String, String> tableOptions;
-    private final TableSchema fullSchema;
     private final List<String> partitionKeys;
     private final String hiveVersion;
 
-    private int[] projectedFields;
+    private final DataType physicalDataType;
+    @Nullable private int[] projectedFields;
+
     private Long limit;
     private List<HiveTablePartition> partitions;
     private List<String> dynamicFilterPartitionKeys;
@@ -122,8 +122,8 @@ public class HiveSourceBuilder {
         try (HiveMetastoreClientWrapper client =
                 new HiveMetastoreClientWrapper(hiveConf, hiveShim)) {
             Table hiveTable = client.getTable(dbName, tableName);
-            this.fullSchema =
-                    HiveTableUtil.createTableSchema(hiveConf, hiveTable, client, hiveShim);
+            this.physicalDataType =
+                    HiveTableUtil.extractRowType(hiveConf, hiveTable, client, hiveShim);
             this.partitionKeys = HiveCatalog.getFieldNames(hiveTable.getPartitionKeys());
             this.tableOptions = new HashMap<>(hiveTable.getParameters());
             this.tableOptions.putAll(tableOptions);
@@ -150,13 +150,13 @@ public class HiveSourceBuilder {
             @Nonnull ReadableConfig flinkConf,
             @Nonnull ObjectPath tablePath,
             @Nullable String hiveVersion,
-            @Nonnull CatalogTable catalogTable) {
+            @Nonnull ResolvedCatalogTable catalogTable) {
         this.jobConf = jobConf;
         this.flinkConf = flinkConf;
         this.fallbackMappedReader = flinkConf.get(TABLE_EXEC_HIVE_FALLBACK_MAPRED_READER);
         this.tablePath = tablePath;
         this.hiveVersion = hiveVersion == null ? HiveShimLoader.getHiveVersion() : hiveVersion;
-        this.fullSchema = catalogTable.getSchema();
+        this.physicalDataType = catalogTable.getResolvedSchema().toPhysicalRowDataType();
         this.partitionKeys = catalogTable.getPartitionKeys();
         this.tableOptions = catalogTable.getOptions();
         validateScanConfigurations(tableOptions);
@@ -219,8 +219,6 @@ public class HiveSourceBuilder {
                                 HiveShimLoader.loadHiveShim(hiveVersion),
                                 new JobConfWrapper(jobConf),
                                 partitionKeys,
-                                fullSchema.getFieldDataTypes(),
-                                fullSchema.getFieldNames(),
                                 configuration,
                                 defaultPartitionName);
             }
@@ -234,11 +232,18 @@ public class HiveSourceBuilder {
                 continuousSourceSettings == null || partitionKeys.isEmpty()
                         ? DEFAULT_SPLIT_ASSIGNER
                         : SimpleSplitAssigner::new;
+        List<byte[]> hiveTablePartitionBytes = Collections.emptyList();
+        if (partitions != null) {
+            // Serializing the HiveTablePartition list manually at compile time to avoid
+            // deserializing it in TaskManager during runtime. The HiveTablePartition list is no
+            // need for TM.
+            hiveTablePartitionBytes = HivePartitionUtils.serializeHiveTablePartition(partitions);
+        }
+
         return new HiveSource<>(
                 new Path[1],
                 new HiveSourceFileEnumerator.Provider(
-                        partitions != null ? partitions : Collections.emptyList(),
-                        new JobConfWrapper(jobConf)),
+                        hiveTablePartitionBytes, new JobConfWrapper(jobConf)),
                 splitAssigner,
                 bulkFormat,
                 continuousSourceSettings,
@@ -247,7 +252,7 @@ public class HiveSourceBuilder {
                 partitionKeys,
                 hiveVersion,
                 dynamicFilterPartitionKeys,
-                partitions,
+                hiveTablePartitionBytes,
                 fetcher,
                 fetcherContext);
     }
@@ -281,6 +286,16 @@ public class HiveSourceBuilder {
     public HiveSourceBuilder setProjectedFields(int[] projectedFields) {
         this.projectedFields = projectedFields;
         return this;
+    }
+
+    private RowType getProducedRowType() {
+        DataType dataType;
+        if (projectedFields == null) {
+            dataType = physicalDataType;
+        } else {
+            dataType = Projection.of(projectedFields).project(physicalDataType);
+        }
+        return (RowType) dataType.bridgedTo(RowData.class).getLogicalType();
     }
 
     private static void validateScanConfigurations(Map<String, String> configurations) {
@@ -334,34 +349,13 @@ public class HiveSourceBuilder {
                         STREAMING_SOURCE_ENABLE.defaultValue().toString()));
     }
 
-    private RowType getProducedRowType() {
-        TableSchema producedSchema;
-        if (projectedFields == null) {
-            producedSchema = fullSchema;
-        } else {
-            String[] fullNames = fullSchema.getFieldNames();
-            DataType[] fullTypes = fullSchema.getFieldDataTypes();
-            producedSchema =
-                    TableSchema.builder()
-                            .fields(
-                                    Arrays.stream(projectedFields)
-                                            .mapToObj(i -> fullNames[i])
-                                            .toArray(String[]::new),
-                                    Arrays.stream(projectedFields)
-                                            .mapToObj(i -> fullTypes[i])
-                                            .toArray(DataType[]::new))
-                            .build();
-        }
-        return (RowType) producedSchema.toRowDataType().bridgedTo(RowData.class).getLogicalType();
-    }
-
     protected BulkFormat<RowData, HiveSourceSplit> createDefaultBulkFormat() {
         return LimitableBulkFormat.create(
                 new HiveInputFormat(
                         new JobConfWrapper(jobConf),
                         partitionKeys,
-                        fullSchema.getFieldNames(),
-                        fullSchema.getFieldDataTypes(),
+                        DataType.getFieldNames(physicalDataType).toArray(new String[0]),
+                        DataType.getFieldDataTypes(physicalDataType).toArray(new DataType[0]),
                         hiveVersion,
                         getProducedRowType(),
                         fallbackMappedReader),

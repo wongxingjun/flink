@@ -93,13 +93,13 @@ class StreamExecutionEnvironment(object):
     def set_max_parallelism(self, max_parallelism: int) -> 'StreamExecutionEnvironment':
         """
         Sets the maximum degree of parallelism defined for the program. The upper limit (inclusive)
-        is 32767.
+        is 32768.
 
         The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
         defines the number of key groups used for partitioned state.
 
         :param max_parallelism: Maximum degree of parallelism to be used for the program,
-                                with 0 < maxParallelism <= 2^15 - 1.
+                                with 0 < maxParallelism <= 2^15.
         :return: This object.
         """
         self._j_stream_execution_environment = \
@@ -683,11 +683,11 @@ class StreamExecutionEnvironment(object):
         .. note::
 
             Please make sure the uploaded python environment matches the platform that the cluster
-            is running on and that the python version must be 3.6 or higher.
+            is running on and that the python version must be 3.7 or higher.
 
         .. note::
 
-            The python udf worker depends on Apache Beam (version == 2.38.0).
+            The python udf worker depends on Apache Beam (version == 2.43.0).
             Please ensure that the specified environment meets the above requirements.
 
         :param python_exec: The path of python interpreter.

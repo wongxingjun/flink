@@ -1480,6 +1480,56 @@ class Expression(Generic[T]):
         """
         return _binary_op("arrayContains")(self, needle)
 
+    def array_distinct(self) -> 'Expression':
+        """
+        Returns an array with unique elements.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayDistinct")(self)
+
+    def array_position(self, needle) -> 'Expression':
+        """
+        Returns the position of the first occurrence of element in the given array as int.
+
+        Returns 0 if the given value could not be found in the array. Returns null if either of the
+        arguments are null.
+        NOTE: that this is not zero based, but 1-based index. The first element in the array
+        has index 1.
+        """
+        return _binary_op("arrayPosition")(self, needle)
+
+    def array_remove(self, needle) -> 'Expression':
+        """
+        Removes all elements that equal to element from array.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayRemove")(self, needle)
+
+    def array_reverse(self) -> 'Expression':
+        """
+        Returns an array in reverse order.
+        If the array itself is null, the function will return null.
+        """
+        return _binary_op("arrayReverse")(self)
+
+    @property
+    def map_keys(self) -> 'Expression':
+        """
+        Returns the keys of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_values`
+        """
+        return _unary_op("mapKeys")(self)
+
+    @property
+    def map_values(self) -> 'Expression':
+        """
+        Returns the values of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_keys`
+        """
+        return _unary_op("mapValues")(self)
+
     # ---------------------------- time definition functions -----------------------------
 
     @property

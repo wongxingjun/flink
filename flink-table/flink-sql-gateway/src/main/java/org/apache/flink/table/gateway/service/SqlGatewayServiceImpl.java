@@ -102,6 +102,7 @@ public class SqlGatewayServiceImpl implements SqlGatewayService {
                                             .createExecutor()
                                             .configureSession(handle, statement));
             operationManager.awaitOperationTermination(operationHandle);
+            operationManager.closeOperation(operationHandle);
         } catch (Throwable t) {
             LOG.error("Failed to configure session.", t);
             throw new SqlGatewayException("Failed to configure session.", t);
@@ -348,10 +349,10 @@ public class SqlGatewayServiceImpl implements SqlGatewayService {
             OperationManager operationManager = getSession(sessionHandle).getOperationManager();
             OperationHandle operationHandle =
                     operationManager.submitOperation(
-                            () ->
+                            handle ->
                                     getSession(sessionHandle)
                                             .createExecutor()
-                                            .getCompletionHints(statement, position));
+                                            .getCompletionHints(handle, statement, position));
             operationManager.awaitOperationTermination(operationHandle);
 
             ResultSet resultSet =
@@ -361,8 +362,8 @@ public class SqlGatewayServiceImpl implements SqlGatewayService {
                     .map(StringData::toString)
                     .collect(Collectors.toList());
         } catch (Throwable t) {
-            LOG.error("Failed to get statement completion hints.", t);
-            throw new SqlGatewayException("Failed to get statement completion hints.", t);
+            LOG.error("Failed to get statement completion candidates.", t);
+            throw new SqlGatewayException("Failed to get statement completion candidates.", t);
         }
     }
 

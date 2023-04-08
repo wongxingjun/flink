@@ -26,7 +26,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.17-SNAPSHOT</version>
+		<version>1.18-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-architecture-tests</artifactId>
@@ -141,21 +141,7 @@ under the License.
 
 			<dependency>
 				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-aws-base</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
 				<artifactId>flink-connector-files</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-gcp-pubsub</artifactId>
 				<version>${project.version}</version>
 				<scope>test</scope>
 			</dependency>
@@ -190,42 +176,7 @@ under the License.
 
 			<dependency>
 				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-jdbc</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
 				<artifactId>flink-connector-kafka</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-aws-kinesis-streams</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-kinesis</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-pulsar</artifactId>
-				<version>${project.version}</version>
-				<scope>test</scope>
-			</dependency>
-
-			<dependency>
-				<groupId>org.apache.flink</groupId>
-				<artifactId>flink-connector-rabbitmq</artifactId>
 				<version>${project.version}</version>
 				<scope>test</scope>
 			</dependency>

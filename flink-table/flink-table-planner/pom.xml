@@ -23,7 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-table</artifactId>
-		<version>1.17-SNAPSHOT</version>
+		<version>1.18-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-table-planner_${scala.binary.version}</artifactId>
@@ -110,17 +110,6 @@ under the License.
 			<artifactId>checker-qual</artifactId>
 			<version>3.10.0</version>
 		</dependency>
-		<dependency>
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-sql-parser-hive</artifactId>
-			<version>${project.version}</version>
-			<exclusions>
-				<exclusion>
-					<groupId>org.apache.calcite</groupId>
-					<artifactId>calcite-core</artifactId>
-				</exclusion>
-			</exclusions>
-		</dependency>
 
 		<!-- Table Runtime (not included in the uber) -->
 
@@ -140,13 +129,13 @@ under the License.
 			<version>${calcite.version}</version>
 			<exclusions>
 				<!--
-				"mvn dependency:tree" as of Calcite 1.28.0:
+				"mvn dependency:tree" as of Calcite 1.29.0:
 
-				[INFO] +- org.apache.calcite:calcite-core:jar:1.28.0:compile
-				[INFO] |  +- org.apache.calcite:calcite-linq4j:jar:1.28.0:compile
+				[INFO] +- org.apache.calcite:calcite-core:jar:1.29.0:compile
+				[INFO] |  +- org.apache.calcite:calcite-linq4j:jar:1.29.0:compile
 				[INFO] |  +- com.esri.geometry:esri-geometry-api:jar:2.2.0:compile
 				[INFO] |  +- com.fasterxml.jackson.core:jackson-annotations:jar:2.13.4:compile
-				[INFO] |  +- org.apache.calcite.avatica:avatica-core:jar:1.19.0:compile
+				[INFO] |  +- org.apache.calcite.avatica:avatica-core:jar:1.20.0:compile
 				[INFO] |  +- com.fasterxml.jackson.core:jackson-core:jar:2.13.4:compile
 				[INFO] |  +- com.fasterxml.jackson.core:jackson-databind:jar:2.13.4.2:compile
 				[INFO] |  +- com.jayway.jsonpath:json-path:jar:2.4.0:runtime
@@ -356,7 +345,6 @@ under the License.
 					<!-- Base config -->
 					<createDependencyReducedPom>true</createDependencyReducedPom>
 					<keepDependenciesWithProvidedScope>false</keepDependenciesWithProvidedScope>
-					<dependencyReducedPomLocation>${project.basedir}/target/dependency-reduced-pom.xml</dependencyReducedPomLocation>
 					<filters combine.children="append">
 						<filter>
 							<artifact>*:*</artifact>
@@ -392,7 +380,6 @@ under the License.
 
 							<!-- flink-table-planner dependencies -->
 							<include>org.apache.flink:flink-sql-parser</include>
-							<include>org.apache.flink:flink-sql-parser-hive</include>
 						</includes>
 					</artifactSet>
 					<relocations>
@@ -467,8 +454,11 @@ under the License.
 							<includes>
 								<include>**/*ITCase.*</include>
 							</includes>
-							<!-- override reuseForks to true to reduce testing time -->
-							<reuseForks>true</reuseForks>
+							<!-- Setting this property to false is aims to alleviate OOM error
+							mentioned in issue: https://issues.apache.org/jira/browse/FLINK-18356.
+							This property can be removed after the OOM error mentioned in the above
+							issue is solved. -->
+							<reuseForks>false</reuseForks>
 						</configuration>
 					</execution>
 				</executions>

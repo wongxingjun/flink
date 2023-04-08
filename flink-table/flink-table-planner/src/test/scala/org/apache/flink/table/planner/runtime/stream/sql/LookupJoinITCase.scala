@@ -671,7 +671,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
     val sql1 = "SELECT max(id) as id, PROCTIME() as proctime FROM src AS T group by len"
 
     val table1 = tEnv.sqlQuery(sql1)
-    tEnv.registerTable("t1", table1)
+    tEnv.createTemporaryView("t1", table1)
 
     val sql2 = "SELECT t1.id, D.name, D.age FROM t1 LEFT JOIN user_table " +
       "for system_time as of t1.proctime AS D ON t1.id = D.id"
@@ -693,7 +693,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
     val sql1 = "SELECT max(id) as id, PROCTIME() as proctime FROM src AS T group by len"
 
     val table1 = tEnv.sqlQuery(sql1)
-    tEnv.registerTable("t1", table1)
+    tEnv.createTemporaryView("t1", table1)
 
     val sql2 = "SELECT t1.id, D.name, D.age FROM t1 LEFT JOIN user_table " +
       "for system_time as of t1.proctime AS D ON D.id = 3"
@@ -716,7 +716,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
     val sql1 = "SELECT max(id) as id, PROCTIME() as proctime FROM src AS T group by len"
 
     val table1 = tEnv.sqlQuery(sql1)
-    tEnv.registerTable("t1", table1)
+    tEnv.createTemporaryView("t1", table1)
 
     val sql2 = "SELECT t1.id FROM t1 LEFT JOIN user_table " +
       "for system_time as of t1.proctime AS D ON D.id = 3"
@@ -740,7 +740,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
 
   @Test
   def testJoinTemporalTableWithRetry(): Unit = {
-    val maxRetryTwiceHint = getRetryLookupHint("user_table", 2)
+    val maxRetryTwiceHint = getRetryLookupHint("D", 2)
     val sink = new TestingAppendSink
     tEnv
       .sqlQuery(s"""
@@ -759,7 +759,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
 
   @Test
   def testJoinTemporalTableWithLookupThresholdWithInsufficientRetry(): Unit = {
-    val maxRetryOnceHint = getRetryLookupHint("user_table_with_lookup_threshold3", 1)
+    val maxRetryOnceHint = getRetryLookupHint("D", 1)
     val sink = new TestingAppendSink
     tEnv
       .sqlQuery(s"""
@@ -783,7 +783,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
 
   @Test
   def testJoinTemporalTableWithLookupThresholdWithSufficientRetry(): Unit = {
-    val maxRetryTwiceHint = getRetryLookupHint("user_table_with_lookup_threshold2", 2)
+    val maxRetryTwiceHint = getRetryLookupHint("D", 2)
 
     val sink = new TestingAppendSink
     tEnv
@@ -803,7 +803,7 @@ class LookupJoinITCase(legacyTableSource: Boolean, cacheType: LookupCacheType)
   @Test
   def testJoinTemporalTableWithLookupThresholdWithLargerRetry(): Unit = {
     // max times beyond the lookup threshold of 'user_table_with_lookup_threshold2'
-    val largerRetryHint = getRetryLookupHint("user_table_with_lookup_threshold2", 10)
+    val largerRetryHint = getRetryLookupHint("D", 10)
 
     val sink = new TestingAppendSink
     tEnv

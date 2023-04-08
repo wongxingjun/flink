@@ -21,6 +21,7 @@ package org.apache.flink.connectors.hive;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.connector.file.table.PartitionFetcher;
 import org.apache.flink.connector.file.table.PartitionReader;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
@@ -37,6 +38,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
 import org.apache.flink.table.planner.factories.utils.TestCollectionTableFactory;
 import org.apache.flink.table.runtime.typeutils.InternalSerializers;
+import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 
@@ -205,10 +207,16 @@ public class HiveLookupJoinITCase {
                 ObjectIdentifier.of(hiveCatalog.getName(), "default", "partition_table");
         CatalogTable catalogTable =
                 (CatalogTable) hiveCatalog.getTable(tableIdentifier.toObjectPath());
-        GenericRowData reuse = new GenericRowData(catalogTable.getSchema().getFieldCount());
+        GenericRowData reuse =
+                new GenericRowData(catalogTable.getUnresolvedSchema().getColumns().size());
+
         TypeSerializer<RowData> serializer =
                 InternalSerializers.create(
-                        catalogTable.getSchema().toRowDataType().getLogicalType());
+                        DataTypes.ROW(
+                                        catalogTable.getUnresolvedSchema().getColumns().stream()
+                                                .map(HiveTestUtils::getType)
+                                                .toArray(DataType[]::new))
+                                .getLogicalType());
 
         RowData row;
         while ((row = reader.read(reuse)) != null) {
@@ -363,17 +371,18 @@ public class HiveLookupJoinITCase {
         batchEnv.registerCatalog(hiveCatalog.getName(), hiveCatalog);
         batchEnv.useCatalog(hiveCatalog.getName());
         batchEnv.executeSql(
-                        "insert overwrite bounded_table values (1,'a',10),(2,'a',21),(2,'b',22),(3,'c',33)")
+                        "insert overwrite bounded_table values (1,'a',10),(2,'b',22),(3,'c',33)")
                 .await();
         tableEnv.getConfig().setSqlDialect(SqlDialect.DEFAULT);
         TableImpl flinkTable =
                 (TableImpl)
                         tableEnv.sqlQuery(
-                                "select b.x, b.y from "
+                                "select b.x, b.z from "
                                         + " default_catalog.default_database.probe as p "
-                                        + " join bounded_table for system_time as of p.p as b on p.x=b.x and p.y=b.y");
+                                        + " join bounded_table for system_time as of p.p as b on p.x=b.x");
         List<Row> results = CollectionUtil.iteratorToList(flinkTable.execute().collect());
-        assertThat(results.toString()).isEqualTo("[+I[1, a], +I[2, b], +I[3, c]]");
+        assertThat(results.toString())
+                .isEqualTo("[+I[1, 10], +I[1, 10], +I[2, 22], +I[2, 22], +I[3, 33]]");
     }
 
     @Test

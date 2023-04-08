@@ -36,16 +36,18 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
+import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexShuttle;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.rex.RexVisitor;
 import org.apache.calcite.rex.RexVisitorImpl;
+import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.tools.RelBuilder;
-import org.apache.calcite.util.ImmutableBeans;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.ImmutableIntList;
 import org.apache.calcite.util.Util;
+import org.immutables.value.Value;
 
 import javax.annotation.Nullable;
 
@@ -53,9 +55,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static org.apache.calcite.plan.RelOptUtil.conjunctions;
@@ -76,9 +80,23 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         implements TransformationRule {
 
     public static final FlinkFilterIntoJoinRule FILTER_INTO_JOIN =
-            FlinkFilterIntoJoinRule.Config.DEFAULT.toRule();
+            FlinkFilterIntoJoinRule.FlinkFilterIntoJoinRuleConfig.DEFAULT.toRule();
     public static final FlinkJoinConditionPushRule JOIN_CONDITION_PUSH =
-            FlinkJoinConditionPushRule.Config.DEFAULT.toRule();
+            FlinkJoinConditionPushRule.FlinkFilterJoinRuleConfig.DEFAULT.toRule();
+
+    // For left/right join, not all filter conditions support push to another side after deduction.
+    // This set specifies the supported filter conditions.
+    public static final Set<SqlKind> SUITABLE_FILTER_TO_PUSH =
+            new HashSet() {
+                {
+                    add(SqlKind.EQUALS);
+                    add(SqlKind.GREATER_THAN);
+                    add(SqlKind.GREATER_THAN_OR_EQUAL);
+                    add(SqlKind.LESS_THAN);
+                    add(SqlKind.LESS_THAN_OR_EQUAL);
+                    add(SqlKind.NOT_EQUALS);
+                }
+            };
 
     /** Creates a FilterJoinRule. */
     protected FlinkFilterJoinRule(C config) {
@@ -129,10 +147,9 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         if (RelOptUtil.classifyFilters(
                 join,
                 aboveFilters,
-                joinType,
-                true,
-                !joinType.generatesNullsOnLeft(),
-                !joinType.generatesNullsOnRight(),
+                joinType.canPushIntoFromAbove(),
+                joinType.canPushLeftFromAbove(),
+                joinType.canPushRightFromAbove(),
                 joinFilters,
                 leftFilters,
                 rightFilters)) {
@@ -166,17 +183,15 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         // The semantic would change if join condition $2 is pushed into left,
         // that is, the result set may be smaller. The right can not be pushed
         // into for the same reason.
-        if (joinType != JoinRelType.ANTI
-                && RelOptUtil.classifyFilters(
-                        join,
-                        joinFilters,
-                        joinType,
-                        false,
-                        !joinType.generatesNullsOnRight(),
-                        !joinType.generatesNullsOnLeft(),
-                        joinFilters,
-                        leftFilters,
-                        rightFilters)) {
+        if (RelOptUtil.classifyFilters(
+                join,
+                joinFilters,
+                false,
+                joinType.canPushLeftFromWithin(),
+                joinType.canPushRightFromWithin(),
+                joinFilters,
+                leftFilters,
+                rightFilters)) {
             filterPushed = true;
         }
 
@@ -353,7 +368,7 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         for (RexNode filter : filtersToPush) {
             final RelOptUtil.InputFinder inputFinder = RelOptUtil.InputFinder.analyze(filter);
             final ImmutableBitSet inputBits = inputFinder.build();
-            if (filter.isAlwaysTrue()) {
+            if (!isSuitableFilterToPush(filter, joinType)) {
                 continue;
             }
 
@@ -386,6 +401,30 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         }
     }
 
+    private boolean isSuitableFilterToPush(RexNode filter, JoinRelType joinType) {
+        if (filter.isAlwaysTrue()) {
+            return false;
+        }
+        if (joinType == JoinRelType.INNER) {
+            return true;
+        }
+        // For left/right outer join, now, we only support to push special condition in set
+        // SUITABLE_FILTER_TO_PUSH to other side. Take left outer join and IS_NULL condition as an
+        // example, If the join right side contains an IS_NULL filter, while we try to push it to
+        // the join left side and the left side have any other filter on this column, which will
+        // conflict and generate wrong plan.
+        if ((joinType == JoinRelType.LEFT || joinType == JoinRelType.RIGHT)
+                && filter instanceof RexCall) {
+            RexCall rexCall = (RexCall) filter;
+            if (SUITABLE_FILTER_TO_PUSH.contains(rexCall.op.kind)
+                    && (rexCall.getOperands().get(0) instanceof RexLiteral
+                            || rexCall.getOperands().get(1) instanceof RexLiteral)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private RexNode remapFilter(
             ImmutableIntList oldKeys,
             ImmutableIntList newKeys,
@@ -412,9 +451,9 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
 
     /** Rule that pushes parts of the join condition to its inputs. */
     public static class FlinkJoinConditionPushRule
-            extends FlinkFilterJoinRule<FlinkJoinConditionPushRule.Config> {
+            extends FlinkFilterJoinRule<FlinkJoinConditionPushRule.FlinkFilterJoinRuleConfig> {
         /** Creates a JoinConditionPushRule. */
-        protected FlinkJoinConditionPushRule(FlinkJoinConditionPushRule.Config config) {
+        protected FlinkJoinConditionPushRule(FlinkFilterJoinRuleConfig config) {
             super(config);
         }
 
@@ -431,13 +470,16 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         }
 
         /** Rule configuration. */
-        public interface Config extends FlinkFilterJoinRule.Config {
-            FlinkJoinConditionPushRule.Config DEFAULT =
-                    EMPTY.withOperandSupplier(b -> b.operand(Join.class).anyInputs())
-                            .as(FlinkJoinConditionPushRule.Config.class)
-                            .withSmart(true)
-                            .withPredicate((join, joinType, exp) -> true)
-                            .as(FlinkJoinConditionPushRule.Config.class);
+        @Value.Immutable(singleton = false)
+        @Value.Style(
+                get = {"is*", "get*"},
+                init = "with*",
+                defaults = @Value.Immutable(copy = false))
+        public interface FlinkFilterJoinRuleConfig extends FlinkFilterJoinRule.Config {
+            FlinkFilterJoinRuleConfig DEFAULT =
+                    ImmutableFlinkFilterJoinRuleConfig.of((join, joinType, exp) -> true)
+                            .withOperandSupplier(b -> b.operand(Join.class).anyInputs())
+                            .withSmart(true);
 
             @Override
             default FlinkJoinConditionPushRule toRule() {
@@ -450,12 +492,14 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
      * Rule that tries to push filter expressions into a join condition and into the inputs of the
      * join.
      *
+     * <p>Note: It never pushes a filter into an event time temporal join in streaming.
+     *
      * @see CoreRules#FILTER_INTO_JOIN
      */
     public static class FlinkFilterIntoJoinRule
-            extends FlinkFilterJoinRule<FlinkFilterIntoJoinRule.Config> {
-        /** Creates a FlinkFilterIntoJoinRule. */
-        protected FlinkFilterIntoJoinRule(FlinkFilterIntoJoinRule.Config config) {
+            extends FlinkFilterJoinRule<FlinkFilterIntoJoinRule.FlinkFilterIntoJoinRuleConfig> {
+        /** Creates a FilterIntoJoinRule. */
+        protected FlinkFilterIntoJoinRule(FlinkFilterIntoJoinRuleConfig config) {
             super(config);
         }
 
@@ -473,19 +517,22 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
         }
 
         /** Rule configuration. */
-        public interface Config extends FlinkFilterJoinRule.Config {
-            FlinkFilterIntoJoinRule.Config DEFAULT =
-                    EMPTY.withOperandSupplier(
+        @Value.Immutable(singleton = false)
+        @Value.Style(
+                get = {"is*", "get*"},
+                init = "with*",
+                defaults = @Value.Immutable(copy = false))
+        public interface FlinkFilterIntoJoinRuleConfig extends FlinkFilterJoinRule.Config {
+            FlinkFilterIntoJoinRuleConfig DEFAULT =
+                    ImmutableFlinkFilterIntoJoinRuleConfig.of((join, joinType, exp) -> true)
+                            .withOperandSupplier(
                                     b0 ->
                                             b0.operand(Filter.class)
                                                     .oneInput(
                                                             b1 ->
                                                                     b1.operand(Join.class)
                                                                             .anyInputs()))
-                            .as(FlinkFilterIntoJoinRule.Config.class)
-                            .withSmart(true)
-                            .withPredicate((join, joinType, exp) -> true)
-                            .as(FlinkFilterIntoJoinRule.Config.class);
+                            .withSmart(true);
 
             @Override
             default FlinkFilterIntoJoinRule toRule() {
@@ -526,9 +573,10 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
     /** Rule configuration. */
     public interface Config extends RelRule.Config {
         /** Whether to try to strengthen join-type, default false. */
-        @ImmutableBeans.Property
-        @ImmutableBeans.BooleanDefault(false)
-        boolean isSmart();
+        @Value.Default
+        default boolean isSmart() {
+            return false;
+        }
 
         /** Sets {@link #isSmart()}. */
         Config withSmart(boolean smart);
@@ -537,10 +585,10 @@ public abstract class FlinkFilterJoinRule<C extends FlinkFilterJoinRule.Config> 
          * Predicate that returns whether a filter is valid in the ON clause of a join for this
          * particular kind of join. If not, Calcite will push it back to above the join.
          */
-        @ImmutableBeans.Property
+        @Value.Parameter
         Predicate getPredicate();
 
-        /** Sets {@link #getPredicate()} ()}. */
+        /** Sets {@link #getPredicate()}. */
         Config withPredicate(Predicate predicate);
     }
 }

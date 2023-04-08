@@ -18,35 +18,43 @@
 
 package org.apache.flink.table.gateway.service.operation;
 
+import org.apache.flink.core.testutils.CommonTestUtils;
 import org.apache.flink.core.testutils.FlinkAssertions;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.ResultKind;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.gateway.api.operation.OperationHandle;
 import org.apache.flink.table.gateway.api.operation.OperationStatus;
 import org.apache.flink.table.gateway.api.results.ResultSet;
+import org.apache.flink.table.gateway.api.results.ResultSetImpl;
 import org.apache.flink.table.gateway.api.utils.SqlGatewayException;
 import org.apache.flink.table.gateway.api.utils.ThreadUtils;
 import org.apache.flink.table.gateway.service.utils.IgnoreExceptionHandler;
+import org.apache.flink.table.gateway.service.utils.SqlCancelException;
 import org.apache.flink.table.gateway.service.utils.SqlExecutionException;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicReference;
 
+import static org.apache.flink.table.api.internal.StaticResultProvider.SIMPLE_ROW_DATA_TO_STRING_CONVERTER;
 import static org.apache.flink.table.gateway.api.results.ResultSet.ResultType.PAYLOAD;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Test for {@link OperationManager}. */
-public class OperationManagerTest {
+class OperationManagerTest {
 
     private static final ExecutorService EXECUTOR_SERVICE =
             ThreadUtils.newThreadPool(5, 500, 60_0000, "operation-manager-test");
@@ -58,25 +66,33 @@ public class OperationManagerTest {
             new ExecutorThreadFactory(
                     "SqlGatewayService Test Pool", IgnoreExceptionHandler.INSTANCE);
 
-    @BeforeAll
-    public static void setUp() {
+    @BeforeEach
+    void setUp() {
         operationManager = new OperationManager(EXECUTOR_SERVICE);
         defaultResultSet =
-                new ResultSet(
+                new ResultSetImpl(
                         PAYLOAD,
                         1L,
                         ResolvedSchema.of(Column.physical("id", DataTypes.BIGINT())),
-                        Collections.singletonList(GenericRowData.of(1L)));
+                        Collections.singletonList(GenericRowData.of(1L)),
+                        SIMPLE_ROW_DATA_TO_STRING_CONVERTER,
+                        false,
+                        null,
+                        ResultKind.SUCCESS_WITH_CONTENT);
     }
 
-    @AfterAll
-    public static void cleanUp() {
-        EXECUTOR_SERVICE.shutdown();
+    @AfterEach
+    void cleanEach() {
         operationManager.close();
     }
 
+    @AfterAll
+    static void cleanUp() {
+        EXECUTOR_SERVICE.shutdown();
+    }
+
     @Test
-    public void testRunOperationAsynchronously() throws Exception {
+    void testRunOperationAsynchronously() throws Exception {
         OperationHandle operationHandle = operationManager.submitOperation(() -> defaultResultSet);
 
         assertThat(operationManager.getOperationInfo(operationHandle).getStatus())
@@ -90,7 +106,7 @@ public class OperationManagerTest {
     }
 
     @Test
-    public void testRunOperationSynchronously() throws Exception {
+    void testRunOperationSynchronously() throws Exception {
         OperationHandle operationHandle = operationManager.submitOperation(() -> defaultResultSet);
         operationManager.awaitOperationTermination(operationHandle);
 
@@ -102,7 +118,7 @@ public class OperationManagerTest {
     }
 
     @Test
-    public void testCancelOperation() throws Exception {
+    void testCancelOperation() throws Exception {
         CountDownLatch endRunningLatch = new CountDownLatch(1);
         OperationHandle operationHandle =
                 operationManager.submitOperation(
@@ -119,7 +135,58 @@ public class OperationManagerTest {
     }
 
     @Test
-    public void testCloseOperation() throws Exception {
+    void testCancelUninterruptedOperation() throws Exception {
+        AtomicReference<Boolean> isRunning = new AtomicReference<>(false);
+        OperationHandle operationHandle =
+                operationManager.submitOperation(
+                        () -> {
+                            // mock cpu busy task that doesn't interrupt system call
+                            while (true) {
+                                isRunning.compareAndSet(false, true);
+                            }
+                        });
+        CommonTestUtils.waitUtil(
+                isRunning::get, Duration.ofSeconds(10), "Failed to start up the task.");
+        assertThatThrownBy(() -> operationManager.cancelOperation(operationHandle))
+                .satisfies(
+                        FlinkAssertions.anyCauseMatches(
+                                SqlCancelException.class,
+                                String.format(
+                                        "Operation '%s' did not react to \"Future.cancel(true)\" and "
+                                                + "is stuck for %s seconds in method.\n",
+                                        operationHandle, 5)));
+
+        assertThat(operationManager.getOperationInfo(operationHandle).getStatus())
+                .isEqualTo(OperationStatus.CANCELED);
+    }
+
+    @Test
+    void testCloseUninterruptedOperation() throws Exception {
+        AtomicReference<Boolean> isRunning = new AtomicReference<>(false);
+        for (int i = 0; i < 10; i++) {
+            threadFactory
+                    .newThread(
+                            () -> {
+                                operationManager.submitOperation(
+                                        () -> {
+                                            // mock cpu busy task that doesn't interrupt system call
+                                            while (true) {
+                                                isRunning.compareAndSet(false, true);
+                                            }
+                                        });
+                            })
+                    .start();
+        }
+        CommonTestUtils.waitUtil(
+                isRunning::get, Duration.ofSeconds(10), "Failed to start up the task.");
+
+        assertThatThrownBy(() -> operationManager.close())
+                .satisfies(FlinkAssertions.anyCauseMatches(SqlCancelException.class));
+        assertThat(operationManager.getOperationCount()).isEqualTo(0);
+    }
+
+    @Test
+    void testCloseOperation() {
         CountDownLatch endRunningLatch = new CountDownLatch(1);
         OperationHandle operationHandle =
                 operationManager.submitOperation(
@@ -129,9 +196,12 @@ public class OperationManagerTest {
                         });
 
         threadFactory.newThread(() -> operationManager.closeOperation(operationHandle)).start();
-        operationManager.awaitOperationTermination(operationHandle);
 
-        assertThatThrownBy(() -> operationManager.getOperation(operationHandle))
+        assertThatThrownBy(
+                        () -> {
+                            operationManager.awaitOperationTermination(operationHandle);
+                            operationManager.getOperation(operationHandle);
+                        })
                 .satisfies(
                         FlinkAssertions.anyCauseMatches(
                                 SqlGatewayException.class,
@@ -141,7 +211,7 @@ public class OperationManagerTest {
     }
 
     @Test
-    public void testRunOperationSynchronouslyWithError() {
+    void testRunOperationSynchronouslyWithError() {
         OperationHandle operationHandle =
                 operationManager.submitOperation(
                         () -> {

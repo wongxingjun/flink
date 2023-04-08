@@ -30,6 +30,7 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.clusterframework.types.SlotID;
 import org.apache.flink.runtime.heartbeat.HeartbeatServices;
+import org.apache.flink.runtime.heartbeat.HeartbeatServicesImpl;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
 import org.apache.flink.runtime.instance.HardwareDescription;
 import org.apache.flink.runtime.instance.InstanceID;
@@ -45,6 +46,7 @@ import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.registration.RegistrationResponse;
 import org.apache.flink.runtime.resourcemanager.exceptions.ResourceManagerException;
 import org.apache.flink.runtime.resourcemanager.slotmanager.DeclarativeSlotManagerBuilder;
+import org.apache.flink.runtime.resourcemanager.slotmanager.FineGrainedSlotManagerBuilder;
 import org.apache.flink.runtime.resourcemanager.slotmanager.SlotManager;
 import org.apache.flink.runtime.resourcemanager.slotmanager.TestingSlotManagerBuilder;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
@@ -66,6 +68,7 @@ import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ManuallyTriggeredScheduledExecutor;
+import org.apache.flink.util.concurrent.ScheduledExecutor;
 import org.apache.flink.util.function.ThrowingConsumer;
 
 import org.junit.jupiter.api.AfterAll;
@@ -73,6 +76,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -93,12 +98,14 @@ class ResourceManagerTest {
 
     private static final Time TIMEOUT = Time.minutes(2L);
 
-    private static final HeartbeatServices heartbeatServices = new HeartbeatServices(1000L, 10000L);
+    private static final HeartbeatServices heartbeatServices =
+            new HeartbeatServicesImpl(1000L, 10000L);
 
-    private static final HeartbeatServices fastHeartbeatServices = new HeartbeatServices(1L, 1L);
+    private static final HeartbeatServices fastHeartbeatServices =
+            new HeartbeatServicesImpl(1L, 1L);
 
     private static final HeartbeatServices failedRpcEnabledHeartbeatServices =
-            new HeartbeatServices(1L, 10000000L, 1);
+            new HeartbeatServicesImpl(1L, 10000000L, 1);
 
     private static final HardwareDescription hardwareDescription =
             new HardwareDescription(42, 1337L, 1337L, 0L);
@@ -159,12 +166,31 @@ class ResourceManagerTest {
         }
     }
 
+    private enum SlotManagerType {
+        DECLARATIVE,
+        FINE_GRAINED
+    }
+
+    private static SlotManager createSlotManager(SlotManagerType slotManagerType) {
+        return createSlotManager(slotManagerType, rpcService.getScheduledExecutor());
+    }
+
+    private static SlotManager createSlotManager(
+            SlotManagerType slotManagerType, ScheduledExecutor scheduledExecutor) {
+        if (slotManagerType == SlotManagerType.DECLARATIVE) {
+            return DeclarativeSlotManagerBuilder.newBuilder(scheduledExecutor).build();
+        } else {
+            return FineGrainedSlotManagerBuilder.newBuilder(scheduledExecutor).build();
+        }
+    }
+
     /**
      * Tests that we can retrieve the correct {@link TaskManagerInfo} from the {@link
      * ResourceManager}.
      */
-    @Test
-    void testRequestTaskManagerInfo() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testRequestTaskManagerInfo(SlotManagerType slotManagerType) throws Exception {
         final ResourceID taskManagerId = ResourceID.generate();
         final TaskExecutorGateway taskExecutorGateway =
                 new TestingTaskExecutorGatewayBuilder()
@@ -172,7 +198,10 @@ class ResourceManagerTest {
                         .createTestingTaskExecutorGateway();
         rpcService.registerGateway(taskExecutorGateway.getAddress(), taskExecutorGateway);
 
-        resourceManager = new ResourceManagerBuilder().buildAndStart();
+        resourceManager =
+                new ResourceManagerBuilder()
+                        .withSlotManager(createSlotManager(slotManagerType))
+                        .buildAndStart();
         final ResourceManagerGateway resourceManagerGateway =
                 resourceManager.getSelfGateway(ResourceManagerGateway.class);
 
@@ -200,8 +229,9 @@ class ResourceManagerTest {
      * Tests that we can retrieve the correct {@link TaskExecutorGateway} from the {@link
      * ResourceManager}.
      */
-    @Test
-    void testRequestTaskExecutorGateway() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testRequestTaskExecutorGateway(SlotManagerType slotManagerType) throws Exception {
         final ResourceID taskManagerId = ResourceID.generate();
         final TaskExecutorGateway taskExecutorGateway =
                 new TestingTaskExecutorGatewayBuilder()
@@ -209,7 +239,10 @@ class ResourceManagerTest {
                         .createTestingTaskExecutorGateway();
         rpcService.registerGateway(taskExecutorGateway.getAddress(), taskExecutorGateway);
 
-        resourceManager = new ResourceManagerBuilder().buildAndStart();
+        resourceManager =
+                new ResourceManagerBuilder()
+                        .withSlotManager(createSlotManager(slotManagerType))
+                        .buildAndStart();
         final ResourceManagerGateway resourceManagerGateway =
                 resourceManager.getSelfGateway(ResourceManagerGateway.class);
 
@@ -369,8 +402,9 @@ class ResourceManagerTest {
         processRequirementsFuture.get();
     }
 
-    @Test
-    void testHeartbeatTimeoutWithJobMaster() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testHeartbeatTimeoutWithJobMaster(SlotManagerType slotManagerType) throws Exception {
         final CompletableFuture<ResourceID> heartbeatRequestFuture = new CompletableFuture<>();
         final CompletableFuture<ResourceManagerId> disconnectFuture = new CompletableFuture<>();
         final TestingJobMasterGateway jobMasterGateway =
@@ -422,11 +456,14 @@ class ResourceManagerTest {
                                                     .isEqualTo(resourceManagerResourceId),
                                     resourceID -> assertThat(resourceID).isNull());
                     assertThat(disconnectFuture.get()).isEqualTo(resourceManagerId);
-                });
+                },
+                slotManagerType);
     }
 
-    @Test
-    void testJobMasterBecomesUnreachableTriggersDisconnect() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testJobMasterBecomesUnreachableTriggersDisconnect(SlotManagerType slotManagerType)
+            throws Exception {
         final JobID jobId = new JobID();
         final ResourceID jobMasterResourceId = ResourceID.generate();
         final CompletableFuture<ResourceManagerId> disconnectFuture = new CompletableFuture<>();
@@ -469,11 +506,13 @@ class ResourceManagerTest {
                             .isInstanceOf(RegistrationResponse.Success.class);
                 },
                 resourceManagerResourceId ->
-                        assertThat(disconnectFuture.get()).isEqualTo(resourceManagerId));
+                        assertThat(disconnectFuture.get()).isEqualTo(resourceManagerId),
+                slotManagerType);
     }
 
-    @Test
-    void testHeartbeatTimeoutWithTaskExecutor() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testHeartbeatTimeoutWithTaskExecutor(SlotManagerType slotManagerType) throws Exception {
         final ResourceID taskExecutorId = ResourceID.generate();
         final CompletableFuture<ResourceID> heartbeatRequestFuture = new CompletableFuture<>();
         final CompletableFuture<Exception> disconnectFuture = new CompletableFuture<>();
@@ -509,11 +548,14 @@ class ResourceManagerTest {
                                     resourceID -> assertThat(resourceID).isNull());
                     assertThat(disconnectFuture.get()).isInstanceOf(TimeoutException.class);
                     assertThat(stopWorkerFuture.get()).isEqualTo(taskExecutorId);
-                });
+                },
+                slotManagerType);
     }
 
-    @Test
-    void testTaskExecutorBecomesUnreachableTriggersDisconnect() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testTaskExecutorBecomesUnreachableTriggersDisconnect(SlotManagerType slotManagerType)
+            throws Exception {
         final ResourceID taskExecutorId = ResourceID.generate();
         final CompletableFuture<Exception> disconnectFuture = new CompletableFuture<>();
         final CompletableFuture<ResourceID> stopWorkerFuture = new CompletableFuture<>();
@@ -541,21 +583,27 @@ class ResourceManagerTest {
                 resourceManagerResourceId -> {
                     assertThat(disconnectFuture.get()).isInstanceOf(ResourceManagerException.class);
                     assertThat(stopWorkerFuture.get()).isEqualTo(taskExecutorId);
-                });
+                },
+                slotManagerType);
     }
 
-    @Test
-    void testDisconnectJobManagerWithTerminalStatusShouldRemoveJob() throws Exception {
-        testDisconnectJobManager(JobStatus.CANCELED);
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testDisconnectJobManagerWithTerminalStatusShouldRemoveJob(SlotManagerType slotManagerType)
+            throws Exception {
+        testDisconnectJobManager(JobStatus.CANCELED, slotManagerType);
     }
 
-    @Test
-    void testDisconnectJobManagerWithNonTerminalStatusShouldNotRemoveJob() throws Exception {
-        testDisconnectJobManager(JobStatus.FAILING);
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testDisconnectJobManagerWithNonTerminalStatusShouldNotRemoveJob(
+            SlotManagerType slotManagerType) throws Exception {
+        testDisconnectJobManager(JobStatus.FAILING, slotManagerType);
     }
 
-    @Test
-    void testDisconnectTaskManager() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testDisconnectTaskManager(SlotManagerType slotManagerType) throws Exception {
         final ResourceID taskExecutorId = ResourceID.generate();
         final CompletableFuture<Exception> disconnectFuture = new CompletableFuture<>();
         final CompletableFuture<ResourceID> stopWorkerFuture = new CompletableFuture<>();
@@ -569,6 +617,7 @@ class ResourceManagerTest {
         resourceManager =
                 new ResourceManagerBuilder()
                         .withStopWorkerConsumer(stopWorkerFuture::complete)
+                        .withSlotManager(createSlotManager(slotManagerType))
                         .buildAndStart();
 
         registerTaskExecutor(resourceManager, taskExecutorId, taskExecutorGateway.getAddress());
@@ -605,8 +654,10 @@ class ResourceManagerTest {
         triggerRequirementsCheckFuture.get();
     }
 
-    @Test
-    void testNewlyAddedBlockedNodesWillBeSynchronizedToAllRegisteredJobMasters() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testNewlyAddedBlockedNodesWillBeSynchronizedToAllRegisteredJobMasters(
+            SlotManagerType slotManagerType) throws Exception {
         final JobID jobId1 = JobID.generate();
         final JobID jobId2 = JobID.generate();
 
@@ -638,6 +689,7 @@ class ResourceManagerTest {
                         .withJobLeaderIdService(jobLeaderIdService)
                         .withBlocklistHandlerFactory(
                                 new DefaultBlocklistHandler.Factory(Duration.ofMillis(100L)))
+                        .withSlotManager(createSlotManager(slotManagerType))
                         .buildAndStart();
 
         final ResourceManagerGateway resourceManagerGateway =
@@ -666,13 +718,13 @@ class ResourceManagerTest {
         assertThat(receivedBlockedNodes2).containsExactlyInAnyOrder(blockedNode1, blockedNode2);
     }
 
-    @Test
-    void testResourceOverviewWithBlockedSlots() throws Exception {
+    @ParameterizedTest
+    @EnumSource(SlotManagerType.class)
+    void testResourceOverviewWithBlockedSlots(SlotManagerType slotManagerType) throws Exception {
         ManuallyTriggeredScheduledExecutor executor = new ManuallyTriggeredScheduledExecutor();
-        final SlotManager slotManager = DeclarativeSlotManagerBuilder.newBuilder(executor).build();
         resourceManager =
                 new ResourceManagerBuilder()
-                        .withSlotManager(slotManager)
+                        .withSlotManager(createSlotManager(slotManagerType, executor))
                         .withBlocklistHandlerFactory(
                                 new DefaultBlocklistHandler.Factory(Duration.ofMillis(100L)))
                         .buildAndStart();
@@ -784,7 +836,8 @@ class ResourceManagerTest {
                 .get();
     }
 
-    private void testDisconnectJobManager(JobStatus jobStatus) throws Exception {
+    private void testDisconnectJobManager(JobStatus jobStatus, SlotManagerType slotManagerType)
+            throws Exception {
         final TestingJobMasterGateway jobMasterGateway =
                 new TestingJobMasterGatewayBuilder()
                         .setAddress(UUID.randomUUID().toString())
@@ -802,6 +855,7 @@ class ResourceManagerTest {
         resourceManager =
                 new ResourceManagerBuilder()
                         .withJobLeaderIdService(jobLeaderIdService)
+                        .withSlotManager(createSlotManager(slotManagerType))
                         .buildAndStart();
 
         highAvailabilityServices.setJobMasterLeaderRetrieverFunction(
@@ -839,11 +893,16 @@ class ResourceManagerTest {
     private void runHeartbeatTimeoutTest(
             Consumer<ResourceManagerBuilder> prepareResourceManager,
             ThrowingConsumer<ResourceManagerGateway, Exception> registerComponentAtResourceManager,
-            ThrowingConsumer<ResourceID, Exception> verifyHeartbeatTimeout)
+            ThrowingConsumer<ResourceID, Exception> verifyHeartbeatTimeout,
+            SlotManagerType slotManagerType)
             throws Exception {
         final ResourceManagerBuilder rmBuilder = new ResourceManagerBuilder();
         prepareResourceManager.accept(rmBuilder);
-        resourceManager = rmBuilder.withHeartbeatServices(fastHeartbeatServices).buildAndStart();
+        resourceManager =
+                rmBuilder
+                        .withHeartbeatServices(fastHeartbeatServices)
+                        .withSlotManager(createSlotManager(slotManagerType))
+                        .buildAndStart();
         final ResourceManagerGateway resourceManagerGateway =
                 resourceManager.getSelfGateway(ResourceManagerGateway.class);
 
@@ -854,12 +913,16 @@ class ResourceManagerTest {
     private void runHeartbeatTargetBecomesUnreachableTest(
             Consumer<ResourceManagerBuilder> prepareResourceManager,
             ThrowingConsumer<ResourceManagerGateway, Exception> registerComponentAtResourceManager,
-            ThrowingConsumer<ResourceID, Exception> verifyHeartbeatTimeout)
+            ThrowingConsumer<ResourceID, Exception> verifyHeartbeatTimeout,
+            SlotManagerType slotManagerType)
             throws Exception {
         final ResourceManagerBuilder rmBuilder = new ResourceManagerBuilder();
         prepareResourceManager.accept(rmBuilder);
         resourceManager =
-                rmBuilder.withHeartbeatServices(failedRpcEnabledHeartbeatServices).buildAndStart();
+                rmBuilder
+                        .withHeartbeatServices(failedRpcEnabledHeartbeatServices)
+                        .withSlotManager(createSlotManager(slotManagerType))
+                        .buildAndStart();
         final ResourceManagerGateway resourceManagerGateway =
                 resourceManager.getSelfGateway(ResourceManagerGateway.class);
 
@@ -926,7 +989,7 @@ class ResourceManagerTest {
 
             if (slotManager == null) {
                 slotManager =
-                        DeclarativeSlotManagerBuilder.newBuilder(rpcService.getScheduledExecutor())
+                        FineGrainedSlotManagerBuilder.newBuilder(rpcService.getScheduledExecutor())
                                 .build();
             }
 

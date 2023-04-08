@@ -51,6 +51,7 @@ import org.apache.flink.api.java.typeutils.MissingTypeInfo;
 import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
+import org.apache.flink.configuration.BatchExecutionOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
@@ -148,7 +149,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 @Public
 public class StreamExecutionEnvironment implements AutoCloseable {
 
-    private static final List<CollectResultIterator<?>> collectIterators = new ArrayList<>();
+    private final List<CollectResultIterator<?>> collectIterators = new ArrayList<>();
 
     @Internal
     public void registerCollectIterator(CollectResultIterator<?> iterator) {
@@ -352,13 +353,13 @@ public class StreamExecutionEnvironment implements AutoCloseable {
 
     /**
      * Sets the maximum degree of parallelism defined for the program. The upper limit (inclusive)
-     * is Short.MAX_VALUE.
+     * is Short.MAX_VALUE + 1.
      *
      * <p>The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
      * defines the number of key groups used for partitioned state.
      *
      * @param maxParallelism Maximum degree of parallelism to be used for the program., with {@code
-     *     0 < maxParallelism <= 2^15 - 1}.
+     *     0 < maxParallelism <= 2^15}.
      */
     public StreamExecutionEnvironment setMaxParallelism(int maxParallelism) {
         Preconditions.checkArgument(
@@ -1042,6 +1043,14 @@ public class StreamExecutionEnvironment implements AutoCloseable {
         configuration
                 .getOptional(PipelineOptions.JARS)
                 .ifPresent(jars -> this.configuration.set(PipelineOptions.JARS, jars));
+
+        configuration
+                .getOptional(BatchExecutionOptions.ADAPTIVE_AUTO_PARALLELISM_ENABLED)
+                .ifPresent(
+                        flag ->
+                                this.configuration.set(
+                                        BatchExecutionOptions.ADAPTIVE_AUTO_PARALLELISM_ENABLED,
+                                        flag));
 
         config.configure(configuration, classLoader);
         checkpointCfg.configure(configuration);

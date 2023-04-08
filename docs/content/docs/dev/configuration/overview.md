@@ -60,7 +60,7 @@ You can create a project based on an [Archetype](https://maven.apache.org/guides
 with the Maven command below or use the provided quickstart bash script.
 
 {{< hint warning >}}
-All Flink Scala APIs are deprecated and will be removed in a future Flink version version. You can still build your application in Scala, but you should move to the Java version of either the DataStream and/or Table API.
+All Flink Scala APIs are deprecated and will be removed in a future Flink version. You can still build your application in Scala, but you should move to the Java version of either the DataStream and/or Table API.
 
 See <a href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-265+Deprecate+and+remove+Scala+API+support">FLIP-265 Deprecate and remove Scala API support</a>
 {{< /hint >}}
@@ -224,7 +224,7 @@ Just include them in your build tool script/descriptor, and you can start develo
 
 ## Running and packaging
 
-If you want to run your job by simply executing the main class, you will need `flink-runtime` in your classpath.
+If you want to run your job by simply executing the main class, you will need `flink-clients` in your classpath.
 In case of Table API programs, you will also need `flink-table-runtime` and `flink-table-planner-loader`.
 
 As a rule of thumb, we **suggest** packaging the application code and all its required dependencies into one fat/uber JAR.

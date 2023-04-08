@@ -18,12 +18,13 @@
 
 package org.apache.flink.connectors.hive;
 
-import org.apache.flink.sql.parser.hive.ddl.SqlCreateHiveTable;
 import org.apache.flink.table.HiveVersionTestUtil;
+import org.apache.flink.table.api.ResultKind;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableException;
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.internal.TableEnvironmentImpl;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
@@ -89,6 +90,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
+import static org.apache.flink.table.catalog.hive.util.Constants.TABLE_LOCATION_URI;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -223,8 +225,7 @@ public class HiveDialectITCase {
         assertThat(hiveTable.getPartitionKeysSize()).isEqualTo(1);
         assertThat(locationPath(hiveTable.getSd().getLocation())).isEqualTo(location);
         assertThat(hiveTable.getParameters().get("k1")).isEqualTo("v1");
-        assertThat(hiveTable.getParameters())
-                .doesNotContainKey(SqlCreateHiveTable.TABLE_LOCATION_URI);
+        assertThat(hiveTable.getParameters()).doesNotContainKey(TABLE_LOCATION_URI);
 
         tableEnv.executeSql("create table tbl2 (s struct<ts:timestamp,bin:binary>) stored as orc");
         hiveTable = hiveCatalog.getHiveTable(new ObjectPath("default", "tbl2"));
@@ -308,16 +309,18 @@ public class HiveDialectITCase {
                         + "constraint pk_name primary key (x) disable rely)");
         CatalogTable catalogTable =
                 (CatalogTable) hiveCatalog.getTable(new ObjectPath("default", "tbl"));
-        TableSchema tableSchema = catalogTable.getSchema();
-        assertThat(tableSchema.getPrimaryKey()).as("PK not present").isPresent();
-        assertThat(tableSchema.getPrimaryKey().get().getName()).isEqualTo("pk_name");
-        assertThat(tableSchema.getFieldDataTypes()[0].getLogicalType().isNullable())
+        Schema schema = catalogTable.getUnresolvedSchema();
+        assertThat(schema.getPrimaryKey()).as("PK not present").isPresent();
+        assertThat(schema.getPrimaryKey().get().getColumnNames().size()).isEqualTo(1);
+        assertThat(schema.getPrimaryKey().get().getConstraintName()).isEqualTo("pk_name");
+        List<Schema.UnresolvedColumn> columns = schema.getColumns();
+        assertThat(HiveTestUtils.getType(columns.get(0)).getLogicalType().isNullable())
                 .as("PK cannot be null")
                 .isFalse();
-        assertThat(tableSchema.getFieldDataTypes()[1].getLogicalType().isNullable())
+        assertThat(HiveTestUtils.getType(columns.get(1)).getLogicalType().isNullable())
                 .as("RELY NOT NULL should be reflected in schema")
                 .isFalse();
-        assertThat(tableSchema.getFieldDataTypes()[2].getLogicalType().isNullable())
+        assertThat(HiveTestUtils.getType(columns.get(2)).getLogicalType().isNullable())
                 .as("NORELY NOT NULL shouldn't be reflected in schema")
                 .isTrue();
     }
@@ -370,7 +373,7 @@ public class HiveDialectITCase {
         assertThat(results.toString())
                 .isEqualTo(
                         "[+I[1, 0, static], +I[1, 1, a], +I[2, 0, static], +I[2, 1, b], +I[3, 0, static], +I[3, 1, c]]");
-        tableEnv.executeSql("insert overwrite dest2 partition (p1,p2) select 1,x,y from src")
+        tableEnv.executeSql("insert overwrite table dest2 partition (p1,p2) select 1,x,y from src")
                 .await();
         results = queryResult(tableEnv.sqlQuery("select * from dest2 order by x,p1,p2"));
         assertThat(results.toString())
@@ -388,11 +391,29 @@ public class HiveDialectITCase {
         // test table partitioned by decimal type
         tableEnv.executeSql(
                 "create table dest3 (key int, value string) partitioned by (p1 decimal(5, 2)) ");
-        tableEnv.executeSql("insert overwrite dest3 partition (p1) select 1,y,100.45 from src")
+        tableEnv.executeSql(
+                        "insert overwrite table dest3 partition (p1) select 1,y,100.45 from src")
                 .await();
         results = queryResult(tableEnv.sqlQuery("select * from dest3"));
         assertThat(results.toString())
                 .isEqualTo("[+I[1, a, 100.45], +I[1, b, 100.45], +I[1, c, 100.45]]");
+    }
+
+    @Test
+    public void testInsertOverwrite() throws Exception {
+        tableEnv.executeSql("create table T1(a int, b string)");
+        tableEnv.executeSql("insert into T1 values(1, 'v1')").await();
+        tableEnv.executeSql("create table T2(a int, b string) partitioned by (dt string)");
+        tableEnv.executeSql(
+                        "insert overwrite table default.T2 partition (dt = '2023-01-01') select * from default.T1")
+                .await();
+        List<Row> rows = queryResult(tableEnv.sqlQuery("select * from T2"));
+        assertThat(rows.toString()).isEqualTo("[+I[1, v1, 2023-01-01]]");
+        tableEnv.executeSql(
+                        "insert overwrite table default.T2 partition (dt = '2023-01-01') select * from default.T1")
+                .await();
+        rows = queryResult(tableEnv.sqlQuery("select * from T2"));
+        assertThat(rows.toString()).isEqualTo("[+I[1, v1, 2023-01-01]]");
     }
 
     @Test
@@ -1194,10 +1215,11 @@ public class HiveDialectITCase {
                                 "default.t1"));
 
         // show hive table
+        TableResult showCreateTableT2 = tableEnv.executeSql("show create table t2");
+        assertThat(showCreateTableT2.getResultKind()).isEqualTo(ResultKind.SUCCESS_WITH_CONTENT);
         String actualResult =
                 (String)
-                        CollectionUtil.iteratorToList(
-                                        tableEnv.executeSql("show create table t2").collect())
+                        CollectionUtil.iteratorToList(showCreateTableT2.collect())
                                 .get(0)
                                 .getField(0);
         Table table = hiveCatalog.getHiveTable(new ObjectPath("default", "t2"));
@@ -1247,12 +1269,16 @@ public class HiveDialectITCase {
                 "create table t3(a decimal(10, 2), b double, c float) partitioned by (d date)");
 
         // desc non-hive table
-        List<Row> result = CollectionUtil.iteratorToList(tableEnv.executeSql("desc t1").collect());
+        TableResult descT1 = tableEnv.executeSql("desc t1");
+        assertThat(descT1.getResultKind()).isEqualTo(ResultKind.SUCCESS_WITH_CONTENT);
+        List<Row> result = CollectionUtil.iteratorToList(descT1.collect());
         assertThat(result.toString())
                 .isEqualTo(
                         "[+I[id, BIGINT, true, null, null, null], +I[name, STRING, true, null, null, null]]");
         // desc hive table
-        result = CollectionUtil.iteratorToList(tableEnv.executeSql("desc t2").collect());
+        TableResult descT2 = tableEnv.executeSql("desc t2");
+        assertThat(descT2.getResultKind()).isEqualTo(ResultKind.SUCCESS_WITH_CONTENT);
+        result = CollectionUtil.iteratorToList(descT2.collect());
         assertThat(result.toString())
                 .isEqualTo("[+I[a, int, ], +I[b, string, ], +I[c, boolean, ]]");
         result = CollectionUtil.iteratorToList(tableEnv.executeSql("desc default.t3").collect());

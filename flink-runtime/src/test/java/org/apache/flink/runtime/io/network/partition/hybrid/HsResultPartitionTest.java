@@ -24,6 +24,7 @@ import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.core.testutils.CheckedThread;
 import org.apache.flink.runtime.event.AbstractEvent;
 import org.apache.flink.runtime.executiongraph.IOMetrics;
+import org.apache.flink.runtime.executiongraph.ResultPartitionBytes;
 import org.apache.flink.runtime.io.disk.BatchShuffleReadBufferPool;
 import org.apache.flink.runtime.io.disk.FileChannelManager;
 import org.apache.flink.runtime.io.disk.FileChannelManagerImpl;
@@ -44,6 +45,7 @@ import org.apache.flink.runtime.io.network.partition.ResultSubpartitionView;
 import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,8 +62,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Queue;
 import java.util.Random;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
@@ -99,7 +102,17 @@ class HsResultPartitionTest {
                 new FileChannelManagerImpl(new String[] {tempDataPath.toString()}, "testing");
         globalPool = new NetworkBufferPool(totalBuffers, bufferSize);
         readBufferPool = new BatchShuffleReadBufferPool(totalBytes, bufferSize);
-        readIOExecutor = Executors.newScheduledThreadPool(numThreads);
+        readIOExecutor =
+                new ScheduledThreadPoolExecutor(
+                        numThreads,
+                        new ExecutorThreadFactory("test-io-scheduler-thread"),
+                        (ignored, executor) -> {
+                            if (executor.isShutdown()) {
+                                // ignore rejected as shutdown.
+                            } else {
+                                throw new RejectedExecutionException();
+                            }
+                        });
     }
 
     @AfterEach
@@ -439,9 +452,11 @@ class HsResultPartitionTest {
             assertThat(taskIOMetricGroup.getNumBytesOutCounter().getCount())
                     .isEqualTo(3 * bufferSize);
             IOMetrics ioMetrics = taskIOMetricGroup.createSnapshot();
-            assertThat(ioMetrics.getNumBytesProducedOfPartitions())
-                    .hasSize(1)
-                    .containsValue((long) 2 * bufferSize);
+            assertThat(ioMetrics.getResultPartitionBytes()).hasSize(1);
+            ResultPartitionBytes partitionBytes =
+                    ioMetrics.getResultPartitionBytes().values().iterator().next();
+            assertThat(partitionBytes.getSubpartitionBytes())
+                    .containsExactly((long) 2 * bufferSize, (long) bufferSize);
         }
     }
 
@@ -498,9 +513,11 @@ class HsResultPartitionTest {
             assertThat(taskIOMetricGroup.getNumBuffersOutCounter().getCount()).isEqualTo(1);
             assertThat(taskIOMetricGroup.getNumBytesOutCounter().getCount()).isEqualTo(bufferSize);
             IOMetrics ioMetrics = taskIOMetricGroup.createSnapshot();
-            assertThat(ioMetrics.getNumBytesProducedOfPartitions())
-                    .hasSize(1)
-                    .containsValue((long) bufferSize);
+            assertThat(ioMetrics.getResultPartitionBytes()).hasSize(1);
+            ResultPartitionBytes partitionBytes =
+                    ioMetrics.getResultPartitionBytes().values().iterator().next();
+            assertThat(partitionBytes.getSubpartitionBytes())
+                    .containsExactly((long) bufferSize, (long) bufferSize);
         }
     }
 

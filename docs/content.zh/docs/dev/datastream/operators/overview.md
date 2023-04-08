@@ -209,7 +209,9 @@ dataStream
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
-Python 中尚不支持此特性。
+```python
+data_stream.key_by(lambda x: x[1]).window(TumblingEventTimeWindows.of(Time.seconds(5)))
+```
 {{< /tab >}}
 {{< /tabs>}}
 
@@ -236,7 +238,9 @@ dataStream
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
-Python 中尚不支持此特性。
+```python
+data_stream.window_all(TumblingEventTimeWindows.of(Time.seconds(5)))
+```
 {{< /tab >}}
 {{< /tabs>}}
 
@@ -289,7 +293,30 @@ allWindowedStream.apply { AllWindowFunction }
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
-Python 中尚不支持此特性。
+```python
+class MyWindowFunction(WindowFunction[tuple, int, int, TimeWindow]):
+
+    def apply(self, key: int, window: TimeWindow, inputs: Iterable[tuple]) -> Iterable[int]:
+        sum = 0
+        for input in inputs:
+            sum += input[1]
+        yield sum
+
+
+class MyAllWindowFunction(AllWindowFunction[tuple, int, TimeWindow]):
+
+    def apply(self, window: TimeWindow, inputs: Iterable[tuple]) -> Iterable[int]:
+        sum = 0
+        for input in inputs:
+            sum += input[1]
+        yield sum
+
+
+windowed_stream.apply(MyWindowFunction())
+
+# 在 non-keyed 窗口流上应用 AllWindowFunction
+all_windowed_stream.apply(MyAllWindowFunction())
+```
 {{< /tab >}}
 {{< /tabs>}}
 
@@ -314,7 +341,15 @@ windowedStream.reduce { _ + _ }
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
-Python 中尚不支持此特性。
+```python
+class MyReduceFunction(ReduceFunction):
+
+    def reduce(self, value1, value2):
+        return value1[0], value1[1] + value2[1]
+
+
+windowed_stream.reduce(MyReduceFunction())
+```
 {{< /tab >}}
 {{< /tabs>}}
 
@@ -834,7 +869,7 @@ some_stream.filter(...).name("filter").set_description("x in (1, 2, 3, 4) and y 
 节点的描述默认是按照一个多行的树形结构来构建的，用户可以通过把`pipeline.vertex-description-mode`设为`CASCADING`, 实现将描述改为老版本的单行递归模式。
 
 Flink SQL框架生成的算子默认会有一个由算子的类型以及id构成的名字，以及一个带有详细信息的描述。
-用户可以通过将`table.optimizer.simplify-operator-name-enabled`设为`false`，将名字改为和以前的版本一样的详细描述。
+用户可以通过将`table.exec.simplify-operator-name-enabled`设为`false`，将名字改为和以前的版本一样的详细描述。
 
 当一个作业的拓扑很复杂时，用户可以把`pipeline.vertex-name-include-index-prefix`设为`true`，在节点的名字前增加一个拓扑序的前缀，这样就可以很容易根据指标以及日志的信息快速找到拓扑图中对应节点。
 

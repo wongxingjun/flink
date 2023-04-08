@@ -26,6 +26,7 @@ import org.apache.flink.streaming.api.scala.DataStream
 import org.apache.flink.table.api.{Types, _}
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.api.internal.TableEnvironmentInternal
+import org.apache.flink.table.planner.factories.TestValuesTableFactory
 import org.apache.flink.table.planner.factories.TestValuesTableFactory.{changelogRow, registerData}
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.VarSumAggFunction
 import org.apache.flink.table.planner.runtime.batch.sql.agg.{MyPojoAggFunction, VarArgsAggFunction}
@@ -77,7 +78,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((3, 3))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val t1 = tEnv.sqlQuery(
       "select sum(a), avg(a), min(a), count(a), count(1) from T where a > 9999 group by b")
@@ -96,7 +97,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((3, 3))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
     tEnv.registerFunction("pojoFunc", MyToPojoFunc)
 
     val t1 =
@@ -117,7 +118,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((3, 3))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val t1 =
       tEnv.sqlQuery("select sum(a), avg(a), min(a), count(a), count(1) from T where a > 9999")
@@ -140,7 +141,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((3, 3))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val t1 = tEnv.sqlQuery("select sum(a), avg(a), min(a), count(a), count(1) from T")
     val sink = new TestingRetractSink
@@ -162,7 +163,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
         "GROUP BY b"
 
     val t = failingDataSource(TestData.tupleData3).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val result = tEnv.sqlQuery(sqlQuery).toRetractStream[Row]
     val sink = new TestingRetractSink
@@ -321,7 +322,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     // 5, 2
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sql =
       """
@@ -357,7 +358,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
       }
     }
     val t = failingDataSource(Random.shuffle(data)).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val distincts = for (i <- 0 until 100) yield {
       s"count(distinct a) filter (where b = $i)"
@@ -401,7 +402,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((17, 5L, "B"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
     tEnv.createTemporarySystemFunction("CntNullNonNull", new CountNullNonNull)
     val t1 = tEnv.sqlQuery("SELECT b, count(*), CntNullNonNull(DISTINCT c)  FROM T GROUP BY b")
 
@@ -434,7 +435,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     env.setParallelism(1)
 
     t = failingDataSource(data).toTable(tEnv, 'a)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     t = tEnv.sqlQuery("select sum(cast(a as decimal(32, 8))) from T")
     sink = new TestingRetractSink
@@ -548,7 +549,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     env.setParallelism(1)
 
     t = failingDataSource(data).toTable(tEnv, 'a)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     t = tEnv.sqlQuery("select avg(cast(a as decimal(32, 8))) from T")
     sink = new TestingRetractSink
@@ -578,7 +579,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((12, 5L, "B"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
     val t1 = tEnv.sqlQuery("SELECT b, count(c), sum(a) FROM T GROUP BY b")
 
     val sink = new TestingRetractSink
@@ -605,7 +606,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((12, 5L, "B"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
     val sql =
       s"""
          |select
@@ -643,7 +644,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((12, 5L, "B"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sql =
       """
@@ -668,7 +669,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
   @Test
   def testUnboundedGroupBy(): Unit = {
     val t = failingDataSource(TestData.tupleData3).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT b, COUNT(a) FROM MyTable GROUP BY b"
 
@@ -686,7 +687,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
       .assignTimestampsAndWatermarks(
         new TimestampAndWatermarkWithOffset[(Long, Int, Int, String, Long)](0L))
       .toTable(tEnv, 'rowtime.rowtime, 'a, 'c, 'd, 'e)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val innerSql =
       """
@@ -716,7 +717,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
 
     val t: DataStream[(String, String)] = failingDataSource(dataWithNull)
     val streamTable = t.toTable(tEnv, 'x, 'y)
-    tEnv.registerTable("T", streamTable)
+    tEnv.createTemporaryView("T", streamTable)
 
     tEnv.executeSql("""
                       |CREATE VIEW view1 AS
@@ -758,7 +759,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
 
     val t: DataStream[(Int, Int, String)] = failingDataSource(dataWithNull)
     val streamTable = t.toTable(tEnv, 'id, 'len, 'content)
-    tEnv.registerTable("T", streamTable)
+    tEnv.createTemporaryView("T", streamTable)
 
     val sqlQuery =
       s"""
@@ -779,7 +780,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
 
     val t: DataStream[(Int, Int, String)] = failingDataSource(dataWithNull)
     val streamTable = t.toTable(tEnv, 'id, 'len, 'content)
-    tEnv.registerTable("T", streamTable)
+    tEnv.createTemporaryView("T", streamTable)
 
     val sqlQuery =
       s"""
@@ -808,7 +809,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((8, 4L, "EF"))
     data.+=((8, 4L, null))
     val sqlQuery = "SELECT b, LISTAGG(DISTINCT c, '#') FROM MyTable GROUP BY b"
-    tEnv.registerTable("MyTable", failingDataSource(data).toTable(tEnv).as("a", "b", "c"))
+    tEnv.createTemporaryView("MyTable", failingDataSource(data).toTable(tEnv).as("a", "b", "c"))
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink).setParallelism(1)
     env.execute()
@@ -821,7 +822,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     val sqlQuery = "SELECT b, COLLECT(a) FROM MyTable GROUP BY b"
 
     val t = failingDataSource(TestData.tupleData3).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink)
@@ -851,7 +852,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
       (5, 3, List(18, "42.6"))
     )
 
-    tEnv.registerTable("MyTable", failingDataSource(data).toTable(tEnv, 'a, 'b, 'c))
+    tEnv.createTemporaryView("MyTable", failingDataSource(data).toTable(tEnv, 'a, 'b, 'c))
 
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink)
@@ -888,8 +889,8 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((12, 5L, "B"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T1", t)
-    tEnv.registerTable("T2", t)
+    tEnv.createTemporaryView("T1", t)
+    tEnv.createTemporaryView("T2", t)
     val t1 = tEnv.sqlQuery("SELECT * FROM T2 WHERE T2.a < (SELECT count(*) * 0.3 FROM T1)")
 
     val sink = new TestingRetractSink
@@ -901,7 +902,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
 
     // test single value for char type
     val tc = tEnv.fromValues(DataTypes.ROW(DataTypes.FIELD("a", DataTypes.CHAR(3))), Row.of("AA"))
-    tEnv.registerTable("tc", tc)
+    tEnv.createTemporaryView("tc", tc)
     val tr = tEnv.sqlQuery("SELECT * FROM tc WHERE tc.a = (SELECT a FROM tc)")
     val sink1 = new TestingRetractSink
     tr.toRetractStream[Row].addSink(sink1).setParallelism(1)
@@ -914,7 +915,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     val data = Seq((1, new MyPojo(5, 105)), (1, new MyPojo(6, 11)), (1, new MyPojo(7, 12)))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
     tEnv.registerFunction("pojoFunc", new MyPojoAggFunction)
     tEnv.registerFunction("pojoToInt", MyPojoFunc)
 
@@ -938,7 +939,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
 
     val rowType = new RowTypeInfo(BigDecimalTypeInfo.of(7, 2))
     val t = failingDataSource(data)(rowType).toTable(tEnv, 'd)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sql =
       """
@@ -1084,9 +1085,9 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     )
 
     val t1 = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
     val t2 = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T2", t2)
+    tEnv.createTemporaryView("T2", t2)
 
     val sql =
       """
@@ -1111,7 +1112,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     val data = List((1, 1L, "5", "3"), (1, 22L, "15", "13"), (3, 33L, "25", "23"))
 
     val t = failingDataSource(data).toTable(tEnv, 'id, 's, 's1, 's2)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
     tEnv.createTemporarySystemFunction("func", classOf[VarArgsAggFunction])
 
     val sql = "SELECT func(s, s1, s2) FROM MyTable"
@@ -1128,7 +1129,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     val data = List((1, 1L, "5", "3"), (1, 22L, "15", "13"), (3, 33L, "25", "23"))
 
     val t = failingDataSource(data).toTable(tEnv, 'id, 's, 's1, 's2)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
     tEnv.createTemporarySystemFunction("func", classOf[VarArgsAggFunction])
 
     val sink = new TestingRetractSink
@@ -1156,7 +1157,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((10, 4L, "IJ"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sql =
       """
@@ -1184,7 +1185,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     }
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sql =
       """
@@ -1224,7 +1225,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((2, 3L, "D", true))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c, 'd)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
     // test declarative and imperative aggregates
     val sql =
       """
@@ -1264,7 +1265,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
 
     val rowType = new RowTypeInfo(BigDecimalTypeInfo.of(7, 2))
     val t = failingDataSource(data)(rowType).toTable(tEnv, 'a)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sql =
       """
@@ -1290,11 +1291,11 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
       (4, 3, (14, "45.2136")),
       (5, 3, (18, "42.6"))
     )
-    tEnv.registerTable("src", env.fromCollection(data).toTable(tEnv, 'a, 'b, 'c))
+    tEnv.createTemporaryView("src", env.fromCollection(data).toTable(tEnv, 'a, 'b, 'c))
 
     val sql = "SELECT a, b, COLLECT(c) as `set` FROM src GROUP BY a, b"
     val view1 = tEnv.sqlQuery(sql)
-    tEnv.registerTable("v1", view1)
+    tEnv.createTemporaryView("v1", view1)
 
     tEnv.createTemporarySystemFunction("toCompObj", ToCompositeObj)
     tEnv.createTemporarySystemFunction("anyToString", AnyToStringFunction)
@@ -1347,7 +1348,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     }
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink)
@@ -1368,7 +1369,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     }
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink)
@@ -1390,7 +1391,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((11000, 1L, "Hello"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink)
@@ -1408,7 +1409,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     val data = Seq[(Int, Int)]((1, 1), (2, 2))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sink = new TestingRetractSink
     tEnv.sqlQuery(sqlQuery).toRetractStream[Row].addSink(sink)
@@ -1424,7 +1425,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     val data = (0 until 100).map(i => ("1", "1", s"${i % 50}", "1")).toList
     // use BinaryRowData source here for StringData reuse
     val t = failingBinaryRowSource(data).toTable(tEnv, 'a, 'b, 'c, 'd)
-    tEnv.registerTable("src", t)
+    tEnv.createTemporaryView("src", t)
 
     val sql =
       s"""
@@ -1459,7 +1460,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
   @Test
   def testDistinctWithMultiFilter(): Unit = {
     val t = failingDataSource(TestData.tupleData3).toTable(tEnv).as("a", "b", "c")
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery =
       s"""
@@ -1496,7 +1497,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((3, 2L, "Hello world"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val t1 = tEnv.sqlQuery(
       "select a from (select b, max(a) as a, count(*), max(c) as c from T group by b) T1")
@@ -1532,7 +1533,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     data.+=((5, 3L, "C"))
 
     val t = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val tableSink = new TestingUpsertTableSink(Array(0))
       .configure(Array[String]("c", "bMax"), Array[TypeInformation[_]](Types.STRING, Types.LONG))
@@ -1627,7 +1628,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     )
     val tableA = failingDataSource(empsData)
       .toTable(tEnv, 'empno, 'name, 'deptno, 'gender, 'city, 'empid, 'age, 'slacker, 'manager)
-    tEnv.registerTable("emps", tableA)
+    tEnv.createTemporaryView("emps", tableA)
     val sql =
       s"""
          |select
@@ -1663,7 +1664,7 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
     )
     val tableA = failingDataSource(empsData)
       .toTable(tEnv, 'empno, 'name, 'deptno, 'gender, 'city, 'empid, 'age, 'slacker, 'manager)
-    tEnv.registerTable("emps", tableA)
+    tEnv.createTemporaryView("emps", tableA)
     val sql =
       s"""
          |select
@@ -1739,6 +1740,29 @@ class AggregateITCase(aggMode: AggMode, miniBatch: MiniBatchMode, backend: State
       "2,2",
       "5,1"
     )
+    assertEquals(expected.sorted, sink.getRetractResults.sorted)
+  }
+
+  @Test
+  def testCountStar(): Unit = {
+    val data =
+      List(rowOf(2L, 15, "Hello"), rowOf(8L, 11, "Hello world"), rowOf(9L, 12, "Hello world!"))
+    val dataId = TestValuesTableFactory.registerData(data)
+    tEnv.executeSql(s"""
+                       |CREATE TABLE src(
+                       |  `id` BIGINT,
+                       |  `len` INT,
+                       |  `content` STRING,
+                       |  `proctime` AS PROCTIME()
+                       |) WITH (
+                       |  'connector' = 'values',
+                       |  'data-id' = '$dataId'
+                       |)
+                       |""".stripMargin)
+    val sink = new TestingRetractSink
+    tEnv.sqlQuery("select count(*) from src").toRetractStream[Row].addSink(sink).setParallelism(1)
+    env.execute()
+    val expected = List("3")
     assertEquals(expected.sorted, sink.getRetractResults.sorted)
   }
 }

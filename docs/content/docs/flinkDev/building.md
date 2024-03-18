@@ -35,8 +35,6 @@ In order to build Flink you need the source code. Either [download the source of
 
 In addition you need **Maven 3** and a **JDK** (Java Development Kit). Flink requires **Java 8 (deprecated) or Java 11** to build.
 
-*NOTE: Maven 3.3.x can build Flink, but will not properly shade away certain dependencies. Maven 3.2.5 creates the libraries properly.*
-
 To clone from git, enter:
 
 ```bash
@@ -74,11 +72,11 @@ The `fast` and `skip-webui-build` profiles have a significant impact on the buil
 
     If you want to build a PyFlink package that can be used for pip installation, you need to build the Flink project first, as described in [Build Flink](#build-flink).
 
-2. Python version(3.7, 3.8, 3.9 or 3.10) is required
+2. Python version(3.8, 3.9, 3.10 or 3.11) is required
 
     ```shell
     $ python --version
-    # the version printed here must be 3.7, 3.8, 3.9 or 3.10
+    # the version printed here must be 3.8, 3.9, 3.10 or 3.11
     ```
 
 3. Build PyFlink with Cython extension support (optional)
@@ -115,39 +113,6 @@ The sdist and wheel packages of `apache-flink` will be found under `./flink-pyth
 python -m pip install dist/*.whl
 ```
 
-## Dependency Shading
-
-Flink [shades away](https://maven.apache.org/plugins/maven-shade-plugin/) some of the libraries it uses, in order to avoid version clashes with user programs that use different versions of these libraries. Among the shaded libraries are *Google Guava*, *Asm*, *Apache Curator*, *Apache HTTP Components*, *Netty*, and others.
-
-The dependency shading mechanism was recently changed in Maven and requires users to build Flink slightly differently, depending on their Maven version:
-
-**Maven and 3.2.x**
-It is sufficient to call `mvn clean install -DskipTests` in the root directory of Flink code base.
-
-**Maven 3.3.x**
-The build has to be done in two steps: First in the base directory, then in shaded modules, such as the distribution and the filesystems:
-
-```bash
-# build overall project
-mvn clean install -DskipTests
-
-# build shaded modules used in dist again, for example:
-cd flink-filesystems/flink-s3-fs-presto/
-mvn clean install -DskipTests
-# ... and other modules
-
-# build dist again to include shaded modules
-cd flink-dist
-mvn clean install
-```
-
-*Note:* To check your Maven version, run `mvn --version`.
-
-*Note:* We recommend using the latest Maven 3.2.x version for building production-grade Flink distributions, as this is the version the Flink developers are using for the official releases and testing.
-
-{{< top >}}
-
-
 ## Scala Versions
 
 {{< hint info >}}
@@ -160,7 +125,7 @@ Since version 1.15 Flink dropped the support of Scala 2.11 and it will use Scala
 
 To build against a specific binary Scala version you can use:
 ```bash
-mvn clean install -DskipTests -Dscala-2.12 -Dscala.version=<scala version>
+mvn clean install -DskipTests -Dscala.version=<scala version>
 ```
 
 

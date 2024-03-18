@@ -19,12 +19,13 @@
 package org.apache.flink.test.recovery;
 
 import org.apache.flink.api.common.time.Time;
-import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.blocklist.BlocklistUtils;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
@@ -52,6 +53,7 @@ import org.apache.flink.test.util.TestProcessBuilder;
 import org.apache.flink.util.ConfigurationException;
 import org.apache.flink.util.TestLoggerExtension;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.Logger;
@@ -67,7 +69,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.runtime.testutils.CommonTestUtils.getJavaCommandPath;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.fail;
 
 /** This test ensures the TaskManager disconnects from the ResourceManager on shutdown. */
 @ExtendWith(TestLoggerExtension.class)
@@ -79,25 +80,27 @@ public class TaskManagerDisconnectOnShutdownITCase {
     @Test
     public void testTaskManagerProcessFailure() {
         Configuration config = new Configuration();
-        config.setString(JobManagerOptions.ADDRESS, "localhost");
+        config.set(JobManagerOptions.ADDRESS, "localhost");
+        config.set(JobManagerOptions.PORT, 0);
+        config.set(RestOptions.BIND_PORT, "0");
 
         // disable heartbeats
         config.set(HeartbeatManagerOptions.HEARTBEAT_RPC_FAILURE_THRESHOLD, -1);
-        config.setInteger(TaskManagerOptions.NUM_TASK_SLOTS, 2);
+        config.set(TaskManagerOptions.NUM_TASK_SLOTS, 2);
 
         config.set(TaskManagerOptions.MANAGED_MEMORY_SIZE, MemorySize.parse("4m"));
         config.set(TaskManagerOptions.NETWORK_MEMORY_MIN, MemorySize.parse("3200k"));
         config.set(TaskManagerOptions.NETWORK_MEMORY_MAX, MemorySize.parse("3200k"));
         config.set(TaskManagerOptions.TASK_HEAP_MEMORY, MemorySize.parse("128m"));
         config.set(TaskManagerOptions.CPU_CORES, 1.0);
-        config.setString(JobManagerOptions.EXECUTION_FAILOVER_STRATEGY, "full");
+        config.set(JobManagerOptions.EXECUTION_FAILOVER_STRATEGY, "full");
         config.set(JobManagerOptions.RESOURCE_WAIT_TIMEOUT, Duration.ofSeconds(30L));
 
         // check that we run this test only if the java command
         // is available on this machine
         String javaCommand = getJavaCommandPath();
         if (javaCommand == null) {
-            fail("cannot find java executable");
+            Assertions.fail("cannot find java executable");
         }
 
         final TaskManagerConnectionTracker tracker = new TaskManagerConnectionTracker();
@@ -116,9 +119,11 @@ public class TaskManagerDisconnectOnShutdownITCase {
                 }) {
             clusterEntrypoint.startCluster();
 
+            final Configuration taskManagerConfig = new Configuration(config);
+            taskManagerConfig.set(JobManagerOptions.PORT, clusterEntrypoint.getRpcPort());
             TestProcessBuilder taskManagerProcessBuilder =
                     new TestProcessBuilder(TaskExecutorProcessEntryPoint.class.getName());
-            taskManagerProcessBuilder.addConfigAsMainClassArgs(config);
+            taskManagerProcessBuilder.addConfigAsMainClassArgs(taskManagerConfig);
 
             // start the TaskManager processes
             taskManagerProcess = taskManagerProcessBuilder.start();
@@ -133,7 +138,7 @@ public class TaskManagerDisconnectOnShutdownITCase {
             assertThat(tracker.getNumberOfConnectedTaskManager()).isEqualTo(1);
         } catch (Throwable t) {
             printProcessLog(taskManagerProcess);
-            fail(t.getMessage());
+            Assertions.fail(t.getMessage());
         } finally {
             if (taskManagerProcess != null && taskManagerProcess.getProcess().isAlive()) {
                 LOG.error("TaskManager did not shutdown in time.");
@@ -202,7 +207,7 @@ public class TaskManagerDisconnectOnShutdownITCase {
                     fatalErrorHandler,
                     resourceManagerMetricGroup,
                     standaloneClusterStartupPeriodTime,
-                    Time.fromDuration(configuration.get(AkkaOptions.ASK_TIMEOUT_DURATION)),
+                    Time.fromDuration(configuration.get(RpcOptions.ASK_TIMEOUT_DURATION)),
                     ioExecutor) {
 
                 @Override
@@ -234,7 +239,7 @@ public class TaskManagerDisconnectOnShutdownITCase {
                 createResourceManagerRuntimeServicesConfiguration(Configuration configuration)
                         throws ConfigurationException {
             return ResourceManagerRuntimeServicesConfiguration.fromConfiguration(
-                    StandaloneResourceManagerFactory.getConfigurationWithoutMaxSlotNumberIfSet(
+                    StandaloneResourceManagerFactory.getConfigurationWithoutResourceLimitationIfSet(
                             configuration),
                     ArbitraryWorkerResourceSpecFactory.INSTANCE);
         }

@@ -547,12 +547,12 @@ class FlinkDDLDataTypeTest {
         private final SqlParser.Config parserConfig;
 
         TestFactory() {
-            this(DEFAULT_OPTIONS, MockCatalogReaderSimple::new, SqlValidatorUtil::newValidator);
+            this(DEFAULT_OPTIONS, MockCatalogReaderSimple::create, SqlValidatorUtil::newValidator);
         }
 
         TestFactory(
                 Map<String, Object> options,
-                SqlTestFactory.MockCatalogReaderFactory catalogReaderFactory,
+                SqlTestFactory.CatalogReaderFactory catalogReaderFactory,
                 SqlTestFactory.ValidatorFactory validatorFactory) {
             this.options = options;
             this.validatorFactory = validatorFactory;
@@ -560,7 +560,7 @@ class FlinkDDLDataTypeTest {
                     createOperatorTable((SqlOperatorTable) options.get("operatorTable"));
             this.typeFactory = createTypeFactory((SqlConformance) options.get("conformance"));
             Boolean caseSensitive = (Boolean) options.get("caseSensitive");
-            this.catalogReader = catalogReaderFactory.create(typeFactory, caseSensitive).init();
+            this.catalogReader = catalogReaderFactory.create(typeFactory, caseSensitive);
             this.parserConfig = createParserConfig(options);
         }
 
@@ -589,13 +589,13 @@ class FlinkDDLDataTypeTest {
                     catalogReader,
                     typeFactory,
                     SqlValidator.Config.DEFAULT
-                            .withSqlConformance(conformance)
+                            .withConformance(conformance)
                             .withTypeCoercionEnabled(enableTypeCoercion));
         }
 
         private static SqlOperatorTable createOperatorTable(SqlOperatorTable opTab0) {
-            MockSqlOperatorTable opTab = new MockSqlOperatorTable(opTab0);
-            MockSqlOperatorTable.addRamp(opTab);
+            MockSqlOperatorTable opTab = MockSqlOperatorTable.of(opTab0);
+            opTab.extend();
             return opTab;
         }
 

@@ -20,6 +20,7 @@ package org.apache.flink.table.planner.functions;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.types.Row;
 import org.apache.flink.util.CollectionUtil;
 
 import java.math.BigDecimal;
@@ -46,6 +47,7 @@ import static org.apache.flink.table.api.DataTypes.TIME;
 import static org.apache.flink.table.api.DataTypes.TIMESTAMP;
 import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.api.Expressions.call;
+import static org.apache.flink.table.api.Expressions.lit;
 import static org.apache.flink.table.api.Expressions.map;
 import static org.apache.flink.table.api.Expressions.mapFromArrays;
 import static org.apache.flink.util.CollectionUtil.entry;
@@ -65,6 +67,17 @@ public class MapFunctionITCase extends BuiltInFunctionTestBase {
 
     @Override
     Stream<TestSetSpec> getTestSetSpecs() {
+        return Stream.of(
+                        mapTestCases(),
+                        mapKeysTestCases(),
+                        mapValuesTestCases(),
+                        mapEntriesTestCases(),
+                        mapFromArraysTestCases(),
+                        mapUnionTestCases())
+                .flatMap(s -> s);
+    }
+
+    private Stream<TestSetSpec> mapTestCases() {
         return Stream.of(
                 TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP)
                         .onFieldsWithData(
@@ -208,7 +221,11 @@ public class MapFunctionITCase extends BuiltInFunctionTestBase {
                                         DataTypes.MAP(
                                                         STRING().notNull(),
                                                         INTERVAL(MONTH()).nullable())
-                                                .notNull())),
+                                                .notNull())));
+    }
+
+    private Stream<TestSetSpec> mapKeysTestCases() {
+        return Stream.of(
                 TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_KEYS)
                         .onFieldsWithData(
                                 null,
@@ -240,7 +257,11 @@ public class MapFunctionITCase extends BuiltInFunctionTestBase {
                                 $("f3").mapKeys(),
                                 "MAP_KEYS(f3)",
                                 new Integer[][] {new Integer[] {1, 2}},
-                                DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.INT()))),
+                                DataTypes.ARRAY(DataTypes.ARRAY(DataTypes.INT()))));
+    }
+
+    private Stream<TestSetSpec> mapValuesTestCases() {
+        return Stream.of(
                 TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_VALUES)
                         .onFieldsWithData(
                                 null,
@@ -276,7 +297,65 @@ public class MapFunctionITCase extends BuiltInFunctionTestBase {
                                 "MAP_VALUES(f3)",
                                 new Map[] {Collections.singletonMap(true, "value2")},
                                 DataTypes.ARRAY(
-                                        DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING()))),
+                                        DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING()))));
+    }
+
+    private Stream<TestSetSpec> mapEntriesTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_ENTRIES)
+                        .onFieldsWithData(
+                                null,
+                                "item",
+                                Collections.singletonMap(1, "value1"),
+                                Collections.singletonMap(
+                                        3, Collections.singletonMap(true, "value2")))
+                        .andDataTypes(
+                                DataTypes.BOOLEAN().nullable(),
+                                DataTypes.STRING(),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.STRING()),
+                                DataTypes.MAP(
+                                        DataTypes.INT(),
+                                        DataTypes.MAP(DataTypes.BOOLEAN(), DataTypes.STRING())))
+                        .testTableApiValidationError(
+                                call("MAP_ENTRIES", $("f0"), $("f1")),
+                                "Invalid function call:\nMAP_ENTRIES(BOOLEAN, STRING)")
+                        .testResult(
+                                map(
+                                                $("f0").cast(DataTypes.BOOLEAN()),
+                                                $("f1").cast(DataTypes.STRING()))
+                                        .mapEntries(),
+                                "MAP_ENTRIES(MAP[CAST(f0 AS BOOLEAN), CAST(f1 AS STRING)])",
+                                new Row[] {Row.of(null, "item")},
+                                DataTypes.ARRAY(
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("key", DataTypes.BOOLEAN()),
+                                                        DataTypes.FIELD(
+                                                                "value", DataTypes.STRING())))
+                                        .notNull())
+                        .testResult(
+                                $("f2").mapEntries(),
+                                "MAP_ENTRIES(f2)",
+                                new Row[] {Row.of(1, "value1")},
+                                DataTypes.ARRAY(
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("key", DataTypes.INT()),
+                                                DataTypes.FIELD("value", DataTypes.STRING()))))
+                        .testResult(
+                                $("f3").mapEntries(),
+                                "MAP_ENTRIES(f3)",
+                                new Row[] {Row.of(3, Collections.singletonMap(true, "value2"))},
+                                DataTypes.ARRAY(
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("key", DataTypes.INT()),
+                                                DataTypes.FIELD(
+                                                        "value",
+                                                        DataTypes.MAP(
+                                                                DataTypes.BOOLEAN(),
+                                                                DataTypes.STRING()))))));
+    }
+
+    private Stream<TestSetSpec> mapFromArraysTestCases() {
+        return Stream.of(
                 TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_FROM_ARRAYS, "Invalid input")
                         .onFieldsWithData(null, null, new Integer[] {1}, new Integer[] {1, 2})
                         .andDataTypes(
@@ -318,5 +397,201 @@ public class MapFunctionITCase extends BuiltInFunctionTestBase {
                                         entry("two", new Integer[] {3, 4})),
                                 DataTypes.MAP(
                                         DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT()))));
+    }
+
+    private Stream<TestSetSpec> mapUnionTestCases() {
+        return Stream.of(
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.MAP_UNION)
+                        .onFieldsWithData(
+                                null,
+                                "item",
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {1, 2}),
+                                        entry("two", new Integer[] {3, 4})),
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {2, 2}),
+                                        entry("two", new Integer[] {8, 4})),
+                                CollectionUtil.map(
+                                        entry(2, new Integer[] {1, 2}),
+                                        entry(7, new Integer[] {3, 4})),
+                                CollectionUtil.map(entry("one", 2), entry("two", 5)),
+                                new Integer[] {1, 2, 3, 4, 5, null},
+                                new String[] {"1", "3", "5", "7", "9", null},
+                                null,
+                                CollectionUtil.map(entry(1, 2)),
+                                CollectionUtil.map(
+                                        entry(1, 3),
+                                        entry(2, 4),
+                                        entry(lit(null, DataTypes.INT()), 3)),
+                                lit(null, DataTypes.MAP(DataTypes.INT(), DataTypes.INT())))
+                        .andDataTypes(
+                                DataTypes.BOOLEAN().nullable(),
+                                DataTypes.STRING(),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.ARRAY(DataTypes.INT())),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.INT()),
+                                DataTypes.ARRAY(DataTypes.INT()),
+                                DataTypes.ARRAY(DataTypes.STRING()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f10").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(lit(null, DataTypes.INT()), 8))),
+                                "MAP_UNION(f10, MAP[CAST(NULL AS INT), 8])",
+                                CollectionUtil.map(entry(1, 3), entry(2, 4), entry(null, 8)),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f9").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(lit(null, DataTypes.INT()), 3))),
+                                "MAP_UNION(f9, MAP[CAST(NULL AS INT), 3])",
+                                CollectionUtil.map(entry(null, 3), entry(1, 2)),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f8").mapUnion(
+                                                lit(
+                                                        null,
+                                                        DataTypes.MAP(
+                                                                DataTypes.INT(), DataTypes.INT()))),
+                                "MAP_UNION(f8, CAST(NULL AS MAP<INT, INT>))",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f9").mapUnion(
+                                                lit(
+                                                        null,
+                                                        DataTypes.MAP(
+                                                                DataTypes.INT(), DataTypes.INT()))),
+                                "MAP_UNION(f9, CAST(NULL AS MAP<INT, INT>))",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f11").mapUnion(CollectionUtil.map(entry(1, 2))),
+                                "MAP_UNION(f11, MAP[1, 2])",
+                                null,
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.INT()))
+                        .testResult(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("one", new Integer[] {2, 2}),
+                                                        entry("two", new Integer[] {8, 4}),
+                                                        entry("three", new Integer[] {1, 2}))),
+                                "MAP_UNION(f2, MAP['one', ARRAY[2,2], 'two', ARRAY[8, 4], 'three', ARRAY[1, 2]])",
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {2, 2}),
+                                        entry("two", new Integer[] {8, 4}),
+                                        entry("three", new Integer[] {1, 2})),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())))
+                        .testResult(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("one", new Integer[] {2, 2}),
+                                                        entry("two", new Integer[] {8, 4}),
+                                                        entry("three", new Integer[] {1, 2})),
+                                                CollectionUtil.map(
+                                                        entry("one", new Integer[] {2, 9}),
+                                                        entry("four", new Integer[] {8, 4}),
+                                                        entry("five", new Integer[] {1, 2}))),
+                                "MAP_UNION(f2, MAP['one', ARRAY[2,2], 'two', ARRAY[8, 4], 'three', ARRAY[1, 2]], MAP['one', ARRAY[2,9], 'four', ARRAY[8, 4], 'five', ARRAY[1, 2]])",
+                                CollectionUtil.map(
+                                        entry("one", new Integer[] {2, 9}),
+                                        entry("two", new Integer[] {8, 4}),
+                                        entry("three", new Integer[] {1, 2}),
+                                        entry("four", new Integer[] {8, 4}),
+                                        entry("five", new Integer[] {1, 2})),
+                                DataTypes.MAP(DataTypes.STRING(), DataTypes.ARRAY(DataTypes.INT())))
+                        .testResult(
+                                $("f4").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "MAP_UNION(f4, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                CollectionUtil.map(
+                                        entry(1, new Integer[] {2, 2}),
+                                        entry(2, new Integer[] {8, 4}),
+                                        entry(3, new Integer[] {1, 2}),
+                                        entry(7, new Integer[] {3, 4})),
+                                DataTypes.MAP(DataTypes.INT(), DataTypes.ARRAY(DataTypes.INT())))
+                        .testTableApiValidationError(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "Invalid function call:\n"
+                                        + "MAP_UNION(MAP<STRING, ARRAY<INT>>, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f2, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                "SQL validation failed. Invalid function call:\n"
+                                        + "MAP_UNION(MAP<STRING, ARRAY<INT>>, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testTableApiValidationError(
+                                $("f0").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "Invalid function call:\n"
+                                        + "MAP_UNION(BOOLEAN, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f0, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                "SQL validation failed. Invalid function call:\n"
+                                        + "MAP_UNION(BOOLEAN, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testTableApiValidationError(
+                                $("f1").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry(1, new Integer[] {2, 2}),
+                                                        entry(2, new Integer[] {8, 4}),
+                                                        entry(3, new Integer[] {1, 2}))),
+                                "Invalid function call:\n"
+                                        + "MAP_UNION(STRING, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f1, MAP[1, ARRAY[2,2], 2, ARRAY[8, 4], 3, ARRAY[1, 2]])",
+                                "SQL validation failed. Invalid function call:\n"
+                                        + "MAP_UNION(STRING, MAP<INT NOT NULL, ARRAY<INT NOT NULL> NOT NULL> NOT NULL)")
+                        .testTableApiValidationError(
+                                $("f2").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("1", 1),
+                                                        entry("2", 2),
+                                                        entry("3", 3))),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f2, MAP['1', 1, '2', 2, '3', 3])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testTableApiValidationError(
+                                $("f5").mapUnion(new String[] {"123"}),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f5, ARRAY['123'])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testTableApiValidationError(
+                                $("f6").mapUnion(
+                                                CollectionUtil.map(
+                                                        entry("1", 1),
+                                                        entry("2", 2),
+                                                        entry("3", 3))),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f6, MAP['1', 1, '2', 2, '3', 3])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testTableApiValidationError(
+                                $("f7").mapUnion(new Integer[] {1, 2, 3, 4}),
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)")
+                        .testSqlValidationError(
+                                "MAP_UNION(f7, ARRAY[1, 2, 3, 4])",
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "MAP_UNION(<COMMON>, <COMMON>...)"));
     }
 }

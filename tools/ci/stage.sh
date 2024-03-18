@@ -21,12 +21,10 @@ STAGE_COMPILE="compile"
 STAGE_CORE="core"
 STAGE_PYTHON="python"
 STAGE_TABLE="table"
-STAGE_CONNECTORS_1="connect_1"
-STAGE_CONNECTORS_2="connect_2"
+STAGE_CONNECTORS="connect"
 STAGE_TESTS="tests"
 STAGE_MISC="misc"
 STAGE_CLEANUP="cleanup"
-STAGE_FINEGRAINED_RESOURCE_MANAGEMENT="finegrained_resource_management"
 
 MODULES_CORE="\
 flink-annotations,\
@@ -85,7 +83,7 @@ flink-table/flink-table-code-splitter,\
 flink-table/flink-table-test-utils,\
 "
 
-MODULES_CONNECTORS_1="\
+MODULES_CONNECTORS="\
 flink-contrib/flink-connector-wikiedits,\
 flink-filesystems,\
 flink-filesystems/flink-azure-fs-hadoop,\
@@ -114,11 +112,6 @@ flink-formats/flink-orc,\
 flink-formats/flink-sql-orc,\
 flink-formats/flink-orc-nohive,\
 flink-connectors/flink-file-sink-common,\
-flink-connectors/flink-connector-hbase-base,\
-flink-connectors/flink-connector-hbase-1.4,\
-flink-connectors/flink-sql-connector-hbase-1.4,\
-flink-connectors/flink-connector-hbase-2.2,\
-flink-connectors/flink-sql-connector-hbase-2.2,\
 flink-connectors/flink-hadoop-compatibility,\
 flink-connectors,\
 flink-connectors/flink-connector-files,\
@@ -130,20 +123,10 @@ flink-metrics/flink-metrics-prometheus,\
 flink-metrics/flink-metrics-statsd,\
 flink-metrics/flink-metrics-datadog,\
 flink-metrics/flink-metrics-slf4j,\
-"
-
-MODULES_CONNECTORS_2="\
 flink-connectors/flink-connector-base,\
-flink-connectors/flink-connector-kafka,\
-flink-connectors/flink-sql-connector-kafka,\
 "
 
 MODULES_TESTS="\
-flink-tests,\
-"
-
-MODULES_FINEGRAINED_RESOURCE_MANAGEMENT="\
-flink-runtime,\
 flink-tests,\
 "
 
@@ -157,11 +140,8 @@ function get_compile_modules_for_stage() {
         (${STAGE_TABLE})
             echo "-pl $MODULES_TABLE -am"
         ;;
-        (${STAGE_CONNECTORS_1})
-            echo "-pl $MODULES_CONNECTORS_1 -am"
-        ;;
-        (${STAGE_CONNECTORS_2})
-            echo "-pl $MODULES_CONNECTORS_2 -am"
+        (${STAGE_CONNECTORS})
+            echo "-pl $MODULES_CONNECTORS -am"
         ;;
         (${STAGE_TESTS})
             echo "-pl $MODULES_TESTS -am"
@@ -175,9 +155,6 @@ function get_compile_modules_for_stage() {
             # compile everything for PyFlink.
             echo ""
         ;;
-        (${STAGE_FINEGRAINED_RESOURCE_MANAGEMENT})
-            echo "-pl $MODULES_FINEGRAINED_RESOURCE_MANAGEMENT -am"
-        ;;
     esac
 }
 
@@ -186,16 +163,13 @@ function get_test_modules_for_stage() {
 
     local modules_core=$MODULES_CORE
     local modules_table=$MODULES_TABLE
-    local modules_connectors_2=$MODULES_CONNECTORS_2
-    local modules_connectors_1=$MODULES_CONNECTORS_1
+    local modules_connectors=$MODULES_CONNECTORS
     local modules_tests=$MODULES_TESTS
     local negated_core=\!${MODULES_CORE//,/,\!}
     local negated_table=\!${MODULES_TABLE//,/,\!}
-    local negated_connectors_2=\!${MODULES_CONNECTORS_2//,/,\!}
-    local negated_connectors_1=\!${MODULES_CONNECTORS_1//,/,\!}
+    local negated_connectors=\!${MODULES_CONNECTORS//,/,\!}
     local negated_tests=\!${MODULES_TESTS//,/,\!}
-    local modules_misc="$negated_core,$negated_table,$negated_connectors_1,$negated_connectors_2,$negated_tests"
-    local modules_finegrained_resource_management=$MODULES_FINEGRAINED_RESOURCE_MANAGEMENT
+    local modules_misc="$negated_core,$negated_table,$negated_connectors,$negated_tests"
 
     case ${stage} in
         (${STAGE_CORE})
@@ -204,20 +178,14 @@ function get_test_modules_for_stage() {
         (${STAGE_TABLE})
             echo "-pl $modules_table"
         ;;
-        (${STAGE_CONNECTORS_1})
-            echo "-pl $modules_connectors_1"
-        ;;
-        (${STAGE_CONNECTORS_2})
-            echo "-pl $modules_connectors_2"
+        (${STAGE_CONNECTORS})
+            echo "-pl $modules_connectors"
         ;;
         (${STAGE_TESTS})
             echo "-pl $modules_tests"
         ;;
         (${STAGE_MISC})
             echo "-pl $modules_misc"
-        ;;
-        (${STAGE_FINEGRAINED_RESOURCE_MANAGEMENT})
-            echo "-pl $modules_finegrained_resource_management"
         ;;
     esac
 }

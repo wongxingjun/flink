@@ -27,11 +27,8 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Optional;
-import java.util.Set;
 
 /**
  * This class implements a {@link SlotSelectionStrategy} that is based on previous allocations and
@@ -51,8 +48,7 @@ public class PreviousAllocationSlotSelectionStrategy implements SlotSelectionStr
 
     @Override
     public Optional<SlotInfoAndLocality> selectBestSlotForProfile(
-            @Nonnull Collection<SlotInfoAndResources> availableSlots,
-            @Nonnull SlotProfile slotProfile) {
+            @Nonnull FreeSlotInfoTracker freeSlotInfoTracker, @Nonnull SlotProfile slotProfile) {
 
         LOG.debug("Select best slot for profile {}.", slotProfile);
 
@@ -60,40 +56,21 @@ public class PreviousAllocationSlotSelectionStrategy implements SlotSelectionStr
 
         // First, if there was a prior allocation try to schedule to the same/old slot
         if (!priorAllocations.isEmpty()) {
-            for (SlotInfoAndResources availableSlot : availableSlots) {
-                if (priorAllocations.contains(availableSlot.getSlotInfo().getAllocationId())) {
+            for (AllocationID availableSlot : freeSlotInfoTracker.getAvailableSlots()) {
+                if (priorAllocations.contains(availableSlot)) {
                     return Optional.of(
-                            SlotInfoAndLocality.of(availableSlot.getSlotInfo(), Locality.LOCAL));
+                            SlotInfoAndLocality.of(
+                                    freeSlotInfoTracker.getSlotInfo(availableSlot),
+                                    Locality.LOCAL));
                 }
             }
         }
 
         // Second, select based on location preference, excluding blacklisted allocations
-        Set<AllocationID> blackListedAllocations = slotProfile.getReservedAllocations();
-        Collection<SlotInfoAndResources> availableAndAllowedSlots =
-                computeWithoutBlacklistedSlots(availableSlots, blackListedAllocations);
         return fallbackSlotSelectionStrategy.selectBestSlotForProfile(
-                availableAndAllowedSlots, slotProfile);
-    }
-
-    @Nonnull
-    private Collection<SlotInfoAndResources> computeWithoutBlacklistedSlots(
-            @Nonnull Collection<SlotInfoAndResources> availableSlots,
-            @Nonnull Set<AllocationID> blacklistedAllocations) {
-
-        if (blacklistedAllocations.isEmpty()) {
-            return Collections.unmodifiableCollection(availableSlots);
-        }
-
-        ArrayList<SlotInfoAndResources> availableAndAllowedSlots =
-                new ArrayList<>(availableSlots.size());
-        for (SlotInfoAndResources availableSlot : availableSlots) {
-            if (!blacklistedAllocations.contains(availableSlot.getSlotInfo().getAllocationId())) {
-                availableAndAllowedSlots.add(availableSlot);
-            }
-        }
-
-        return availableAndAllowedSlots;
+                freeSlotInfoTracker.createNewFreeSlotInfoTrackerWithoutBlockedSlots(
+                        slotProfile.getReservedAllocations()),
+                slotProfile);
     }
 
     public static PreviousAllocationSlotSelectionStrategy create() {

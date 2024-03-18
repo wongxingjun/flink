@@ -25,8 +25,8 @@ import org.apache.calcite.rex.{RexBuilder, RexLiteral, RexNode, RexUtil}
 import org.apache.calcite.sql.`type`.{BasicSqlType, SqlTypeName}
 import org.apache.calcite.sql.`type`.SqlTypeName._
 import org.apache.calcite.sql.fun.SqlStdOperatorTable._
-import org.junit.Assert.{assertEquals, assertFalse}
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.{assertEquals, assertFalse}
+import org.junit.jupiter.api.Test
 
 import java.math.BigDecimal
 import java.util.Collections
@@ -206,7 +206,7 @@ class FlinkRexUtilTest {
     assertEquals(RexUtil.toCnf(rexBuilder, predicate).toString, newPredicate3.toString)
 
     val newPredicate4 = FlinkRexUtil.toCnf(rexBuilder, Int.MaxValue, predicate)
-    assertFalse(RexUtil.eq(predicate, newPredicate4))
+    assertFalse(predicate.equals(newPredicate4))
     assertEquals(RexUtil.toCnf(rexBuilder, predicate).toString, newPredicate4.toString)
   }
 

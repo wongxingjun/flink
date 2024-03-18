@@ -30,6 +30,7 @@ import org.junit.Test;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.hamcrest.Matchers.is;
@@ -217,7 +218,7 @@ public class StateWithExecutionGraphTest extends TestLogger {
         }
 
         @Override
-        void onFailure(Throwable cause) {}
+        void onFailure(Throwable cause, CompletableFuture<Map<String, String>> failureLabels) {}
 
         @Override
         void onGloballyTerminalState(JobStatus globallyTerminalState) {
@@ -225,11 +226,13 @@ public class StateWithExecutionGraphTest extends TestLogger {
         }
 
         @Override
-        public void handleGlobalFailure(Throwable cause) {}
+        public void handleGlobalFailure(
+                Throwable cause, CompletableFuture<Map<String, String>> failureLabels) {}
 
         @Override
         boolean updateTaskExecutionState(
-                TaskExecutionStateTransition taskExecutionStateTransition) {
+                TaskExecutionStateTransition taskExecutionStateTransition,
+                CompletableFuture<Map<String, String>> failureLabels) {
             return false;
         }
     }

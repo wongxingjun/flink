@@ -19,7 +19,7 @@
 package org.apache.flink.api.scala.typeutils;
 
 import org.apache.flink.FlinkVersion;
-import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerMatchers;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
@@ -43,17 +43,16 @@ class ScalaTrySerializerUpgradeTest
 
     private static final String SPEC_NAME = "scala-try-serializer";
 
-    public Collection<TestSpecification<?, ?>> createTestSpecifications() throws Exception {
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
 
         ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-        for (FlinkVersion flinkVersion : MIGRATION_VERSIONS) {
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            SPEC_NAME,
-                            flinkVersion,
-                            ScalaTrySerializerSetup.class,
-                            ScalaTrySerializerVerifier.class));
-        }
+        testSpecifications.add(
+                new TestSpecification<>(
+                        SPEC_NAME,
+                        flinkVersion,
+                        ScalaTrySerializerSetup.class,
+                        ScalaTrySerializerVerifier.class));
         return testSpecifications;
     }
 
@@ -68,7 +67,7 @@ class ScalaTrySerializerUpgradeTest
             implements TypeSerializerUpgradeTestBase.PreUpgradeSetup<Try<String>> {
         @Override
         public TypeSerializer<Try<String>> createPriorSerializer() {
-            return new TrySerializer<>(StringSerializer.INSTANCE, new ExecutionConfig());
+            return new TrySerializer<>(StringSerializer.INSTANCE, new SerializerConfigImpl());
         }
 
         @SuppressWarnings("unchecked")
@@ -86,7 +85,7 @@ class ScalaTrySerializerUpgradeTest
             implements TypeSerializerUpgradeTestBase.UpgradeVerifier<Try<String>> {
         @Override
         public TypeSerializer<Try<String>> createUpgradedSerializer() {
-            return new TrySerializer<>(StringSerializer.INSTANCE, new ExecutionConfig());
+            return new TrySerializer<>(StringSerializer.INSTANCE, new SerializerConfigImpl());
         }
 
         @SuppressWarnings("unchecked")

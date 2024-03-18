@@ -19,6 +19,7 @@ package org.apache.flink.api.scala.typeutils
 
 import org.apache.flink.FlinkVersion
 import org.apache.flink.api.common.ExecutionConfig
+import org.apache.flink.api.common.serialization.SerializerConfigImpl
 import org.apache.flink.api.common.typeutils.{TypeSerializer, TypeSerializerMatchers, TypeSerializerSchemaCompatibility, TypeSerializerUpgradeTestBase}
 import org.apache.flink.api.common.typeutils.TypeSerializerUpgradeTestBase.TestSpecification
 import org.apache.flink.api.scala.createTypeInformation
@@ -34,17 +35,16 @@ import java.util
 class ScalaCaseClassSerializerUpgradeTest
   extends TypeSerializerUpgradeTestBase[CustomCaseClass, CustomCaseClass] {
 
-  override def createTestSpecifications(): util.Collection[TestSpecification[_, _]] = {
+  override def createTestSpecifications(
+      migrationVersion: FlinkVersion): util.Collection[TestSpecification[_, _]] = {
     val testSpecifications =
       new util.ArrayList[TypeSerializerUpgradeTestBase.TestSpecification[_, _]]
-    TypeSerializerUpgradeTestBase.MIGRATION_VERSIONS.forEach(
-      migrationVersion =>
-        testSpecifications.add(
-          new TypeSerializerUpgradeTestBase.TestSpecification[CustomCaseClass, CustomCaseClass](
-            "scala-case-class-serializer",
-            migrationVersion,
-            classOf[ScalaCaseClassSerializerSetup],
-            classOf[ScalaCaseClassSerializerVerifier])))
+    testSpecifications.add(
+      new TypeSerializerUpgradeTestBase.TestSpecification[CustomCaseClass, CustomCaseClass](
+        "scala-case-class-serializer",
+        migrationVersion,
+        classOf[ScalaCaseClassSerializerSetup],
+        classOf[ScalaCaseClassSerializerVerifier]))
 
     testSpecifications
   }
@@ -57,7 +57,7 @@ object ScalaCaseClassSerializerUpgradeTest {
   private val supplier =
     new util.function.Supplier[TypeSerializer[CustomCaseClass]] {
       override def get(): TypeSerializer[CustomCaseClass] =
-        typeInfo.createSerializer(new ExecutionConfig)
+        typeInfo.createSerializer(new SerializerConfigImpl)
     }
 
   /**

@@ -20,10 +20,18 @@ package org.apache.flink.table.jdbc;
 
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.client.gateway.StatementResult;
+import org.apache.flink.table.data.ArrayData;
+import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.MapData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.data.TimestampData;
+import org.apache.flink.table.jdbc.utils.CloseableResultIterator;
+import org.apache.flink.table.jdbc.utils.StatementResultIterator;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.DecimalType;
+import org.apache.flink.table.types.logical.LogicalType;
+import org.apache.flink.table.types.logical.MapType;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -36,8 +44,13 @@ import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.apache.flink.table.jdbc.utils.DriverUtils.checkNotNull;
 
@@ -48,31 +61,48 @@ import static org.apache.flink.table.jdbc.utils.DriverUtils.checkNotNull;
 public class FlinkResultSet extends BaseResultSet {
     private final List<DataType> dataTypeList;
     private final List<String> columnNameList;
+    private final List<RowData.FieldGetter> fieldGetterList;
     private final Statement statement;
-    private final StatementResult result;
+    private final CloseableResultIterator<RowData> iterator;
+    private final FlinkResultSetMetaData resultSetMetaData;
     private RowData currentRow;
     private boolean wasNull;
 
     private volatile boolean closed;
 
     public FlinkResultSet(Statement statement, StatementResult result) {
+        this(statement, new StatementResultIterator(result), result.getResultSchema());
+    }
+
+    public FlinkResultSet(
+            Statement statement, CloseableResultIterator<RowData> iterator, ResolvedSchema schema) {
         this.statement = checkNotNull(statement, "Statement cannot be null");
-        this.result = checkNotNull(result, "Statement result cannot be null");
+        this.iterator = checkNotNull(iterator, "Statement result cannot be null");
         this.currentRow = null;
         this.wasNull = false;
 
-        final ResolvedSchema schema = result.getResultSchema();
         this.dataTypeList = schema.getColumnDataTypes();
         this.columnNameList = schema.getColumnNames();
+        this.fieldGetterList = createFieldGetterList(dataTypeList);
+        this.resultSetMetaData = new FlinkResultSetMetaData(columnNameList, dataTypeList);
+    }
+
+    private List<RowData.FieldGetter> createFieldGetterList(List<DataType> dataTypeList) {
+        List<RowData.FieldGetter> fieldGetterList = new ArrayList<>(dataTypeList.size());
+        for (int i = 0; i < dataTypeList.size(); i++) {
+            fieldGetterList.add(RowData.createFieldGetter(dataTypeList.get(i).getLogicalType(), i));
+        }
+
+        return fieldGetterList;
     }
 
     @Override
     public boolean next() throws SQLException {
         checkClosed();
 
-        if (result.hasNext()) {
+        if (iterator.hasNext()) {
             // TODO check the kind of currentRow
-            currentRow = result.next();
+            currentRow = iterator.next();
             wasNull = currentRow == null;
             return true;
         } else {
@@ -117,7 +147,11 @@ public class FlinkResultSet extends BaseResultSet {
         }
         closed = true;
 
-        result.close();
+        try {
+            iterator.close();
+        } catch (Exception e) {
+            throw new SQLException("Close result iterator fail", e);
+        }
     }
 
     @Override
@@ -147,8 +181,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidRow();
         checkValidColumn(columnIndex);
         try {
-            return currentRow.getBoolean(columnIndex - 1);
-
+            return !currentRow.isNullAt(columnIndex - 1) && currentRow.getBoolean(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -160,7 +193,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidRow();
         checkValidColumn(columnIndex);
         try {
-            return currentRow.getByte(columnIndex - 1);
+            return currentRow.isNullAt(columnIndex - 1) ? 0 : currentRow.getByte(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -172,7 +205,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidRow();
         checkValidColumn(columnIndex);
         try {
-            return currentRow.getShort(columnIndex - 1);
+            return currentRow.isNullAt(columnIndex - 1) ? 0 : currentRow.getShort(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -184,7 +217,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidRow();
         checkValidColumn(columnIndex);
         try {
-            return currentRow.getInt(columnIndex - 1);
+            return currentRow.isNullAt(columnIndex - 1) ? 0 : currentRow.getInt(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -197,7 +230,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidColumn(columnIndex);
 
         try {
-            return currentRow.getLong(columnIndex - 1);
+            return currentRow.isNullAt(columnIndex - 1) ? 0L : currentRow.getLong(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -209,7 +242,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidRow();
         checkValidColumn(columnIndex);
         try {
-            return currentRow.getFloat(columnIndex - 1);
+            return currentRow.isNullAt(columnIndex - 1) ? 0 : currentRow.getFloat(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -221,7 +254,7 @@ public class FlinkResultSet extends BaseResultSet {
         checkValidRow();
         checkValidColumn(columnIndex);
         try {
-            return currentRow.getDouble(columnIndex - 1);
+            return currentRow.isNullAt(columnIndex - 1) ? 0 : currentRow.getDouble(columnIndex - 1);
         } catch (Exception e) {
             throw new SQLDataException(e);
         }
@@ -246,20 +279,17 @@ public class FlinkResultSet extends BaseResultSet {
 
     @Override
     public Date getDate(int columnIndex) throws SQLException {
-        // TODO support date data
-        throw new IllegalArgumentException();
+        return (Date) getObject(columnIndex);
     }
 
     @Override
     public Time getTime(int columnIndex) throws SQLException {
-        // TODO support time data
-        throw new IllegalArgumentException();
+        return (Time) getObject(columnIndex);
     }
 
     @Override
     public Timestamp getTimestamp(int columnIndex) throws SQLException {
-        // TODO support time timestamp
-        throw new IllegalArgumentException();
+        return (Timestamp) getObject(columnIndex);
     }
 
     @Override
@@ -337,14 +367,98 @@ public class FlinkResultSet extends BaseResultSet {
 
     @Override
     public ResultSetMetaData getMetaData() throws SQLException {
-        // TODO support result set meta data
-        throw new SQLFeatureNotSupportedException("FlinkResultSet#getMetaData is not supported");
+        return resultSetMetaData;
     }
 
     @Override
     public Object getObject(int columnIndex) throws SQLException {
-        // TODO support get object
-        throw new SQLFeatureNotSupportedException("FlinkResultSet#getObject is not supported");
+        checkClosed();
+        checkValidRow();
+        checkValidColumn(columnIndex);
+        try {
+            Object object = fieldGetterList.get(columnIndex - 1).getFieldOrNull(currentRow);
+            DataType dataType = dataTypeList.get(columnIndex - 1);
+            return convertToJavaObject(object, dataType.getLogicalType());
+        } catch (Exception e) {
+            throw new SQLDataException(e);
+        }
+    }
+
+    private Object convertToJavaObject(Object object, LogicalType dataType) throws SQLException {
+        if (object == null) {
+            return null;
+        }
+
+        switch (dataType.getTypeRoot()) {
+            case BOOLEAN:
+            case TINYINT:
+            case SMALLINT:
+            case INTEGER:
+            case BIGINT:
+            case FLOAT:
+            case DOUBLE:
+            case BINARY:
+            case VARBINARY:
+                {
+                    return object;
+                }
+            case VARCHAR:
+            case CHAR:
+                {
+                    return object.toString();
+                }
+            case DECIMAL:
+                {
+                    return ((DecimalData) object).toBigDecimal();
+                }
+            case MAP:
+                {
+                    LogicalType keyType = ((MapType) dataType).getKeyType();
+                    LogicalType valueType = ((MapType) dataType).getValueType();
+                    ArrayData.ElementGetter keyGetter = ArrayData.createElementGetter(keyType);
+                    ArrayData.ElementGetter valueGetter = ArrayData.createElementGetter(valueType);
+                    MapData mapData = (MapData) object;
+                    int size = mapData.size();
+                    ArrayData keyArrayData = mapData.keyArray();
+                    ArrayData valueArrayData = mapData.valueArray();
+                    Map<Object, Object> mapResult = new HashMap<>();
+                    for (int i = 0; i < size; i++) {
+                        mapResult.put(
+                                convertToJavaObject(
+                                        keyGetter.getElementOrNull(keyArrayData, i), keyType),
+                                convertToJavaObject(
+                                        valueGetter.getElementOrNull(valueArrayData, i),
+                                        valueType));
+                    }
+                    return mapResult;
+                }
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                {
+                    return ((TimestampData) object).toTimestamp();
+                }
+            case TIMESTAMP_WITH_TIME_ZONE:
+                {
+                    // TODO should be supported after
+                    // https://issues.apache.org/jira/browse/FLINK-20869
+                    throw new SQLDataException(
+                            "TIMESTAMP WITH TIME ZONE is not supported, use TIMESTAMP or TIMESTAMP_LTZ instead");
+                }
+            case TIME_WITHOUT_TIME_ZONE:
+                {
+                    return Time.valueOf(
+                            LocalTime.ofNanoOfDay(((Number) object).intValue() * 1_000_000L));
+                }
+            case DATE:
+                {
+                    return Date.valueOf(LocalDate.ofEpochDay(((Number) object).intValue()));
+                }
+            default:
+                {
+                    throw new SQLDataException(
+                            String.format("Not supported value type %s", dataType));
+                }
+        }
     }
 
     @Override
@@ -373,9 +487,14 @@ public class FlinkResultSet extends BaseResultSet {
         }
         DecimalType decimalType = (DecimalType) dataType.getLogicalType();
         try {
-            return currentRow
-                    .getDecimal(columnIndex - 1, decimalType.getPrecision(), decimalType.getScale())
-                    .toBigDecimal();
+            return currentRow.isNullAt(columnIndex - 1)
+                    ? null
+                    : currentRow
+                            .getDecimal(
+                                    columnIndex - 1,
+                                    decimalType.getPrecision(),
+                                    decimalType.getScale())
+                            .toBigDecimal();
         } catch (Exception e) {
             throw new SQLDataException(e);
         }

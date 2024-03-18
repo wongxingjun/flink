@@ -30,6 +30,7 @@ import org.apache.calcite.jdbc.CalciteSchema
 import org.apache.calcite.rel.`type`.RelDataType
 import org.apache.calcite.rel.RelCollations
 import org.apache.calcite.rel.core.{Aggregate, AggregateCall, TableScan}
+import org.apache.calcite.rel.hint.RelHint
 import org.apache.calcite.rel.logical.LogicalAggregate
 import org.apache.calcite.rel.metadata.{JaninoRelMetadataProvider, RelMetadataQueryBase}
 import org.apache.calcite.rex.{RexInputRef, RexLiteral, RexNode}
@@ -39,8 +40,8 @@ import org.apache.calcite.sql.{SqlAggFunction, SqlOperator}
 import org.apache.calcite.sql.fun.SqlStdOperatorTable
 import org.apache.calcite.sql.fun.SqlStdOperatorTable._
 import org.apache.calcite.util.ImmutableBitSet
-import org.junit.{Before, BeforeClass, Test}
-import org.junit.Assert._
+import org.junit.jupiter.api.{BeforeAll, BeforeEach, Test}
+import org.junit.jupiter.api.Assertions._
 
 import java.math.BigDecimal
 import java.util
@@ -62,7 +63,7 @@ class AggCallSelectivityEstimatorTest {
   val mq: FlinkRelMetadataQuery = FlinkRelMetadataQuery.instance()
   var scan: TableScan = _
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     scan = mockScan()
   }
@@ -118,6 +119,7 @@ class AggCallSelectivityEstimatorTest {
 
     LogicalAggregate.create(
       scan,
+      ImmutableList.of[RelHint],
       ImmutableBitSet.of(groupSet: _*),
       null,
       ImmutableList.copyOf(aggCalls.toArray))
@@ -738,7 +740,7 @@ class AggCallSelectivityEstimatorTest {
 
 object AggCallSelectivityEstimatorTest {
 
-  @BeforeClass
+  @BeforeAll
   def beforeAll(): Unit = {
     RelMetadataQueryBase.THREAD_PROVIDERS
       .set(JaninoRelMetadataProvider.of(FlinkDefaultRelMetadataProvider.INSTANCE))

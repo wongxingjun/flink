@@ -21,7 +21,7 @@ under the License.
 	<parent>
 		<artifactId>flink-filesystems</artifactId>
 		<groupId>org.apache.flink</groupId>
-		<version>1.18-SNAPSHOT</version>
+		<version>1.20-SNAPSHOT</version>
 	</parent>
 	<modelVersion>4.0.0</modelVersion>
 
@@ -40,22 +40,33 @@ under the License.
 			<scope>provided</scope>
 		</dependency>
 
+		<!-- ArchUnit test dependencies -->
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-architecture-tests-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-hadoop-fs</artifactId>
 			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-fs-hadoop-shaded</artifactId>
 			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.hadoop</groupId>
 			<artifactId>hadoop-aliyun</artifactId>
 			<version>${fs.hadoopshaded.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<exclusion>
 					<groupId>com.aliyun.oss</groupId>
@@ -81,6 +92,7 @@ under the License.
 			<groupId>com.aliyun.oss</groupId>
 			<artifactId>aliyun-sdk-oss</artifactId>
 			<version>${fs.oss.sdk.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<exclusion>
 					<groupId>javax.xml.bind</groupId>

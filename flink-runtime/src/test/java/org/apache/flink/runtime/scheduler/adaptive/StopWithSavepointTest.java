@@ -25,6 +25,7 @@ import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ErrorInfo;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
+import org.apache.flink.runtime.failure.FailureEnricherUtils;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
 import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
@@ -40,7 +41,9 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -198,7 +201,8 @@ class StopWithSavepointTest {
 
             ctx.setExpectRestarting(assertNonNull());
 
-            sws.handleGlobalFailure(new RuntimeException());
+            sws.handleGlobalFailure(
+                    new RuntimeException(), FailureEnricherUtils.EMPTY_FAILURE_LABELS);
         }
     }
 
@@ -217,7 +221,8 @@ class StopWithSavepointTest {
                                 .satisfies(FlinkAssertions.anyCauseMatches(RuntimeException.class));
                     });
 
-            sws.handleGlobalFailure(new RuntimeException());
+            sws.handleGlobalFailure(
+                    new RuntimeException(), FailureEnricherUtils.EMPTY_FAILURE_LABELS);
         }
     }
 
@@ -245,7 +250,11 @@ class StopWithSavepointTest {
             executionGraph.registerExecution(execution);
             TaskExecutionStateTransition taskExecutionStateTransition =
                     ExecutingTest.createFailingStateTransition(execution.getAttemptId(), exception);
-            assertThat(sws.updateTaskExecutionState(taskExecutionStateTransition)).isTrue();
+            assertThat(
+                            sws.updateTaskExecutionState(
+                                    taskExecutionStateTransition,
+                                    FailureEnricherUtils.EMPTY_FAILURE_LABELS))
+                    .isTrue();
         }
     }
 
@@ -269,7 +278,11 @@ class StopWithSavepointTest {
             executionGraph.registerExecution(execution);
             TaskExecutionStateTransition taskExecutionStateTransition =
                     ExecutingTest.createFailingStateTransition(execution.getAttemptId(), exception);
-            assertThat(sws.updateTaskExecutionState(taskExecutionStateTransition)).isTrue();
+            assertThat(
+                            sws.updateTaskExecutionState(
+                                    taskExecutionStateTransition,
+                                    FailureEnricherUtils.EMPTY_FAILURE_LABELS))
+                    .isTrue();
         }
     }
 
@@ -349,7 +362,11 @@ class StopWithSavepointTest {
             executionGraph.registerExecution(execution);
             TaskExecutionStateTransition taskExecutionStateTransition =
                     ExecutingTest.createFailingStateTransition(execution.getAttemptId(), exception);
-            assertThat(sws.updateTaskExecutionState(taskExecutionStateTransition)).isTrue();
+            assertThat(
+                            sws.updateTaskExecutionState(
+                                    taskExecutionStateTransition,
+                                    FailureEnricherUtils.EMPTY_FAILURE_LABELS))
+                    .isTrue();
         }
     }
 
@@ -366,7 +383,9 @@ class StopWithSavepointTest {
 
             ctx.setHowToHandleFailure(failure -> FailureResult.canRestart(failure, Duration.ZERO));
 
-            sws.onFailure(new Exception("task failure"));
+            sws.onFailure(
+                    new Exception("task failure"),
+                    CompletableFuture.completedFuture(Collections.emptyMap()));
             // this is a sanity check that we haven't scheduled a state transition
             ctx.triggerExecutors();
 
@@ -389,7 +408,9 @@ class StopWithSavepointTest {
 
             ctx.setHowToHandleFailure(failure -> FailureResult.canRestart(failure, Duration.ZERO));
 
-            sws.onFailure(new Exception("task failure"));
+            sws.onFailure(
+                    new Exception("task failure"),
+                    CompletableFuture.completedFuture(Collections.emptyMap()));
             // this is a sanity check that we haven't scheduled a state transition
             ctx.triggerExecutors();
 
@@ -523,7 +544,8 @@ class StopWithSavepointTest {
         }
 
         @Override
-        public FailureResult howToHandleFailure(Throwable failure) {
+        public FailureResult howToHandleFailure(
+                Throwable failure, CompletableFuture<Map<String, String>> failureLabels) {
             return howToHandleFailure.apply(failure);
         }
 
@@ -637,6 +659,11 @@ class StopWithSavepointTest {
             restartingStateValidator.close();
             cancellingStateValidator.close();
             executingStateTransition.close();
+        }
+
+        @Override
+        public void handleGlobalFailure(Throwable cause) {
+            state.handleGlobalFailure(cause, FailureEnricherUtils.EMPTY_FAILURE_LABELS);
         }
     }
 

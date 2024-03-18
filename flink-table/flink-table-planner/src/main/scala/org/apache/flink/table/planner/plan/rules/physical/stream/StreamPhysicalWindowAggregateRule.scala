@@ -46,7 +46,7 @@ class StreamPhysicalWindowAggregateRule(config: Config) extends ConverterRule(co
     val agg: FlinkLogicalAggregate = call.rel(0)
 
     // check if we have grouping sets
-    if (agg.getGroupType != Group.SIMPLE || agg.indicator) {
+    if (agg.getGroupType != Group.SIMPLE) {
       throw new TableException("GROUPING SETS are currently not supported.")
     }
 
@@ -55,10 +55,7 @@ class StreamPhysicalWindowAggregateRule(config: Config) extends ConverterRule(co
       return false
     }
 
-    val fmq = FlinkRelMetadataQuery.reuseOrCreate(call.getMetadataQuery)
-    val windowProperties = fmq.getRelWindowProperties(agg.getInput)
-    val grouping = agg.getGroupSet
-    WindowUtil.groupingContainsWindowStartEnd(grouping, windowProperties)
+    WindowUtil.isValidWindowAggregate(agg)
   }
 
   override def convert(rel: RelNode): RelNode = {

@@ -38,7 +38,7 @@ import org.apache.flink.runtime.testutils.InMemoryReporter;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.testutils.junit.SharedObjects;
 import org.apache.flink.testutils.junit.SharedReference;
@@ -123,7 +123,7 @@ public class SourceMetricsITCase extends TestLogger {
                                     }
                                     return i;
                                 });
-        stream.addSink(new DiscardingSink<>());
+        stream.sinkTo(new DiscardingSink<>());
         JobClient jobClient = env.executeAsync();
         final JobID jobId = jobClient.getJobID();
 
@@ -181,6 +181,10 @@ public class SourceMetricsITCase extends TestLogger {
             assertThatCounter(group.getIOMetricGroup().getNumRecordsInCounter())
                     .isEqualTo(processedRecordsPerSubtask);
             assertThatCounter(group.getIOMetricGroup().getNumBytesInCounter())
+                    .isEqualTo(processedRecordsPerSubtask * MockRecordEmitter.RECORD_SIZE_IN_BYTES);
+            assertThatCounter(group.getIOMetricGroup().getNumRecordsOutCounter())
+                    .isEqualTo(processedRecordsPerSubtask);
+            assertThatCounter(group.getIOMetricGroup().getNumBytesOutCounter())
                     .isEqualTo(processedRecordsPerSubtask * MockRecordEmitter.RECORD_SIZE_IN_BYTES);
             // MockRecordEmitter is just incrementing errors every even record
             assertThatCounter(metrics.get(MetricNames.NUM_RECORDS_IN_ERRORS))

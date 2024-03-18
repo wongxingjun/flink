@@ -29,6 +29,7 @@ import org.apache.flink.runtime.state.changelog.StateChangelogStorage;
 import org.apache.flink.runtime.state.changelog.StateChangelogWriter;
 import org.apache.flink.util.CloseableIterator;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -61,6 +62,7 @@ public class StateChangelogStorageTest<T extends ChangelogStateHandle> {
         return Stream.of(true);
     }
 
+    @Disabled("FLINK-30729")
     @MethodSource("parameters")
     @ParameterizedTest(name = "compression = {0}")
     public void testNoAppendAfterClose(boolean compression) throws IOException {
@@ -98,7 +100,7 @@ public class StateChangelogStorageTest<T extends ChangelogStateHandle> {
                 writer.nextSequenceNumber();
             }
 
-            SnapshotResult<T> res = writer.persist(prev).get();
+            SnapshotResult<T> res = writer.persist(prev, 1).get();
             T jmHandle = res.getJobManagerOwnedSnapshot();
             StateChangelogHandleReader<T> reader = client.createReader();
             assertByteMapsEqual(appendsByKeyGroup, extract(jmHandle, reader));
@@ -115,8 +117,8 @@ public class StateChangelogStorageTest<T extends ChangelogStateHandle> {
             while (ite.hasNext() && ale.hasNext()) {
                 assertThat(ale.next()).isEqualTo(ite.next());
             }
-            assertThat(ite.hasNext()).isFalse();
-            assertThat(ale.hasNext()).isFalse();
+            assertThat(ite).isExhausted();
+            assertThat(ale).isExhausted();
         }
     }
 

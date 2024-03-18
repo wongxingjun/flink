@@ -18,9 +18,11 @@
 
 package org.apache.flink.configuration;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
 import org.apache.flink.configuration.description.Description;
+import org.apache.flink.configuration.description.InlineElement;
 
 import java.time.Duration;
 
@@ -66,6 +68,10 @@ public class JobManagerOptions {
                                     + " leader from potentially multiple standby JobManagers.");
 
     /** The local address of the network interface that the job manager binds to. */
+    @Documentation.Section({
+        Documentation.Sections.COMMON_HOST_PORT,
+        Documentation.Sections.ALL_JOB_MANAGER
+    })
     public static final ConfigOption<String> BIND_HOST =
             key("jobmanager.bind-host")
                     .stringType()
@@ -105,6 +111,10 @@ public class JobManagerOptions {
                                     + " leader from potentially multiple standby JobManagers.");
 
     /** The local port that the job manager binds to. */
+    @Documentation.Section({
+        Documentation.Sections.COMMON_HOST_PORT,
+        Documentation.Sections.ALL_JOB_MANAGER
+    })
     public static final ConfigOption<Integer> RPC_BIND_PORT =
             key("jobmanager.rpc.bind-port")
                     .intType()
@@ -264,6 +274,30 @@ public class JobManagerOptions {
                             "The maximum number of historical execution attempts kept in history.");
 
     /**
+     * Flag indicating whether JobManager should load available Failure Enricher plugins at startup.
+     * An optional list of Failure Enricher names. If empty, NO enrichers will be started. If
+     * configured, only enrichers whose name (as returned by class.getName()) matches any of the
+     * names in the list will be started.
+     *
+     * <p>Example:
+     *
+     * <pre>{@code
+     * jobmanager.failure-enrichers = org.apache.flink.test.plugin.jar.failure.TypeFailureEnricher, org.apache.flink.runtime.failure.FailureEnricherUtilsTest$TestEnricher
+     *
+     * }</pre>
+     */
+    @Documentation.Section(Documentation.Sections.ALL_JOB_MANAGER)
+    public static final ConfigOption<String> FAILURE_ENRICHERS_LIST =
+            key("jobmanager.failure-enrichers")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "An optional list of failure enricher names."
+                                    + " If empty, NO failure enrichers will be started."
+                                    + " If configured, only enrichers whose name matches"
+                                    + " any of the names in the list will be started.");
+
+    /**
      * This option specifies the failover strategy, i.e. how the job computation recovers from task
      * failures.
      */
@@ -297,7 +331,7 @@ public class JobManagerOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription(
-                            "Dictionary for JobManager to store the archives of completed jobs.");
+                            "Directory for JobManager to store the archives of completed jobs.");
 
     /** The job store cache size in bytes which is used to keep completed jobs in memory. */
     @Documentation.Section(Documentation.Sections.ALL_JOB_MANAGER)
@@ -426,29 +460,42 @@ public class JobManagerOptions {
                     .withDescription(
                             Description.builder()
                                     .text(
-                                            "Determines which scheduler implementation is used to schedule tasks. Accepted values are:")
-                                    .list(
-                                            text("'Default': Default scheduler"),
-                                            text(
-                                                    "'Adaptive': Adaptive scheduler. More details can be found %s.",
-                                                    link(
-                                                            "{{.Site.BaseURL}}{{.Site.LanguagePrefix}}/docs/deployment/elastic_scaling#adaptive-scheduler",
-                                                            "here")),
-                                            text(
-                                                    "'AdaptiveBatch': Adaptive batch scheduler. More details can be found %s.",
-                                                    link(
-                                                            "{{.Site.BaseURL}}{{.Site.LanguagePrefix}}/docs/deployment/elastic_scaling#adaptive-batch-scheduler",
-                                                            "here")))
+                                            "Determines which scheduler implementation is used to schedule tasks. "
+                                                    + "If this option is not explicitly set, batch jobs will use the "
+                                                    + "'AdaptiveBatch' scheduler as the default, while streaming jobs "
+                                                    + "will default to the 'Default' scheduler. ")
                                     .build());
 
     /** Type of scheduler implementation. */
-    public enum SchedulerType {
+    public enum SchedulerType implements DescribedEnum {
         /** @deprecated Use {@link SchedulerType#Default} instead. */
         @Deprecated
-        Ng,
-        Default,
-        Adaptive,
-        AdaptiveBatch
+        Ng(text("Deprecated. Use Default scheduler instead.")),
+        Default(text("Default scheduler")),
+        Adaptive(
+                text(
+                        "Adaptive scheduler. More details can be found %s.",
+                        link(
+                                "{{.Site.BaseURL}}{{.Site.LanguagePrefix}}/docs/deployment/elastic_scaling#adaptive-scheduler",
+                                "here"))),
+        AdaptiveBatch(
+                text(
+                        "Adaptive batch scheduler. More details can be found %s.",
+                        link(
+                                "{{.Site.BaseURL}}{{.Site.LanguagePrefix}}/docs/deployment/elastic_scaling#adaptive-batch-scheduler",
+                                "here")));
+
+        private final InlineElement description;
+
+        SchedulerType(InlineElement description) {
+            this.description = description;
+        }
+
+        @Internal
+        @Override
+        public InlineElement getDescription() {
+            return description;
+        }
     }
 
     @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
@@ -474,6 +521,32 @@ public class JobManagerOptions {
                     .defaultValue(1)
                     .withDescription(
                             "Configure the minimum increase in parallelism for a job to scale up.");
+
+    @Documentation.Section({
+        Documentation.Sections.EXPERT_SCHEDULING,
+        Documentation.Sections.ALL_JOB_MANAGER
+    })
+    public static final ConfigOption<Duration> SCHEDULER_SCALING_INTERVAL_MIN =
+            key("jobmanager.adaptive-scheduler.scaling-interval.min")
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(30))
+                    // rescaling and let the user increase the value for high workloads
+                    .withDescription("Determines the minimum time between scaling operations.");
+
+    @Documentation.Section({
+        Documentation.Sections.EXPERT_SCHEDULING,
+        Documentation.Sections.ALL_JOB_MANAGER
+    })
+    public static final ConfigOption<Duration> SCHEDULER_SCALING_INTERVAL_MAX =
+            key("jobmanager.adaptive-scheduler.scaling-interval.max")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Determines the maximum interval time after which a scaling operation is forced even if the %s aren't met. The scaling operation will be ignored when the resource hasn't changed. This option is disabled by default.",
+                                            code(MIN_PARALLELISM_INCREASE.key()))
+                                    .build());
 
     @Documentation.Section({
         Documentation.Sections.EXPERT_SCHEDULING,

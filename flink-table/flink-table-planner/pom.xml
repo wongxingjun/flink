@@ -23,7 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-table</artifactId>
-		<version>1.18-SNAPSHOT</version>
+		<version>1.20-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-table-planner_${scala.binary.version}</artifactId>
@@ -37,11 +37,29 @@ under the License.
 
 	<packaging>jar</packaging>
 
+	<properties>
+		<surefire.module.config><!--
+			HashAggCodeGeneratorTest / AggTestBase
+			-->--add-opens=java.base/java.lang=ALL-UNNAMED <!--
+			chill ArraysAsListSerializer
+			-->--add-opens=java.base/java.util=ALL-UNNAMED <!--
+			kryo AtomicBoolean
+			-->--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED <!--
+			kryo LocalDate/ZoneOffset
+			-->--add-opens=java.base/java.time=ALL-UNNAMED <!--
+			kryo MathContext
+			-->--add-opens=java.base/java.math=ALL-UNNAMED <!--
+			kryo ByteBuffer
+			-->--add-opens=java.base/java.nio=ALL-UNNAMED
+		</surefire.module.config>
+	</properties>
+
 	<dependencies>
 		<!-- Mainly used for calcite-core, relocated in org.apache.flink.calcite.shaded by the shade plugin -->
 		<dependency>
 			<groupId>com.google.guava</groupId>
 			<artifactId>guava</artifactId>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<exclusion>
 					<groupId>org.checkerframework</groupId>
@@ -92,6 +110,7 @@ under the License.
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-sql-parser</artifactId>
 			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<exclusion>
 					<groupId>org.apache.calcite</groupId>
@@ -99,16 +118,11 @@ under the License.
 				</exclusion>
 			</exclusions>
 		</dependency>
-		<!-- Use newer version v1.1.2 as in Calcite because org.junit.jupiter:junit-jupiter contains it -->
-		<dependency>
-			<artifactId>apiguardian-api</artifactId>
-			<groupId>org.apiguardian</groupId>
-			<version>1.1.2</version>
-		</dependency>
 		<dependency>
 			<groupId>org.checkerframework</groupId>
 			<artifactId>checker-qual</artifactId>
-			<version>3.10.0</version>
+			<version>3.12.0</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<!-- Table Runtime (not included in the uber) -->
@@ -119,97 +133,12 @@ under the License.
 			<version>${project.version}</version>
 		</dependency>
 
-		<!-- Other 3rd party dependencies (included in the uber) -->
-
+		<!-- Table Calcite Bridge (included in the uber) -->
 		<dependency>
-			<!-- Used for translation of table programs -->
-			<groupId>org.apache.calcite</groupId>
-			<artifactId>calcite-core</artifactId>
-			<!-- When updating the Calcite version, make sure to update the dependency exclusions -->
-			<version>${calcite.version}</version>
-			<exclusions>
-				<!--
-				"mvn dependency:tree" as of Calcite 1.29.0:
-
-				[INFO] +- org.apache.calcite:calcite-core:jar:1.29.0:compile
-				[INFO] |  +- org.apache.calcite:calcite-linq4j:jar:1.29.0:compile
-				[INFO] |  +- com.esri.geometry:esri-geometry-api:jar:2.2.0:compile
-				[INFO] |  +- com.fasterxml.jackson.core:jackson-annotations:jar:2.13.4:compile
-				[INFO] |  +- org.apache.calcite.avatica:avatica-core:jar:1.20.0:compile
-				[INFO] |  +- com.fasterxml.jackson.core:jackson-core:jar:2.13.4:compile
-				[INFO] |  +- com.fasterxml.jackson.core:jackson-databind:jar:2.13.4.2:compile
-				[INFO] |  +- com.jayway.jsonpath:json-path:jar:2.4.0:runtime
-				[INFO] |  |  \- net.minidev:json-smart:jar:2.3:runtime
-				[INFO] |  |     \- net.minidev:accessors-smart:jar:1.2:runtime
-				[INFO] |  |        \- org.ow2.asm:asm:jar:5.0.4:runtime
-				[INFO] |  +- commons-codec:commons-codec:jar:1.15:runtime
-				[INFO] |  \- commons-io:commons-io:jar:2.11.0:compile
-
-
-				Dependencies that are not needed for how we use Calcite right now.
-				-->
-				<exclusion>
-					<groupId>org.apache.calcite.avatica</groupId>
-					<artifactId>avatica-server</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.calcite.avatica</groupId>
-					<artifactId>avatica-metrics</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.google.protobuf</groupId>
-					<artifactId>protobuf-java</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.google.uzaygezen</groupId>
-					<artifactId>uzaygezen-core</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.httpcomponents</groupId>
-					<artifactId>httpclient</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.httpcomponents</groupId>
-					<artifactId>httpcore</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.commons</groupId>
-					<artifactId>commons-dbcp2</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.apache.commons</groupId>
-					<artifactId>commons-lang3</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.fasterxml.jackson.dataformat</groupId>
-					<artifactId>jackson-dataformat-yaml</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.yahoo.datasketches</groupId>
-					<artifactId>sketches-core</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>net.hydromatic</groupId>
-					<artifactId>aggdesigner-algorithm</artifactId>
-				</exclusion>
-				<!-- Excluding org.apiguardian:apiguardian-api v1.1.0 because org.junit.jupiter:junit-jupiter contains newer version v1.1.2 -->
-				<exclusion>
-					<groupId>org.apiguardian</groupId>
-					<artifactId>apiguardian-api</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>com.google.errorprone</groupId>
-					<artifactId>error_prone_annotations</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.jetbrains</groupId>
-					<artifactId>annotations</artifactId>
-				</exclusion>
-				<exclusion>
-					<groupId>org.jetbrains.kotlin</groupId>
-					<artifactId>kotlin-stdlib-jdk8</artifactId>
-				</exclusion>
-			</exclusions>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-table-calcite-bridge</artifactId>
+			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<!-- Test dependencies -->
@@ -217,6 +146,14 @@ under the License.
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-test-utils</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- ArchUnit test dependencies -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-architecture-tests-test</artifactId>
 			<version>${project.version}</version>
 			<scope>test</scope>
 		</dependency>
@@ -371,7 +308,7 @@ under the License.
 							<include>org.apache.calcite.avatica:*</include>
 
 							<!-- Calcite's dependencies -->
-							<include>com.esri.geometry:esri-geometry-api</include>
+							<include>org.locationtech.jts:jts-core</include>
 							<include>com.google.guava:guava</include>
 							<include>com.google.guava:failureaccess</include>
 							<include>commons-codec:commons-codec</include>
@@ -380,6 +317,7 @@ under the License.
 
 							<!-- flink-table-planner dependencies -->
 							<include>org.apache.flink:flink-sql-parser</include>
+							<include>org.apache.flink:flink-table-calcite-bridge</include>
 						</includes>
 					</artifactSet>
 					<relocations>
@@ -390,6 +328,7 @@ under the License.
 						</relocation>-->
 
 						<!-- Calcite's dependencies -->
+						<!-- Keep it in sync with flink-sql-client -->
 						<relocation>
 							<pattern>com.google</pattern>
 							<shadedPattern>org.apache.flink.calcite.shaded.com.google</shadedPattern>
@@ -454,11 +393,8 @@ under the License.
 							<includes>
 								<include>**/*ITCase.*</include>
 							</includes>
-							<!-- Setting this property to false is aims to alleviate OOM error
-							mentioned in issue: https://issues.apache.org/jira/browse/FLINK-18356.
-							This property can be removed after the OOM error mentioned in the above
-							issue is solved. -->
-							<reuseForks>false</reuseForks>
+							<!-- override reuseForks to true to reduce testing time -->
+							<reuseForks>true</reuseForks>
 						</configuration>
 					</execution>
 				</executions>

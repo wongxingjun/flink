@@ -42,8 +42,8 @@ Kubernetes 高可用服务只能在部署到 Kubernetes 时使用。因此，当
 
 为了启用高可用集群（HA-cluster），你必须设置以下配置项:
 
-- [high-availability]({{< ref "docs/deployment/config" >}}#high-availability-1) (必要的):
-`high-availability.type` 选项必须设置为 `KubernetesHaServicesFactory`.
+- [high-availability.type]({{< ref "docs/deployment/config" >}}#high-availability-type) (必要的):
+`high-availability.type` 选项必须设置为 `kubernetes`.
 
 ```yaml
 high-availability.type: kubernetes
@@ -67,7 +67,7 @@ kubernetes.cluster-id: cluster1337
 
 ### 配置示例
 
-在 `conf/flink-conf.yaml` 中配置高可用模式:
+在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中配置高可用模式:
 
 ```yaml
 kubernetes.cluster-id: <cluster-id>

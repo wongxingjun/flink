@@ -23,6 +23,7 @@ import org.apache.flink.core.testutils.CompletedScheduledFuture;
 import org.apache.flink.runtime.JobException;
 import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
+import org.apache.flink.runtime.failure.FailureEnricherUtils;
 import org.apache.flink.runtime.scheduler.ExecutionGraphHandler;
 import org.apache.flink.runtime.scheduler.OperatorCoordinatorHandler;
 import org.apache.flink.runtime.scheduler.exceptionhistory.ExceptionHistoryEntry;
@@ -74,12 +75,29 @@ public class RestartingTest extends TestLogger {
     }
 
     @Test
-    public void testSuspend() throws Exception {
+    public void testSuspendWithJobInCancellingState() throws Exception {
+        testSuspend(false);
+    }
+
+    @Test
+    public void testSuspendWithJobInCancelledState() throws Exception {
+        testSuspend(true);
+    }
+
+    private void testSuspend(boolean cancellationCompleted) throws Exception {
         try (MockRestartingContext ctx = new MockRestartingContext()) {
-            Restarting restarting = createRestartingState(ctx);
+            final StateTrackingMockExecutionGraph executionGraph =
+                    new StateTrackingMockExecutionGraph();
+            final Restarting restarting = createRestartingState(ctx, executionGraph);
+
+            if (cancellationCompleted) {
+                executionGraph.completeTerminationFuture(JobStatus.CANCELED);
+            }
+
             ctx.setExpectFinished(
                     archivedExecutionGraph ->
                             assertThat(archivedExecutionGraph.getState(), is(JobStatus.SUSPENDED)));
+
             final Throwable cause = new RuntimeException("suspend");
             restarting.suspend(cause);
         }
@@ -89,7 +107,8 @@ public class RestartingTest extends TestLogger {
     public void testGlobalFailuresAreIgnored() throws Exception {
         try (MockRestartingContext ctx = new MockRestartingContext()) {
             Restarting restarting = createRestartingState(ctx);
-            restarting.handleGlobalFailure(new RuntimeException());
+            restarting.handleGlobalFailure(
+                    new RuntimeException(), FailureEnricherUtils.EMPTY_FAILURE_LABELS);
             ctx.assertNoStateTransition();
         }
     }

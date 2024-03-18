@@ -25,9 +25,12 @@ import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.BasicSessionCredentials;
 import com.amazonaws.services.securitytoken.model.Credentials;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.s3a.auth.NoAwsCredentialsException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.net.URI;
 
 /**
  * Support dynamic session credentials for authenticating with AWS. Please note that users may
@@ -45,9 +48,13 @@ public class DynamicTemporaryAWSCredentialsProvider implements AWSCredentialsPro
     private static final Logger LOG =
             LoggerFactory.getLogger(DynamicTemporaryAWSCredentialsProvider.class);
 
+    public DynamicTemporaryAWSCredentialsProvider() {}
+
+    public DynamicTemporaryAWSCredentialsProvider(URI uri, Configuration conf) {}
+
     @Override
     public AWSCredentials getCredentials() throws SdkBaseException {
-        Credentials credentials = S3DelegationTokenReceiver.getCredentials();
+        Credentials credentials = AbstractS3DelegationTokenReceiver.getCredentials();
         if (credentials == null) {
             throw new NoAwsCredentialsException(COMPONENT);
         }

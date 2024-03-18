@@ -84,6 +84,13 @@ public class ClusterOptions {
                                     + "By default it will use 4 * the number of CPU cores (hardware contexts) that the cluster process has access to. "
                                     + "Increasing the pool size allows to run more IO operations concurrently.");
 
+    /**
+     * @deprecated Please use {@link TaskManagerOptions#TASK_MANAGER_LOAD_BALANCE_MODE} instead.
+     *     Note: The 'taskmanager.load-balance.mode: SLOTS' is equal to
+     *     'cluster.evenly-spread-out-slots: true'. The 'taskmanager.load-balance.mode: NONE' is
+     *     equal to 'cluster.evenly-spread-out-slots: false'.
+     */
+    @Deprecated
     @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
     public static final ConfigOption<Boolean> EVENLY_SPREAD_OUT_SLOTS_STRATEGY =
             ConfigOptions.key("cluster.evenly-spread-out-slots")
@@ -135,14 +142,6 @@ public class ClusterOptions {
                     .defaultValue(50)
                     .withDescription(
                             "The maximum stacktrace depth of TaskManager and JobManager's thread dump web-frontend displayed.");
-
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT =
-            ConfigOptions.key("cluster.fine-grained-resource-management.enabled")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withDescription(
-                            "Defines whether the cluster uses fine-grained resource management.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
     public static final ConfigOption<Boolean> FINE_GRAINED_SHUFFLE_MODE_ALL_BLOCKING =
@@ -213,7 +212,7 @@ public class ClusterOptions {
         }
     }
 
-    private static boolean isReactiveModeEnabled(Configuration configuration) {
+    public static boolean isReactiveModeEnabled(Configuration configuration) {
         return configuration.get(JobManagerOptions.SCHEDULER_MODE)
                 == SchedulerExecutionMode.REACTIVE;
     }
@@ -224,14 +223,6 @@ public class ClusterOptions {
                     == JobManagerOptions.SchedulerType.Adaptive;
         } else {
             return System.getProperties().containsKey("flink.tests.enable-adaptive-scheduler");
-        }
-    }
-
-    public static boolean isFineGrainedResourceManagementEnabled(Configuration configuration) {
-        if (configuration.contains(ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT)) {
-            return configuration.get(ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT);
-        } else {
-            return System.getProperties().containsKey("flink.tests.enable-fine-grained");
         }
     }
 

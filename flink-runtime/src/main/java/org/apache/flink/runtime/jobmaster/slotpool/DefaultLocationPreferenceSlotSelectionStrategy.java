@@ -18,13 +18,15 @@
 
 package org.apache.flink.runtime.jobmaster.slotpool;
 
+import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
 import org.apache.flink.runtime.jobmanager.scheduler.Locality;
+import org.apache.flink.runtime.jobmaster.SlotInfo;
 
 import javax.annotation.Nonnull;
 
-import java.util.Collection;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 class DefaultLocationPreferenceSlotSelectionStrategy
         extends LocationPreferenceSlotSelectionStrategy {
@@ -32,12 +34,12 @@ class DefaultLocationPreferenceSlotSelectionStrategy
     @Nonnull
     @Override
     protected Optional<SlotInfoAndLocality> selectWithoutLocationPreference(
-            @Nonnull Collection<SlotInfoAndResources> availableSlots,
+            @Nonnull FreeSlotInfoTracker freeSlotInfoTracker,
             @Nonnull ResourceProfile resourceProfile) {
-        for (SlotInfoAndResources candidate : availableSlots) {
-            if (candidate.getRemainingResources().isMatching(resourceProfile)) {
-                return Optional.of(
-                        SlotInfoAndLocality.of(candidate.getSlotInfo(), Locality.UNCONSTRAINED));
+        for (AllocationID allocationId : freeSlotInfoTracker.getAvailableSlots()) {
+            SlotInfo candidate = freeSlotInfoTracker.getSlotInfo(allocationId);
+            if (candidate.getResourceProfile().isMatching(resourceProfile)) {
+                return Optional.of(SlotInfoAndLocality.of(candidate, Locality.UNCONSTRAINED));
             }
         }
         return Optional.empty();
@@ -45,7 +47,7 @@ class DefaultLocationPreferenceSlotSelectionStrategy
 
     @Override
     protected double calculateCandidateScore(
-            int localWeigh, int hostLocalWeigh, double taskExecutorUtilization) {
+            int localWeigh, int hostLocalWeigh, Supplier<Double> taskExecutorUtilizationSupplier) {
         return localWeigh * 10 + hostLocalWeigh;
     }
 }

@@ -20,20 +20,19 @@ package org.apache.flink.streaming.runtime.tasks;
 
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
-import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.operators.SetupableStreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.runtime.io.RecordWriterOutput;
-import org.apache.flink.streaming.runtime.operators.StreamOperatorChainingTest;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.MockStreamTaskBuilder;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,18 +41,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * This class test the {@link OperatorChain}.
  *
  * <p>It takes a different (simpler) approach at testing the operator chain than {@link
- * StreamOperatorChainingTest}.
+ * org.apache.flink.streaming.runtime.operators.StreamOperatorChainingTest}.
  */
-public class OperatorChainTest {
+class OperatorChainTest {
 
     @Test
-    public void testPrepareCheckpointPreBarrier() throws Exception {
+    void testPrepareCheckpointPreBarrier() throws Exception {
         final AtomicInteger intRef = new AtomicInteger();
 
         final OneInputStreamOperator<String, String> one = new ValidatingOperator(intRef, 0);
@@ -63,7 +62,7 @@ public class OperatorChainTest {
         final OperatorChain<?, ?> chain = setupOperatorChain(one, two, three);
         chain.prepareSnapshotPreBarrier(ValidatingOperator.CHECKPOINT_ID);
 
-        assertEquals(3, intRef.get());
+        assertThat(intRef).hasValue(3);
     }
 
     // ------------------------------------------------------------------------
@@ -71,7 +70,7 @@ public class OperatorChainTest {
     // ------------------------------------------------------------------------
 
     @SafeVarargs
-    public static <T, OP extends StreamOperator<T>> OperatorChain<T, OP> setupOperatorChain(
+    static <T, OP extends StreamOperator<T>> OperatorChain<T, OP> setupOperatorChain(
             OneInputStreamOperator<T, T>... operators) throws Exception {
 
         checkNotNull(operators);
@@ -89,7 +88,8 @@ public class OperatorChainTest {
             // initial output goes to nowhere
             @SuppressWarnings({"unchecked", "rawtypes"})
             WatermarkGaugeExposingOutput<StreamRecord<T>> lastWriter =
-                    new BroadcastingOutputCollector<>(new Output[0]);
+                    new BroadcastingOutputCollector<>(
+                            new OutputWithChainingCheck[0], new SimpleCounter());
 
             // build the reverse operators array
             for (int i = 0; i < operators.length; i++) {
@@ -147,8 +147,8 @@ public class OperatorChainTest {
 
         @Override
         public void prepareSnapshotPreBarrier(long checkpointId) throws Exception {
-            assertEquals("wrong checkpointId", CHECKPOINT_ID, checkpointId);
-            assertEquals("wrong order", expected, toUpdate.getAndIncrement());
+            assertThat(checkpointId).as("wrong checkpointId").isEqualTo(CHECKPOINT_ID);
+            assertThat(toUpdate.getAndIncrement()).as("wrong order").isEqualTo(expected);
         }
 
         @Override

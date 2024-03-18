@@ -33,17 +33,19 @@ import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
+import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetrics;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.testutils.MockEnvironment;
 import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
-import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
 import org.apache.flink.runtime.state.CheckpointStateOutputStream;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
+import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
 import org.apache.flink.runtime.state.CheckpointedStateScope;
 import org.apache.flink.runtime.state.KeyGroupRange;
+import org.apache.flink.runtime.state.KeyedStateBackendParametersImpl;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.SnapshotResult;
 import org.apache.flink.runtime.state.StateBackend;
@@ -73,12 +75,11 @@ import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
 
+import org.assertj.core.api.Assertions;
 import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-import org.junit.runner.RunWith;
-import org.powermock.modules.junit4.PowerMockRunner;
 
 import javax.annotation.Nullable;
 
@@ -103,11 +104,8 @@ import static org.apache.flink.runtime.state.FullSnapshotUtil.hasMetaDataFollows
 import static org.apache.flink.runtime.state.FullSnapshotUtil.setMetaDataFollowsFlagInKey;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.verify;
 
 /** Tests for asynchronous RocksDB Key/Value state checkpoints. */
-@RunWith(PowerMockRunner.class)
 @SuppressWarnings("serial")
 public class RocksDBAsyncSnapshotTest extends TestLogger {
 
@@ -202,6 +200,10 @@ public class RocksDBAsyncSnapshotTest extends TestLogger {
                             ExecutionAttemptID executionAttemptID,
                             long checkpointId,
                             CheckpointException checkpointException) {}
+
+                    @Override
+                    public void reportInitializationMetrics(
+                            JobID jobId, SubTaskInitializationMetrics initializationMetrics) {}
                 };
 
         JobID jobID = new JobID();
@@ -406,26 +408,29 @@ public class RocksDBAsyncSnapshotTest extends TestLogger {
         MockEnvironment env = MockEnvironment.builder().build();
 
         final IOException testException = new IOException("Test exception");
-        CheckpointStateOutputStream outputStream = spy(new FailingStream(testException));
+        FailingStream outputStream = new FailingStream(testException);
 
         RocksDBStateBackend backend =
                 new RocksDBStateBackend((StateBackend) new MemoryStateBackend());
 
         backend.setDbStoragePath(temporaryFolder.newFolder().toURI().toString());
 
-        AbstractKeyedStateBackend<Void> keyedStateBackend =
+        CheckpointableKeyedStateBackend<Void> keyedStateBackend =
                 backend.createKeyedStateBackend(
-                        env,
-                        new JobID(),
-                        "test operator",
-                        VoidSerializer.INSTANCE,
-                        1,
-                        new KeyGroupRange(0, 0),
-                        null,
-                        TtlTimeProvider.DEFAULT,
-                        new UnregisteredMetricsGroup(),
-                        Collections.emptyList(),
-                        new CloseableRegistry());
+                        new KeyedStateBackendParametersImpl<>(
+                                env,
+                                new JobID(),
+                                "test operator",
+                                VoidSerializer.INSTANCE,
+                                1,
+                                new KeyGroupRange(0, 0),
+                                null,
+                                TtlTimeProvider.DEFAULT,
+                                new UnregisteredMetricsGroup(),
+                                (name, value) -> {},
+                                Collections.emptyList(),
+                                new CloseableRegistry(),
+                                1.0));
 
         try {
             // register a state so that the state backend has to checkpoint something
@@ -448,7 +453,7 @@ public class RocksDBAsyncSnapshotTest extends TestLogger {
                 Assert.assertEquals(testException, e.getCause());
             }
 
-            verify(outputStream).close();
+            Assertions.assertThat(outputStream.isCloseCalled()).isEqualTo(true);
         } finally {
             IOUtils.closeQuietly(keyedStateBackend);
             keyedStateBackend.dispose();
@@ -530,6 +535,8 @@ public class RocksDBAsyncSnapshotTest extends TestLogger {
 
         private final IOException testException;
 
+        private boolean closeCalled = false;
+
         FailingStream(IOException testException) {
             this.testException = testException;
         }
@@ -562,7 +569,12 @@ public class RocksDBAsyncSnapshotTest extends TestLogger {
 
         @Override
         public void close() {
+            closeCalled = true;
             throw new UnsupportedOperationException();
+        }
+
+        public boolean isCloseCalled() {
+            return closeCalled;
         }
     }
 }

@@ -23,6 +23,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.runtime.memory.OpaqueMemoryResource;
+import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
@@ -44,7 +45,11 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -58,6 +63,14 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public final class RocksDBResourceContainer implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(RocksDBResourceContainer.class);
+
+    private static final String ROCKSDB_RELOCATE_LOG_SUFFIX = "_LOG";
+
+    // the filename length limit is 255 on most operating systems
+    private static final int INSTANCE_PATH_LENGTH_LIMIT =
+            255 - ROCKSDB_RELOCATE_LOG_SUFFIX.length();
+
+    @Nullable private final File instanceRocksDBPath;
 
     /** The configurations from file. */
     private final ReadableConfig configuration;
@@ -80,15 +93,17 @@ public final class RocksDBResourceContainer implements AutoCloseable {
     /** The handles to be closed when the container is closed. */
     private final ArrayList<AutoCloseable> handlesToClose;
 
+    @Nullable private Path relocatedDbLogBaseDir;
+
     @VisibleForTesting
     public RocksDBResourceContainer() {
-        this(new Configuration(), PredefinedOptions.DEFAULT, null, null, false);
+        this(new Configuration(), PredefinedOptions.DEFAULT, null, null, null, false);
     }
 
     @VisibleForTesting
     public RocksDBResourceContainer(
             PredefinedOptions predefinedOptions, @Nullable RocksDBOptionsFactory optionsFactory) {
-        this(new Configuration(), predefinedOptions, optionsFactory, null, false);
+        this(new Configuration(), predefinedOptions, optionsFactory, null, null, false);
     }
 
     @VisibleForTesting
@@ -96,7 +111,7 @@ public final class RocksDBResourceContainer implements AutoCloseable {
             PredefinedOptions predefinedOptions,
             @Nullable RocksDBOptionsFactory optionsFactory,
             @Nullable OpaqueMemoryResource<RocksDBSharedResources> sharedResources) {
-        this(new Configuration(), predefinedOptions, optionsFactory, sharedResources, false);
+        this(new Configuration(), predefinedOptions, optionsFactory, sharedResources, null, false);
     }
 
     public RocksDBResourceContainer(
@@ -104,12 +119,19 @@ public final class RocksDBResourceContainer implements AutoCloseable {
             PredefinedOptions predefinedOptions,
             @Nullable RocksDBOptionsFactory optionsFactory,
             @Nullable OpaqueMemoryResource<RocksDBSharedResources> sharedResources,
+            @Nullable File instanceBasePath,
             boolean enableStatistics) {
 
         this.configuration = configuration;
         this.predefinedOptions = checkNotNull(predefinedOptions);
         this.optionsFactory = optionsFactory;
         this.sharedResources = sharedResources;
+
+        this.instanceRocksDBPath =
+                instanceBasePath != null
+                        ? RocksDBKeyedStateBackendBuilder.getInstanceRocksDBPath(instanceBasePath)
+                        : null;
+
         this.enableStatistics = enableStatistics;
         this.handlesToClose = new ArrayList<>();
     }
@@ -129,7 +151,7 @@ public final class RocksDBResourceContainer implements AutoCloseable {
         }
 
         // add necessary default options
-        opt = opt.setCreateIfMissing(true);
+        opt = opt.setCreateIfMissing(true).setAvoidFlushDuringShutdown(true);
 
         // if sharedResources is non-null, use the write buffer manager from it.
         if (sharedResources != null) {
@@ -255,6 +277,7 @@ public final class RocksDBResourceContainer implements AutoCloseable {
         if (sharedResources != null) {
             sharedResources.close();
         }
+        cleanRelocatedDbLogs();
     }
 
     /**
@@ -314,7 +337,17 @@ public final class RocksDBResourceContainer implements AutoCloseable {
 
         String logDir = internalGetOption(RocksDBConfigurableOptions.LOG_DIR);
         if (logDir == null || logDir.isEmpty()) {
-            relocateDefaultDbLogDir(currentOptions);
+            if (instanceRocksDBPath == null
+                    || instanceRocksDBPath.getAbsolutePath().length()
+                            <= INSTANCE_PATH_LENGTH_LIMIT) {
+                relocateDefaultDbLogDir(currentOptions);
+            } else {
+                // disable log relocate when instance path length exceeds limit to prevent rocksdb
+                // log file creation failure, details in FLINK-31743
+                LOG.warn(
+                        "RocksDB instance path length exceeds limit : {}, disable log relocate.",
+                        instanceRocksDBPath);
+            }
         } else {
             currentOptions.setDbLogDir(logDir);
         }
@@ -334,6 +367,9 @@ public final class RocksDBResourceContainer implements AutoCloseable {
 
         currentOptions.setCompactionStyle(
                 internalGetOption(RocksDBConfigurableOptions.COMPACTION_STYLE));
+
+        currentOptions.setCompressionPerLevel(
+                internalGetOption(RocksDBConfigurableOptions.COMPRESSION_PER_LEVEL));
 
         currentOptions.setLevelCompactionDynamicLevelBytes(
                 internalGetOption(RocksDBConfigurableOptions.USE_DYNAMIC_LEVEL_SIZE));
@@ -401,7 +437,9 @@ public final class RocksDBResourceContainer implements AutoCloseable {
         if (logFilePath != null) {
             File logFile = resolveFileLocation(logFilePath);
             if (logFile != null && resolveFileLocation(logFile.getParent()) != null) {
-                dbOptions.setDbLogDir(logFile.getParent());
+                String relocatedDbLogDir = logFile.getParent();
+                this.relocatedDbLogBaseDir = new File(relocatedDbLogDir).toPath();
+                dbOptions.setDbLogDir(relocatedDbLogDir);
             }
         }
     }
@@ -415,5 +453,45 @@ public final class RocksDBResourceContainer implements AutoCloseable {
     private File resolveFileLocation(String logFilePath) {
         File logFile = new File(logFilePath);
         return (logFile.exists() && logFile.canRead()) ? logFile : null;
+    }
+
+    /** Clean all relocated rocksdb logs. */
+    private void cleanRelocatedDbLogs() {
+        if (instanceRocksDBPath != null && relocatedDbLogBaseDir != null) {
+            LOG.info("Cleaning up relocated RocksDB logs: {}.", relocatedDbLogBaseDir);
+
+            String relocatedDbLogPrefix =
+                    resolveRelocatedDbLogPrefix(instanceRocksDBPath.getAbsolutePath());
+            try {
+                Arrays.stream(FileUtils.listDirectory(relocatedDbLogBaseDir))
+                        .filter(
+                                path ->
+                                        !Files.isDirectory(path)
+                                                && path.toFile()
+                                                        .getName()
+                                                        .startsWith(relocatedDbLogPrefix))
+                        .forEach(IOUtils::deleteFileQuietly);
+            } catch (IOException e) {
+                LOG.warn(
+                        "Could not list relocated RocksDB log directory: {}",
+                        relocatedDbLogBaseDir);
+            }
+        }
+    }
+
+    /**
+     * Resolve the prefix of rocksdb's log file name according to rocksdb's log file name rules. See
+     * https://github.com/ververica/frocksdb/blob/FRocksDB-6.20.3/file/filename.cc#L30.
+     *
+     * @param instanceRocksDBAbsolutePath The path where the rocksdb directory is located.
+     * @return Resolved rocksdb log name prefix.
+     */
+    private String resolveRelocatedDbLogPrefix(String instanceRocksDBAbsolutePath) {
+        if (!instanceRocksDBAbsolutePath.isEmpty()
+                && !instanceRocksDBAbsolutePath.matches("^[a-zA-Z0-9\\-._].*")) {
+            instanceRocksDBAbsolutePath = instanceRocksDBAbsolutePath.substring(1);
+        }
+        return instanceRocksDBAbsolutePath.replaceAll("[^a-zA-Z0-9\\-._]", "_")
+                + ROCKSDB_RELOCATE_LOG_SUFFIX;
     }
 }

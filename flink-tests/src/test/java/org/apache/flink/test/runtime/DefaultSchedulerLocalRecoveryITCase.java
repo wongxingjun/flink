@@ -22,10 +22,10 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.client.program.MiniClusterClient;
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.MemorySize;
+import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
@@ -73,7 +73,7 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
 
     private void testLocalRecoveryInternal(String failoverStrategyValue) throws Exception {
         final Configuration configuration = new Configuration();
-        configuration.setBoolean(CheckpointingOptions.LOCAL_RECOVERY, true);
+        configuration.set(StateRecoveryOptions.LOCAL_RECOVERY, true);
         configuration.setString(EXECUTION_FAILOVER_STRATEGY.key(), failoverStrategyValue);
 
         final int parallelism = 10;
@@ -109,7 +109,7 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
     private ArchivedExecutionGraph executeSchedulingTest(
             Configuration configuration, int parallelism) throws Exception {
         final long slotIdleTimeout = TIMEOUT;
-        configuration.setLong(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
+        configuration.set(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
 
         configuration.set(TaskManagerOptions.TOTAL_FLINK_MEMORY, MemorySize.parse("64mb"));
         configuration.set(TaskManagerOptions.FRAMEWORK_HEAP_MEMORY, MemorySize.parse("16mb"));

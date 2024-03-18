@@ -26,6 +26,7 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.io.RecordProcessorUtils;
 import org.apache.flink.streaming.runtime.metrics.WatermarkGauge;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.streamrecord.RecordAttributes;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.OutputTag;
@@ -36,7 +37,9 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-class ChainingOutput<T> implements WatermarkGaugeExposingOutput<StreamRecord<T>> {
+class ChainingOutput<T>
+        implements WatermarkGaugeExposingOutput<StreamRecord<T>>,
+                OutputWithChainingCheck<StreamRecord<T>> {
     private static final Logger LOG = LoggerFactory.getLogger(ChainingOutput.class);
 
     protected final Input<T> input;
@@ -80,6 +83,18 @@ class ChainingOutput<T> implements WatermarkGaugeExposingOutput<StreamRecord<T>>
         if (OutputTag.isResponsibleFor(this.outputTag, outputTag)) {
             pushToOperator(record);
         }
+    }
+
+    @Override
+    public boolean collectAndCheckIfChained(StreamRecord<T> record) {
+        collect(record);
+        return false;
+    }
+
+    @Override
+    public <X> boolean collectAndCheckIfChained(OutputTag<X> outputTag, StreamRecord<X> record) {
+        collect(outputTag, record);
+        return false;
     }
 
     protected <X> void pushToOperator(StreamRecord<X> record) {
@@ -138,6 +153,15 @@ class ChainingOutput<T> implements WatermarkGaugeExposingOutput<StreamRecord<T>>
             } catch (Exception e) {
                 throw new ExceptionInChainedOperatorException(e);
             }
+        }
+    }
+
+    @Override
+    public void emitRecordAttributes(RecordAttributes recordAttributes) {
+        try {
+            input.processRecordAttributes(recordAttributes);
+        } catch (Exception e) {
+            throw new ExceptionInChainedOperatorException(e);
         }
     }
 }

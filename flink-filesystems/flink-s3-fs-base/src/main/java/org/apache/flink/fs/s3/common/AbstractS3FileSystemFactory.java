@@ -25,7 +25,7 @@ import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.FileSystemFactory;
-import org.apache.flink.fs.s3.common.token.S3DelegationTokenReceiver;
+import org.apache.flink.fs.s3.common.token.AbstractS3DelegationTokenReceiver;
 import org.apache.flink.fs.s3.common.writer.S3AccessHelper;
 import org.apache.flink.runtime.util.HadoopConfigLoader;
 import org.apache.flink.util.Preconditions;
@@ -124,12 +124,12 @@ public abstract class AbstractS3FileSystemFactory implements FileSystemFactory {
             // create the Hadoop FileSystem
             org.apache.hadoop.conf.Configuration hadoopConfig =
                     hadoopConfigLoader.getOrLoadHadoopConfig();
-            S3DelegationTokenReceiver.updateHadoopConfig(hadoopConfig);
+            AbstractS3DelegationTokenReceiver.updateHadoopConfig(hadoopConfig);
             org.apache.hadoop.fs.FileSystem fs = createHadoopFileSystem();
             fs.initialize(getInitURI(fsUri, hadoopConfig), hadoopConfig);
 
             // load the entropy injection settings
-            String entropyInjectionKey = flinkConfig.getString(ENTROPY_INJECT_KEY_OPTION);
+            String entropyInjectionKey = flinkConfig.get(ENTROPY_INJECT_KEY_OPTION);
             int numEntropyChars = -1;
             if (entropyInjectionKey != null) {
                 if (entropyInjectionKey.matches(INVALID_ENTROPY_KEY_CHARS)) {
@@ -139,7 +139,7 @@ public abstract class AbstractS3FileSystemFactory implements FileSystemFactory {
                                     + " : "
                                     + entropyInjectionKey);
                 }
-                numEntropyChars = flinkConfig.getInteger(ENTROPY_INJECT_LENGTH_OPTION);
+                numEntropyChars = flinkConfig.get(ENTROPY_INJECT_LENGTH_OPTION);
                 if (numEntropyChars <= 0) {
                     throw new IllegalConfigurationException(
                             ENTROPY_INJECT_LENGTH_OPTION.key() + " must configure a value > 0");
@@ -150,8 +150,8 @@ public abstract class AbstractS3FileSystemFactory implements FileSystemFactory {
                     ConfigurationUtils.parseTempDirectories(flinkConfig);
             Preconditions.checkArgument(localTmpDirectories.length > 0);
             final String localTmpDirectory = localTmpDirectories[0];
-            final long s3minPartSize = flinkConfig.getLong(PART_UPLOAD_MIN_SIZE);
-            final int maxConcurrentUploads = flinkConfig.getInteger(MAX_CONCURRENT_UPLOADS);
+            final long s3minPartSize = flinkConfig.get(PART_UPLOAD_MIN_SIZE);
+            final int maxConcurrentUploads = flinkConfig.get(MAX_CONCURRENT_UPLOADS);
             final S3AccessHelper s3AccessHelper = getS3AccessHelper(fs);
 
             return createFlinkFileSystem(

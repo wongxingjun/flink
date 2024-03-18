@@ -26,6 +26,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.core.execution.CheckpointType;
 import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.queryablestate.KvStateID;
 import org.apache.flink.runtime.accumulators.AccumulatorSnapshot;
 import org.apache.flink.runtime.blob.BlobWriter;
@@ -34,7 +35,9 @@ import org.apache.flink.runtime.blocklist.BlocklistContext;
 import org.apache.flink.runtime.blocklist.BlocklistHandler;
 import org.apache.flink.runtime.blocklist.BlocklistUtils;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
+import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
+import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetrics;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
@@ -54,7 +57,6 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
-import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmanager.OnCompletionActions;
@@ -69,7 +71,6 @@ import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.FlinkJobNotFoundException;
 import org.apache.flink.runtime.messages.checkpoint.DeclineCheckpoint;
-import org.apache.flink.runtime.messages.webmonitor.JobDetails;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
 import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
@@ -86,7 +87,6 @@ import org.apache.flink.runtime.rpc.FencedRpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcServiceUtils;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
-import org.apache.flink.runtime.scheduler.SchedulerBase;
 import org.apache.flink.runtime.scheduler.SchedulerNG;
 import org.apache.flink.runtime.shuffle.JobShuffleContext;
 import org.apache.flink.runtime.shuffle.JobShuffleContextImpl;
@@ -104,6 +104,7 @@ import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.InstantiationUtil;
+import org.apache.flink.util.MdcUtils;
 import org.apache.flink.util.SerializedValue;
 import org.apache.flink.util.concurrent.FutureUtils;
 
@@ -208,6 +209,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
 
     private final ExecutionDeploymentTracker executionDeploymentTracker;
     private final ExecutionDeploymentReconciler executionDeploymentReconciler;
+    private final Collection<FailureEnricher> failureEnrichers;
 
     // -------- Mutable fields ---------
 
@@ -245,10 +247,15 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
             ExecutionDeploymentTracker executionDeploymentTracker,
             ExecutionDeploymentReconciler.Factory executionDeploymentReconcilerFactory,
             BlocklistHandler.Factory blocklistHandlerFactory,
+            Collection<FailureEnricher> failureEnrichers,
             long initializationTimestamp)
             throws Exception {
 
-        super(rpcService, RpcServiceUtils.createRandomName(JOB_MANAGER_NAME), jobMasterId);
+        super(
+                rpcService,
+                RpcServiceUtils.createRandomName(JOB_MANAGER_NAME),
+                jobMasterId,
+                MdcUtils.asContextData(jobGraph.getJobID()));
 
         final ExecutionDeploymentReconciliationHandler executionStateReconciliationHandler =
                 new ExecutionDeploymentReconciliationHandler() {
@@ -289,6 +296,10 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
                         }
                     }
                 };
+        final String jobName = jobGraph.getName();
+        final JobID jid = jobGraph.getJobID();
+
+        log.info("Initializing job '{}' ({}).", jobName, jid);
 
         this.executionDeploymentTracker = executionDeploymentTracker;
         this.executionDeploymentReconciler =
@@ -300,8 +311,9 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
         this.rpcTimeout = jobMasterConfiguration.getRpcTimeout();
         this.highAvailabilityServices = checkNotNull(highAvailabilityService);
         this.blobWriter = jobManagerSharedServices.getBlobWriter();
-        this.futureExecutor = jobManagerSharedServices.getFutureExecutor();
-        this.ioExecutor = jobManagerSharedServices.getIoExecutor();
+        this.futureExecutor =
+                MdcUtils.scopeToJob(jid, jobManagerSharedServices.getFutureExecutor());
+        this.ioExecutor = MdcUtils.scopeToJob(jid, jobManagerSharedServices.getIoExecutor());
         this.jobCompletionActions = checkNotNull(jobCompletionActions);
         this.fatalErrorHandler = checkNotNull(fatalErrorHandler);
         this.userCodeLoader = checkNotNull(userCodeLoader);
@@ -309,12 +321,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
         this.retrieveTaskManagerHostName =
                 jobMasterConfiguration
                         .getConfiguration()
-                        .getBoolean(JobManagerOptions.RETRIEVE_TASK_MANAGER_HOSTNAME);
-
-        final String jobName = jobGraph.getName();
-        final JobID jid = jobGraph.getJobID();
-
-        log.info("Initializing job '{}' ({}).", jobName, jid);
+                        .get(JobManagerOptions.RETRIEVE_TASK_MANAGER_HOSTNAME);
 
         resourceManagerLeaderRetriever =
                 highAvailabilityServices.getResourceManagerLeaderRetriever();
@@ -347,6 +354,9 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
 
         this.jobManagerJobMetricGroup = jobMetricGroupFactory.create(jobGraph);
         this.jobStatusListener = new JobManagerJobStatusListener();
+
+        this.failureEnrichers = checkNotNull(failureEnrichers);
+
         this.schedulerNG =
                 createScheduler(
                         slotPoolServiceSchedulerFactory,
@@ -391,6 +401,7 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
                         getMainThreadExecutor(),
                         fatalErrorHandler,
                         jobStatusListener,
+                        failureEnrichers,
                         blocklistHandler::addNewBlockedNodes);
 
         return scheduler;
@@ -498,6 +509,11 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
     }
 
     @Override
+    public void notifyEndOfData(final ExecutionAttemptID executionAttempt) {
+        schedulerNG.notifyEndOfData(executionAttempt);
+    }
+
+    @Override
     public CompletableFuture<SerializedInputSplit> requestNextInputSplit(
             final JobVertexID vertexID, final ExecutionAttemptID executionAttempt) {
 
@@ -574,6 +590,12 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
 
         schedulerNG.reportCheckpointMetrics(
                 jobID, executionAttemptID, checkpointId, checkpointMetrics);
+    }
+
+    @Override
+    public void reportInitializationMetrics(
+            JobID jobId, SubTaskInitializationMetrics initializationMetrics) {
+        schedulerNG.reportInitializationMetrics(jobId, initializationMetrics);
     }
 
     // TODO: This method needs a leader session ID
@@ -844,11 +866,6 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
     }
 
     @Override
-    public CompletableFuture<JobDetails> requestJobDetails(Time timeout) {
-        return CompletableFuture.completedFuture(schedulerNG.requestJobDetails());
-    }
-
-    @Override
     public CompletableFuture<JobStatus> requestJobStatus(Time timeout) {
         return CompletableFuture.completedFuture(schedulerNG.requestJobStatus());
     }
@@ -856,6 +873,11 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
     @Override
     public CompletableFuture<ExecutionGraphInfo> requestJob(Time timeout) {
         return CompletableFuture.completedFuture(schedulerNG.requestJob());
+    }
+
+    @Override
+    public CompletableFuture<CheckpointStatsSnapshot> requestCheckpointStats(Time timeout) {
+        return CompletableFuture.completedFuture(schedulerNG.requestCheckpointStats());
     }
 
     @Override
@@ -938,19 +960,6 @@ public class JobMaster extends FencedRpcEndpoint<JobMasterId>
     public CompletableFuture<Acknowledge> notifyNewBlockedNodes(Collection<BlockedNode> newNodes) {
         blocklistHandler.addNewBlockedNodes(newNodes);
         return CompletableFuture.completedFuture(Acknowledge.get());
-    }
-
-    @Override
-    public CompletableFuture<Map<JobVertexID, Integer>> getMaxParallelismPerVertex() {
-        final Map<JobVertexID, Integer> maxParallelismPerVertex = new HashMap<>();
-        for (JobVertex vertex : jobGraph.getVertices()) {
-            maxParallelismPerVertex.put(
-                    vertex.getID(),
-                    vertex.getMaxParallelism() != JobVertex.MAX_PARALLELISM_DEFAULT
-                            ? vertex.getMaxParallelism()
-                            : SchedulerBase.getDefaultMaxParallelism(vertex));
-        }
-        return CompletableFuture.completedFuture(maxParallelismPerVertex);
     }
 
     @Override

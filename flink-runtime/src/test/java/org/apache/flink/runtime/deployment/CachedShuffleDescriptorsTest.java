@@ -22,6 +22,7 @@ import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAda
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor.MaybeOffloaded;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptor.NonOffloaded;
 import org.apache.flink.runtime.deployment.TaskDeploymentDescriptorFactory.ShuffleDescriptorAndIndex;
+import org.apache.flink.runtime.deployment.TaskDeploymentDescriptorFactory.ShuffleDescriptorGroup;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
@@ -83,12 +84,12 @@ class CachedShuffleDescriptorsTest {
                         consumedPartitionGroup,
                         createSingleShuffleDescriptorAndIndex(shuffleDescriptor, 0));
 
-        assertThat(cachedShuffleDescriptors.getAllSerializedShuffleDescriptors()).isEmpty();
+        assertThat(cachedShuffleDescriptors.getAllSerializedShuffleDescriptorGroups()).isEmpty();
         cachedShuffleDescriptors.serializeShuffleDescriptors(
-                CachedShuffleDescriptorsTest::nonOffloadedShuffleDescriptor);
-        assertThat(cachedShuffleDescriptors.getAllSerializedShuffleDescriptors()).hasSize(1);
-        MaybeOffloaded<ShuffleDescriptorAndIndex[]> maybeOffloadedShuffleDescriptor =
-                cachedShuffleDescriptors.getAllSerializedShuffleDescriptors().get(0);
+                new TestingShuffleDescriptorSerializer());
+        assertThat(cachedShuffleDescriptors.getAllSerializedShuffleDescriptorGroups()).hasSize(1);
+        MaybeOffloaded<ShuffleDescriptorGroup> maybeOffloadedShuffleDescriptor =
+                cachedShuffleDescriptors.getAllSerializedShuffleDescriptorGroups().get(0);
         assertNonOffloadedShuffleDescriptorAndIndexEquals(
                 maybeOffloadedShuffleDescriptor,
                 Collections.singletonList(shuffleDescriptor),
@@ -122,17 +123,17 @@ class CachedShuffleDescriptorsTest {
                 new CachedShuffleDescriptors(
                         consumedPartitionGroup1,
                         createSingleShuffleDescriptorAndIndex(shuffleDescriptor, 0));
-        cachedShuffleDescriptors.serializeShuffleDescriptors(
-                CachedShuffleDescriptorsTest::nonOffloadedShuffleDescriptor);
+        TestingShuffleDescriptorSerializer testingShuffleDescriptorSerializer =
+                new TestingShuffleDescriptorSerializer();
+        cachedShuffleDescriptors.serializeShuffleDescriptors(testingShuffleDescriptorSerializer);
 
         cachedShuffleDescriptors.markPartitionFinished(intermediateResultPartition1);
         cachedShuffleDescriptors.markPartitionFinished(intermediateResultPartition2);
-        cachedShuffleDescriptors.serializeShuffleDescriptors(
-                CachedShuffleDescriptorsTest::nonOffloadedShuffleDescriptor);
-        assertThat(cachedShuffleDescriptors.getAllSerializedShuffleDescriptors()).hasSize(2);
+        cachedShuffleDescriptors.serializeShuffleDescriptors(testingShuffleDescriptorSerializer);
+        assertThat(cachedShuffleDescriptors.getAllSerializedShuffleDescriptorGroups()).hasSize(2);
 
-        MaybeOffloaded<ShuffleDescriptorAndIndex[]> maybeOffloaded =
-                cachedShuffleDescriptors.getAllSerializedShuffleDescriptors().get(1);
+        MaybeOffloaded<ShuffleDescriptorGroup> maybeOffloaded =
+                cachedShuffleDescriptors.getAllSerializedShuffleDescriptorGroups().get(1);
         ShuffleDescriptor expectedShuffleDescriptor1 =
                 TaskDeploymentDescriptorFactory.getConsumedPartitionShuffleDescriptor(
                         intermediateResultPartition1,
@@ -149,22 +150,20 @@ class CachedShuffleDescriptorsTest {
                 Arrays.asList(0, 1));
     }
 
-    private static MaybeOffloaded<ShuffleDescriptorAndIndex[]> nonOffloadedShuffleDescriptor(
-            ShuffleDescriptorAndIndex[] toBeSerialized) throws IOException {
-        return new NonOffloaded<>(CompressedSerializedValue.fromObject(toBeSerialized));
-    }
-
     private void assertNonOffloadedShuffleDescriptorAndIndexEquals(
-            MaybeOffloaded<ShuffleDescriptorAndIndex[]> maybeOffloaded,
+            MaybeOffloaded<ShuffleDescriptorGroup> maybeOffloaded,
             List<ShuffleDescriptor> expectedDescriptors,
             List<Integer> expectedIndices)
             throws Exception {
         assertThat(expectedDescriptors).hasSameSizeAs(expectedIndices);
         assertThat(maybeOffloaded).isInstanceOf(NonOffloaded.class);
-        NonOffloaded<ShuffleDescriptorAndIndex[]> nonOffloaded =
-                (NonOffloaded<ShuffleDescriptorAndIndex[]>) maybeOffloaded;
+        NonOffloaded<ShuffleDescriptorGroup> nonOffloaded =
+                (NonOffloaded<ShuffleDescriptorGroup>) maybeOffloaded;
         ShuffleDescriptorAndIndex[] shuffleDescriptorAndIndices =
-                nonOffloaded.serializedValue.deserializeValue(getClass().getClassLoader());
+                nonOffloaded
+                        .serializedValue
+                        .deserializeValue(getClass().getClassLoader())
+                        .getShuffleDescriptors();
         assertThat(shuffleDescriptorAndIndices).hasSameSizeAs(expectedDescriptors);
         for (int i = 0; i < shuffleDescriptorAndIndices.length; i++) {
             assertThat(shuffleDescriptorAndIndices[i].getIndex()).isEqualTo(expectedIndices.get(i));
@@ -213,5 +212,15 @@ class CachedShuffleDescriptorsTest {
                         .build();
         scheduler.startScheduling();
         return scheduler.getExecutionGraph();
+    }
+
+    private static class TestingShuffleDescriptorSerializer
+            implements TaskDeploymentDescriptorFactory.ShuffleDescriptorSerializer {
+
+        @Override
+        public MaybeOffloaded<ShuffleDescriptorGroup> serializeAndTryOffloadShuffleDescriptor(
+                ShuffleDescriptorGroup shuffleDescriptorGroup, int numConsumer) throws IOException {
+            return new NonOffloaded<>(CompressedSerializedValue.fromObject(shuffleDescriptorGroup));
+        }
     }
 }

@@ -19,8 +19,8 @@
 package org.apache.flink.table.planner.delegation.hive.copy;
 
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.table.catalog.CatalogManager;
 import org.apache.flink.table.catalog.CatalogPartitionSpec;
+import org.apache.flink.table.catalog.CatalogRegistry;
 import org.apache.flink.table.catalog.CatalogTable;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ObjectIdentifier;
@@ -42,6 +42,7 @@ import org.apache.flink.table.planner.delegation.hive.parse.HiveASTParser;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserDDLSemanticAnalyzer;
 import org.apache.flink.table.planner.delegation.hive.parse.HiveParserErrorMsg;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.Preconditions;
 
 import org.antlr.runtime.tree.Tree;
@@ -122,7 +123,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -415,15 +415,16 @@ public class HiveParserBaseSemanticAnalyzer {
     }
 
     public static ObjectIdentifier getObjectIdentifier(
-            CatalogManager catalogManager, HiveParserASTNode tabNameNode) throws SemanticException {
+            CatalogRegistry catalogRegistry, HiveParserASTNode tabNameNode)
+            throws SemanticException {
         UnresolvedIdentifier qualifiedTableName = getQualifiedTableName(tabNameNode);
-        return catalogManager.qualifyIdentifier(qualifiedTableName);
+        return catalogRegistry.qualifyIdentifier(qualifiedTableName);
     }
 
     public static ObjectIdentifier parseCompoundName(
-            CatalogManager catalogManager, String compoundName) {
+            CatalogRegistry catalogRegistry, String compoundName) {
         String[] names = compoundName.split("\\.");
-        return catalogManager.qualifyIdentifier(UnresolvedIdentifier.of(names));
+        return catalogRegistry.qualifyIdentifier(UnresolvedIdentifier.of(names));
     }
 
     public static UnresolvedIdentifier getQualifiedTableName(HiveParserASTNode tabNameNode)
@@ -1996,7 +1997,8 @@ public class HiveParserBaseSemanticAnalyzer {
         }
 
         List<String> parts = resolvedCatalogTable.getPartitionKeys();
-        Map<String, TypeInfo> partColsTypes = new HashMap<>(parts.size());
+        Map<String, TypeInfo> partColsTypes =
+                CollectionUtil.newHashMapWithExpectedSize(parts.size());
         for (String col : parts) {
             Optional<DataType> dataType =
                     resolvedCatalogTable
@@ -2094,17 +2096,16 @@ public class HiveParserBaseSemanticAnalyzer {
         throw new SemanticException(ErrorMsg.PARTSPEC_DIFFER_FROM_SCHEMA.getMsg(sb.toString()));
     }
 
-    public static ResolvedCatalogBaseTable<?> getCatalogBaseTable(
-            CatalogManager catalogManager, ObjectIdentifier tableIdentifier) {
-        return catalogManager
-                .getTable(tableIdentifier)
+    public static ResolvedCatalogBaseTable<?> getResolvedCatalogBaseTable(
+            CatalogRegistry catalogRegistry, ObjectIdentifier tableIdentifier) {
+        return catalogRegistry
+                .getCatalogBaseTable(tableIdentifier)
                 .orElseThrow(
                         () ->
                                 new IllegalArgumentException(
                                         String.format(
                                                 "Table %s doesn't exist.",
-                                                tableIdentifier.asSummaryString())))
-                .getResolvedTable();
+                                                tableIdentifier.asSummaryString())));
     }
 
     /** Counterpart of hive's BaseSemanticAnalyzer.TableSpec. */
@@ -2126,7 +2127,7 @@ public class HiveParserBaseSemanticAnalyzer {
         public TableSpec.SpecType specType;
 
         public TableSpec(
-                CatalogManager catalogManager,
+                CatalogRegistry catalogRegistry,
                 HiveConf conf,
                 HiveParserASTNode ast,
                 FrameworkConfig frameworkConfig,
@@ -2142,10 +2143,10 @@ public class HiveParserBaseSemanticAnalyzer {
 
             // get table metadata
             tableIdentifier =
-                    getObjectIdentifier(catalogManager, (HiveParserASTNode) ast.getChild(0));
+                    getObjectIdentifier(catalogRegistry, (HiveParserASTNode) ast.getChild(0));
             if (ast.getToken().getType() != HiveASTParser.TOK_CREATETABLE
                     && ast.getToken().getType() != HiveASTParser.TOK_CREATE_MATERIALIZED_VIEW) {
-                table = getCatalogBaseTable(catalogManager, tableIdentifier);
+                table = getResolvedCatalogBaseTable(catalogRegistry, tableIdentifier);
             }
 
             // get partition metadata if partition specified
@@ -2155,7 +2156,8 @@ public class HiveParserBaseSemanticAnalyzer {
                 childIndex = 1;
                 HiveParserASTNode partspec = (HiveParserASTNode) ast.getChild(1);
                 // partSpec is a mapping from partition column name to its value.
-                Map<String, String> tmpPartSpec = new HashMap<>(partspec.getChildCount());
+                Map<String, String> tmpPartSpec =
+                        CollectionUtil.newHashMapWithExpectedSize(partspec.getChildCount());
                 for (int i = 0; i < partspec.getChildCount(); ++i) {
                     HiveParserASTNode partspecVal = (HiveParserASTNode) partspec.getChild(i);
                     String val = null;
@@ -2185,7 +2187,8 @@ public class HiveParserBaseSemanticAnalyzer {
                         cluster);
 
                 List<String> parts = ((CatalogTable) table).getPartitionKeys();
-                partSpec = new LinkedHashMap<>(partspec.getChildCount());
+                partSpec =
+                        CollectionUtil.newLinkedHashMapWithExpectedSize(partspec.getChildCount());
                 for (String part : parts) {
                     partSpec.put(part, tmpPartSpec.get(part));
                 }

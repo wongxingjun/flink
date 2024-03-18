@@ -40,23 +40,22 @@ import static org.hamcrest.Matchers.is;
 class EnumSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<TestEnum, TestEnum> {
     private static final String SPEC_NAME = "enum-serializer";
 
-    public Collection<TestSpecification<?, ?>> createTestSpecifications() throws Exception {
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
 
         ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-        for (FlinkVersion flinkVersion : MIGRATION_VERSIONS) {
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            SPEC_NAME,
-                            flinkVersion,
-                            EnumSerializerSetup.class,
-                            EnumSerializerVerifier.class));
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            SPEC_NAME + "reconfig",
-                            flinkVersion,
-                            EnumSerializerReconfigSetup.class,
-                            EnumSerializerReconfigVerifier.class));
-        }
+        testSpecifications.add(
+                new TestSpecification<>(
+                        SPEC_NAME,
+                        flinkVersion,
+                        EnumSerializerSetup.class,
+                        EnumSerializerVerifier.class));
+        testSpecifications.add(
+                new TestSpecification<>(
+                        SPEC_NAME + "reconfig",
+                        flinkVersion,
+                        EnumSerializerReconfigSetup.class,
+                        EnumSerializerReconfigVerifier.class));
         return testSpecifications;
     }
 
@@ -91,7 +90,7 @@ class EnumSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<TestEnum, 
         @SuppressWarnings("unchecked")
         @Override
         public TypeSerializer<TestEnum> createPriorSerializer() {
-            return new EnumSerializer(TestEnum.class);
+            return new EnumSerializer<>(TestEnum.class);
         }
 
         @Override
@@ -109,7 +108,7 @@ class EnumSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<TestEnum, 
         @SuppressWarnings("unchecked")
         @Override
         public TypeSerializer<TestEnum> createUpgradedSerializer() {
-            return new EnumSerializer(TestEnum.class);
+            return new EnumSerializer<>(TestEnum.class);
         }
 
         @Override
@@ -144,7 +143,7 @@ class EnumSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<TestEnum, 
         @SuppressWarnings("unchecked")
         @Override
         public TypeSerializer<EnumBefore> createPriorSerializer() {
-            return new EnumSerializer(EnumBefore.class);
+            return new EnumSerializer<>(EnumBefore.class);
         }
 
         @Override
@@ -173,7 +172,7 @@ class EnumSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<TestEnum, 
         @SuppressWarnings("unchecked")
         @Override
         public TypeSerializer<EnumAfter> createUpgradedSerializer() {
-            return new EnumSerializer(EnumAfter.class);
+            return new EnumSerializer<>(EnumAfter.class);
         }
 
         @Override

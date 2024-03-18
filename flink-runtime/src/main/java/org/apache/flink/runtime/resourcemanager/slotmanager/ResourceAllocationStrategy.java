@@ -46,4 +46,17 @@ public interface ResourceAllocationStrategy {
             Map<JobID, Collection<ResourceRequirement>> missingResources,
             TaskManagerResourceInfoProvider taskManagerResourceInfoProvider,
             BlockedTaskManagerChecker blockedTaskManagerChecker);
+
+    /**
+     * Try to make a decision to reconcile the cluster resources. This is more light weighted than
+     * {@link #tryFulfillRequirements}, only consider empty registered / pending workers and assume
+     * all requirements are fulfilled by registered / pending workers.
+     *
+     * @param taskManagerResourceInfoProvider provide the registered/pending resources of the
+     *     current cluster
+     * @return a {@link ResourceReconcileResult} based on the current status, which contains the
+     *     actions to take
+     */
+    ResourceReconcileResult tryReconcileClusterResources(
+            TaskManagerResourceInfoProvider taskManagerResourceInfoProvider);
 }

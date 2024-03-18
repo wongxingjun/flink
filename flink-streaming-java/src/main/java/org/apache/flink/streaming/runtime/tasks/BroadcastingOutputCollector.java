@@ -17,11 +17,13 @@
 
 package org.apache.flink.streaming.runtime.tasks;
 
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.streaming.api.operators.Output;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.metrics.WatermarkGauge;
 import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.streamrecord.RecordAttributes;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.OutputTag;
@@ -31,12 +33,15 @@ import java.util.Random;
 
 class BroadcastingOutputCollector<T> implements WatermarkGaugeExposingOutput<StreamRecord<T>> {
 
-    protected final Output<StreamRecord<T>>[] outputs;
+    protected final OutputWithChainingCheck<StreamRecord<T>>[] outputs;
     private final Random random = new XORShiftRandom();
     private final WatermarkGauge watermarkGauge = new WatermarkGauge();
+    protected final Counter numRecordsOutForTask;
 
-    public BroadcastingOutputCollector(Output<StreamRecord<T>>[] outputs) {
+    public BroadcastingOutputCollector(
+            OutputWithChainingCheck<StreamRecord<T>>[] outputs, Counter numRecordsOutForTask) {
         this.outputs = outputs;
+        this.numRecordsOutForTask = numRecordsOutForTask;
     }
 
     @Override
@@ -73,15 +78,23 @@ class BroadcastingOutputCollector<T> implements WatermarkGaugeExposingOutput<Str
 
     @Override
     public void collect(StreamRecord<T> record) {
-        for (Output<StreamRecord<T>> output : outputs) {
-            output.collect(record);
+        boolean emitted = false;
+        for (OutputWithChainingCheck<StreamRecord<T>> output : outputs) {
+            emitted |= output.collectAndCheckIfChained(record);
+        }
+        if (emitted) {
+            numRecordsOutForTask.inc();
         }
     }
 
     @Override
     public <X> void collect(OutputTag<X> outputTag, StreamRecord<X> record) {
-        for (Output<StreamRecord<T>> output : outputs) {
-            output.collect(outputTag, record);
+        boolean emitted = false;
+        for (OutputWithChainingCheck<StreamRecord<T>> output : outputs) {
+            emitted |= output.collectAndCheckIfChained(outputTag, record);
+        }
+        if (emitted) {
+            numRecordsOutForTask.inc();
         }
     }
 
@@ -89,6 +102,13 @@ class BroadcastingOutputCollector<T> implements WatermarkGaugeExposingOutput<Str
     public void close() {
         for (Output<StreamRecord<T>> output : outputs) {
             output.close();
+        }
+    }
+
+    @Override
+    public void emitRecordAttributes(RecordAttributes recordAttributes) {
+        for (OutputWithChainingCheck<StreamRecord<T>> output : outputs) {
+            output.emitRecordAttributes(recordAttributes);
         }
     }
 }

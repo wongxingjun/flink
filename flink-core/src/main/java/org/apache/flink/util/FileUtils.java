@@ -515,12 +515,22 @@ public final class FileUtils {
         }
     }
 
+    /**
+     * Un-archives files inside the target directory. Illegal fs access outside target directory is
+     * not permitted.
+     *
+     * @param file path to zipped/archived file
+     * @param targetDirectory directory path where file needs to be unarchived
+     * @return path to folder with unarchived contents
+     * @throws IOException if file open fails or in case of unsafe access outside target directory
+     */
     public static Path expandDirectory(Path file, Path targetDirectory) throws IOException {
         FileSystem sourceFs = file.getFileSystem();
         FileSystem targetFs = targetDirectory.getFileSystem();
         Path rootDir = null;
         try (ZipInputStream zis = new ZipInputStream(sourceFs.open(file))) {
             ZipEntry entry;
+            String targetDirStr = targetDirectory.toString();
             while ((entry = zis.getNextEntry()) != null) {
                 Path relativePath = new Path(entry.getName());
                 if (rootDir == null) {
@@ -529,6 +539,10 @@ public final class FileUtils {
                 }
 
                 Path newFile = new Path(targetDirectory, relativePath);
+                if (!newFile.toString().startsWith(targetDirStr)) {
+                    throw new IOException("Illegal escape from target directory");
+                }
+
                 if (entry.isDirectory()) {
                     targetFs.mkdirs(newFile);
                 } else {
@@ -581,6 +595,30 @@ public final class FileUtils {
     }
 
     /**
+     * Computes the sum of sizes of all files in the directory and it's subdirectories.
+     *
+     * @param path the root path from which to start the calculation.
+     * @param options visitation options for the directory traversal.
+     * @return sum of sizes of all files in the directory and it's subdirectories.
+     * @throws IOException if the size cannot be determined.
+     */
+    public static long getDirectoryFilesSize(java.nio.file.Path path, FileVisitOption... options)
+            throws IOException {
+
+        if (path == null) {
+            return 0L;
+        }
+
+        try (Stream<java.nio.file.Path> pathStream = Files.walk(path, options)) {
+            return pathStream
+                    .map(java.nio.file.Path::toFile)
+                    .filter(File::isFile)
+                    .mapToLong(File::length)
+                    .sum();
+        }
+    }
+
+    /**
      * Absolutize the given path if it is relative.
      *
      * @param pathToAbsolutize path which is being absolutized if it is a relative path
@@ -628,7 +666,7 @@ public final class FileUtils {
      */
     public static boolean isJarFile(java.nio.file.Path file) {
         return JAR_FILE_EXTENSION.equals(
-                org.apache.flink.shaded.guava30.com.google.common.io.Files.getFileExtension(
+                org.apache.flink.shaded.guava31.com.google.common.io.Files.getFileExtension(
                         file.toString()));
     }
 
@@ -640,7 +678,7 @@ public final class FileUtils {
      */
     public static String stripFileExtension(String fileName) {
         final String extension =
-                org.apache.flink.shaded.guava30.com.google.common.io.Files.getFileExtension(
+                org.apache.flink.shaded.guava31.com.google.common.io.Files.getFileExtension(
                         fileName);
         if (!extension.isEmpty()) {
             return fileName.substring(0, fileName.lastIndexOf(extension) - 1);

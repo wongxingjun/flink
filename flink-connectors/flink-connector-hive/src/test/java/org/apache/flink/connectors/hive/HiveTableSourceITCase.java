@@ -312,9 +312,7 @@ public class HiveTableSourceITCase extends BatchAbstractTestBase {
             explain = query.explain().split("==.*==\n");
             assertThat(catalog.fallback).isFalse();
             optimizedPlan = explain[2];
-            assertThat(optimizedPlan)
-                    .as(optimizedPlan)
-                    .contains("table=[[test-catalog, db1, part, partitions=[], project=[x]]]");
+            assertThat(optimizedPlan).as(optimizedPlan).contains("Values(tuples=[[]], values=[x])");
             results = CollectionUtil.iteratorToList(query.execute().collect());
             assertThat(results.toString()).isEqualTo("[]");
 
@@ -357,9 +355,7 @@ public class HiveTableSourceITCase extends BatchAbstractTestBase {
             explain = query.explain().split("==.*==\n");
             assertThat(catalog.fallback).isFalse();
             optimizedPlan = explain[2];
-            assertThat(optimizedPlan)
-                    .as(optimizedPlan)
-                    .contains("table=[[test-catalog, db1, part, partitions=[], project=[x]]]");
+            assertThat(optimizedPlan).as(optimizedPlan).contains("Values(tuples=[[]], values=[x])");
             results = CollectionUtil.iteratorToList(query.execute().collect());
             assertThat(results.toString()).isEqualTo("[]");
         } finally {
@@ -894,7 +890,7 @@ public class HiveTableSourceITCase extends BatchAbstractTestBase {
 
     private void testCaseInsensitive(String format) throws Exception {
         TableEnvironment tEnv = createTableEnvWithHiveCatalog(hiveCatalog);
-        String folderURI = TEMPORARY_FOLDER.newFolder().toURI().toString();
+        String folderURI = createTempFolder().toURI().toString();
 
         // Flink to write sensitive fields to parquet file
         tEnv.executeSql(

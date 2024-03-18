@@ -364,6 +364,9 @@ public class ZooKeeperStateHandleStore<T extends Serializable>
                     return client.getChildren().forPath(path);
                 } catch (KeeperException.NoNodeException ignored) {
                     // Concurrent deletion, retry
+                    LOG.debug(
+                            "Unable to get all handles, retrying (ZNode was likely deleted concurrently: {})",
+                            ignored.getMessage());
                 }
             }
         }
@@ -477,32 +480,6 @@ public class ZooKeeperStateHandleStore<T extends Serializable>
         deleteIfExists(path);
 
         return true;
-    }
-
-    /**
-     * Releases all lock nodes of this ZooKeeperStateHandleStores and tries to remove all state
-     * nodes which are not locked anymore.
-     *
-     * @throws Exception if the delete operation fails
-     */
-    @Override
-    public void releaseAndTryRemoveAll() throws Exception {
-        Collection<String> children = getAllHandles();
-
-        Exception exception = null;
-
-        for (String child : children) {
-            try {
-                releaseAndTryRemove('/' + child);
-            } catch (Exception e) {
-                exception = ExceptionUtils.firstOrSuppressed(e, exception);
-            }
-        }
-
-        if (exception != null) {
-            throw new Exception(
-                    "Could not properly release and try removing all state nodes.", exception);
-        }
     }
 
     /**

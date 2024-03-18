@@ -20,38 +20,40 @@ package org.apache.flink.api.common.typeutils;
 
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.typeutils.base.GenericArraySerializer;
+import org.apache.flink.api.common.typeutils.base.GenericArraySerializerConfigSnapshot;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.api.java.typeutils.runtime.EitherSerializer;
 import org.apache.flink.types.Either;
 
 import org.hamcrest.Matcher;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.Collection;
 
+import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
 import static org.hamcrest.Matchers.is;
 
 /** A {@link TypeSerializerUpgradeTestBase} for {@link GenericArraySerializer}. */
 class CompositeTypeSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<Object, Object> {
 
-    public Collection<TestSpecification<?, ?>> createTestSpecifications() throws Exception {
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
 
         ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-        for (FlinkVersion flinkVersion : MIGRATION_VERSIONS) {
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            "either-serializer",
-                            flinkVersion,
-                            EitherSerializerSetup.class,
-                            EitherSerializerVerifier.class));
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            "generic-array-serializer",
-                            flinkVersion,
-                            GenericArraySerializerSetup.class,
-                            GenericArraySerializerVerifier.class));
-        }
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "either-serializer",
+                        flinkVersion,
+                        EitherSerializerSetup.class,
+                        EitherSerializerVerifier.class));
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "generic-array-serializer",
+                        flinkVersion,
+                        GenericArraySerializerSetup.class,
+                        GenericArraySerializerVerifier.class));
         return testSpecifications;
     }
 
@@ -116,8 +118,7 @@ class CompositeTypeSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<O
 
         @Override
         public String[] createTestData() {
-            String[] data = {"Apache", "Flink"};
-            return data;
+            return new String[] {"Apache", "Flink"};
         }
     }
 
@@ -143,5 +144,18 @@ class CompositeTypeSerializerUpgradeTest extends TypeSerializerUpgradeTestBase<O
                 FlinkVersion version) {
             return TypeSerializerMatchers.isCompatibleAsIs();
         }
+    }
+
+    @Test
+    void testUpgradeFromDeprecatedSnapshot() {
+        GenericArraySerializer<String> genericArraySerializer =
+                new GenericArraySerializer<>(String.class, StringSerializer.INSTANCE);
+        GenericArraySerializerConfigSnapshot<String> oldSnapshot =
+                new GenericArraySerializerConfigSnapshot<>(genericArraySerializer);
+        TypeSerializerSchemaCompatibility<String[]> schemaCompatibility =
+                genericArraySerializer
+                        .snapshotConfiguration()
+                        .resolveSchemaCompatibility(oldSnapshot);
+        assertThat(schemaCompatibility.isCompatibleAsIs()).isTrue();
     }
 }

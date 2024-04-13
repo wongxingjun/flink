@@ -65,6 +65,7 @@ under the License.
 	<modules>
 		<module>flink-annotations</module>
 		<module>flink-architecture-tests</module>
+		<module>flink-core-api</module>
 		<module>flink-core</module>
 		<module>flink-java</module>
 		<module>flink-scala</module>
@@ -102,6 +103,8 @@ under the License.
 		<module>flink-kubernetes</module>
 		<module>flink-external-resources</module>
 		<module>tools/ci/flink-ci-tools</module>
+		<module>flink-datastream</module>
+		<module>flink-datastream-api</module>
 	</modules>
 
 	<properties>
@@ -162,6 +165,7 @@ under the License.
 		<okhttp.version>3.14.9</okhttp.version>
 		<testcontainers.version>1.19.1</testcontainers.version>
 		<lz4.version>1.8.0</lz4.version>
+		<commons.io.version>2.15.1</commons.io.version>
 		<japicmp.skip>false</japicmp.skip>
 		<flink.convergence.phase>validate</flink.convergence.phase>
 		<!--
@@ -173,8 +177,9 @@ under the License.
 		<minikdc.version>3.2.4</minikdc.version>
 		<hive.version>2.3.9</hive.version>
 		<orc.version>1.5.6</orc.version>
-		<japicmp.referenceVersion>1.18.0</japicmp.referenceVersion>
+		<japicmp.referenceVersion>1.19.0</japicmp.referenceVersion>
 		<japicmp.outputDir>tools/japicmp-output</japicmp.outputDir>
+		<checkstyle.version>9.3</checkstyle.version>
 		<!-- can be removed with maven-spotless-plugin:2.38+ -->
 		<spotless.skip>false</spotless.skip>
 		<spotless.version>2.27.1</spotless.version>
@@ -687,7 +692,7 @@ under the License.
 			<dependency>
 				<groupId>commons-io</groupId>
 				<artifactId>commons-io</artifactId>
-				<version>2.11.0</version>
+				<version>${commons.io.version}</version>
 			</dependency>
 
 			<!-- commons collections needs to be pinned to this critical security fix version -->
@@ -726,7 +731,7 @@ under the License.
 			<dependency>
 				<groupId>org.apache.commons</groupId>
 				<artifactId>commons-compress</artifactId>
-				<version>1.24.0</version>
+				<version>1.26.0</version>
 				<exclusions>
 					<exclusion>
 						<!-- Causes unnecessary dependency convergence errors; see MENFORCER-437 -->
@@ -1021,7 +1026,7 @@ under the License.
 							<excludedGroups>
 								${surefire.excludedGroups.github-actions},
 								${surefire.excludedGroups.adaptive-scheduler},
-								${surefire.excludedGroups.jdk,
+								${surefire.excludedGroups.jdk}
 							</excludedGroups>
 						</configuration>
 					</plugin>
@@ -2169,13 +2174,13 @@ under the License.
 				<plugin>
 					<groupId>org.apache.maven.plugins</groupId>
 					<artifactId>maven-checkstyle-plugin</artifactId>
-					<version>3.1.2</version>
+					<version>3.3.1</version>
 					<dependencies>
 						<dependency>
 							<groupId>com.puppycrawl.tools</groupId>
 							<artifactId>checkstyle</artifactId>
 							<!-- Note: match version with docs/flinkDev/ide_setup.md -->
-							<version>8.14</version>
+							<version>${checkstyle.version}</version>
 						</dependency>
 					</dependencies>
 					<executions>
@@ -2358,12 +2363,8 @@ under the License.
 								<exclude>@org.apache.flink.annotation.PublicEvolving</exclude>
 								<exclude>@org.apache.flink.annotation.Internal</exclude>
 								<!-- MARKER: start exclusions; these will be wiped by tools/releasing/update_japicmp_configuration.sh -->
-								<exclude>org.apache.flink.streaming.api.environment.StreamExecutionEnvironment#fromData(java.lang.Object[])</exclude>
-								<exclude>org.apache.flink.streaming.api.environment.StreamExecutionEnvironment#fromData(org.apache.flink.api.common.typeinfo.TypeInformation,java.lang.Object[])</exclude>
-								<exclude>org.apache.flink.streaming.api.environment.StreamExecutionEnvironment#fromData(java.lang.Class,java.lang.Object[])</exclude>
-								<exclude>org.apache.flink.streaming.api.environment.StreamExecutionEnvironment#fromData(java.util.Collection)</exclude>
-								<exclude>org.apache.flink.streaming.api.environment.StreamExecutionEnvironment#fromData(java.util.Collection,org.apache.flink.api.common.typeinfo.TypeInformation)</exclude>
-								<exclude>org.apache.flink.api.common.functions.RuntimeContext</exclude>
+								<exclude>org.apache.flink.api.common.functions.Function</exclude>
+								<exclude>org.apache.flink.api.java.functions.KeySelector</exclude>
 								<!-- MARKER: end exclusions -->
 							</excludes>
 							<accessModifier>public</accessModifier>

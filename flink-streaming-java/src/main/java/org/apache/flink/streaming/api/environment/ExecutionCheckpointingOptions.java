@@ -27,7 +27,7 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.description.Description;
 import org.apache.flink.configuration.description.TextElement;
-import org.apache.flink.streaming.api.CheckpointingMode;
+import org.apache.flink.core.execution.CheckpointingMode;
 
 import java.time.Duration;
 
@@ -41,11 +41,25 @@ import static org.apache.flink.configuration.description.LinkElement.link;
  */
 @PublicEvolving
 public class ExecutionCheckpointingOptions {
-    public static final ConfigOption<CheckpointingMode> CHECKPOINTING_MODE =
-            ConfigOptions.key("execution.checkpointing.mode")
-                    .enumType(CheckpointingMode.class)
-                    .defaultValue(CheckpointingMode.EXACTLY_ONCE)
-                    .withDescription("The checkpointing mode (exactly-once vs. at-least-once).");
+
+    @Deprecated
+    @Documentation.ExcludeFromDocumentation("Hidden for deprecatd.")
+    public static final ConfigOption<org.apache.flink.streaming.api.CheckpointingMode>
+            CHECKPOINTING_MODE =
+                    ConfigOptions.key("execution.checkpointing.mode")
+                            .enumType(org.apache.flink.streaming.api.CheckpointingMode.class)
+                            .defaultValue(
+                                    org.apache.flink.streaming.api.CheckpointingMode.EXACTLY_ONCE)
+                            .withDescription(
+                                    "The checkpointing mode (exactly-once vs. at-least-once).");
+
+    public static final ConfigOption<org.apache.flink.core.execution.CheckpointingMode>
+            CHECKPOINTING_CONSISTENCY_MODE =
+                    ConfigOptions.key("execution.checkpointing.mode")
+                            .enumType(CheckpointingMode.class)
+                            .defaultValue(CheckpointingMode.EXACTLY_ONCE)
+                            .withDescription(
+                                    "The checkpointing mode (exactly-once vs. at-least-once).");
 
     public static final ConfigOption<Duration> CHECKPOINTING_TIMEOUT =
             ConfigOptions.key("execution.checkpointing.timeout")
@@ -189,7 +203,7 @@ public class ExecutionCheckpointingOptions {
                                     .linebreak()
                                     .text(
                                             "Unaligned checkpoints can only be enabled if %s is %s and if %s is 1",
-                                            TextElement.code(CHECKPOINTING_MODE.key()),
+                                            TextElement.code(CHECKPOINTING_CONSISTENCY_MODE.key()),
                                             TextElement.code(
                                                     CheckpointingMode.EXACTLY_ONCE.toString()),
                                             TextElement.code(MAX_CONCURRENT_CHECKPOINTS.key()))

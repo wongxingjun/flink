@@ -40,11 +40,11 @@ import org.apache.flink.connector.testframe.junit.extensions.TestCaseInvocationC
 import org.apache.flink.connector.testframe.source.FromElementsSource;
 import org.apache.flink.connector.testframe.utils.CollectIteratorAssertions;
 import org.apache.flink.connector.testframe.utils.MetricQuerier;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.metrics.MetricNames;
 import org.apache.flink.runtime.rest.RestClient;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSink;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
@@ -80,13 +80,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.connector.testframe.utils.MetricQuerier.getJobDetails;
+import static org.apache.flink.core.execution.CheckpointingMode.AT_LEAST_ONCE;
+import static org.apache.flink.core.execution.CheckpointingMode.EXACTLY_ONCE;
 import static org.apache.flink.core.testutils.FlinkAssertions.assertThatFuture;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.terminateJob;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForAllTaskRunning;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitForJobStatus;
 import static org.apache.flink.runtime.testutils.CommonTestUtils.waitUntilCondition;
-import static org.apache.flink.streaming.api.CheckpointingMode.AT_LEAST_ONCE;
-import static org.apache.flink.streaming.api.CheckpointingMode.EXACTLY_ONCE;
+import static org.apache.flink.streaming.api.CheckpointingMode.convertToCheckpointingMode;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -511,6 +512,20 @@ public abstract class SinkTestSuiteBase<T extends Comparable<T>> {
                         return false;
                     }
                 });
+    }
+
+    /**
+     * This method is required for downstream projects e.g. Flink connectors extending this test for
+     * the case when there should be supported Flink versions below 1.20. Could be removed together
+     * with dropping support for Flink 1.19.
+     */
+    @Deprecated
+    protected void checkResultWithSemantic(
+            ExternalSystemDataReader<T> reader,
+            List<T> testData,
+            org.apache.flink.streaming.api.CheckpointingMode semantic)
+            throws Exception {
+        checkResultWithSemantic(reader, testData, convertToCheckpointingMode(semantic));
     }
 
     /** Compare the metrics. */

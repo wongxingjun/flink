@@ -99,6 +99,8 @@ import org.apache.flink.runtime.rpc.RpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcServiceUtils;
 import org.apache.flink.runtime.security.token.DelegationTokenReceiverRepository;
+import org.apache.flink.runtime.shuffle.DefaultPartitionWithMetrics;
+import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
 import org.apache.flink.runtime.shuffle.ShuffleDescriptor;
 import org.apache.flink.runtime.shuffle.ShuffleEnvironment;
 import org.apache.flink.runtime.state.TaskExecutorChannelStateExecutorFactoryManager;
@@ -1114,18 +1116,20 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             long checkpointId,
             long latestCompletedCheckpointId,
             long checkpointTimestamp) {
-        log.debug(
-                "Abort checkpoint {}@{} for {}.",
-                checkpointId,
-                checkpointTimestamp,
-                executionAttemptID);
-
         final Task task = taskSlotTable.getTask(executionAttemptID);
 
         if (task != null) {
-            task.notifyCheckpointAborted(checkpointId, latestCompletedCheckpointId);
+            try (MdcCloseable ignored =
+                    MdcUtils.withContext(MdcUtils.asContextData(task.getJobID()))) {
+                log.debug(
+                        "Abort checkpoint {}@{} for {}.",
+                        checkpointId,
+                        checkpointTimestamp,
+                        executionAttemptID);
+                task.notifyCheckpointAborted(checkpointId, latestCompletedCheckpointId);
 
-            return CompletableFuture.completedFuture(Acknowledge.get());
+                return CompletableFuture.completedFuture(Acknowledge.get());
+            }
         } else {
             final String message =
                     "TaskManager received an aborted checkpoint for unknown task "
@@ -1439,6 +1443,27 @@ public class TaskExecutor extends RpcEndpoint implements TaskExecutorGateway {
             ExceptionUtils.rethrowIfFatalError(t);
             return FutureUtils.completedExceptionally(t);
         }
+    }
+
+    @Override
+    public CompletableFuture<Collection<PartitionWithMetrics>> getPartitionWithMetrics(
+            JobID jobId) {
+        Collection<TaskExecutorPartitionInfo> partitionInfoList =
+                partitionTracker.getTrackedPartitionsFor(jobId);
+        List<PartitionWithMetrics> partitionWithMetrics = new ArrayList<>();
+        partitionInfoList.forEach(
+                info -> {
+                    ResultPartitionID partitionId = info.getResultPartitionId();
+                    shuffleEnvironment
+                            .getMetricsIfPartitionOccupyingLocalResource(partitionId)
+                            .ifPresent(
+                                    metrics ->
+                                            partitionWithMetrics.add(
+                                                    new DefaultPartitionWithMetrics(
+                                                            info.getShuffleDescriptor(), metrics)));
+                });
+
+        return CompletableFuture.completedFuture(partitionWithMetrics);
     }
 
     @Override

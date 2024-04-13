@@ -37,10 +37,10 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.configuration.StateBackendOptions;
-import org.apache.flink.configuration.StateChangelogOptions;
 import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.WebOptions;
 import org.apache.flink.contrib.streaming.state.RocksDBConfigurableOptions;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.client.JobExecutionException;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -50,7 +50,6 @@ import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
 import org.apache.flink.streaming.api.datastream.DataStream;
@@ -165,8 +164,6 @@ public class AutoRescalingITCase extends TestLogger {
             config.set(StateBackendOptions.STATE_BACKEND, currentBackend);
             config.set(RocksDBConfigurableOptions.USE_INGEST_DB_RESTORE_MODE, useIngestDB);
             config.set(CheckpointingOptions.INCREMENTAL_CHECKPOINTS, true);
-            // todo: local rescaling is not supported by changelog.
-            config.set(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG, false);
             config.set(StateRecoveryOptions.LOCAL_RECOVERY, true);
             config.set(
                     CheckpointingOptions.CHECKPOINTS_DIRECTORY, checkpointDir.toURI().toString());
@@ -578,7 +575,7 @@ public class AutoRescalingITCase extends TestLogger {
 
     private static void configureCheckpointing(CheckpointConfig config) {
         config.setCheckpointInterval(100);
-        config.setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE);
+        config.setCheckpointingConsistencyMode(CheckpointingMode.EXACTLY_ONCE);
         config.enableUnalignedCheckpoints(true);
     }
 

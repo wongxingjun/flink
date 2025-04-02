@@ -20,7 +20,6 @@ package org.apache.flink.runtime.webmonitor.handlers;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.client.deployment.application.DetachedApplicationRunner;
 import org.apache.flink.client.deployment.application.executors.EmbeddedExecutor;
 import org.apache.flink.client.program.PackagedProgram;
@@ -31,15 +30,15 @@ import org.apache.flink.configuration.DeploymentOptions;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.core.execution.RestoreMode;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
-import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.RestHandlerException;
 import org.apache.flink.runtime.webmonitor.TestingDispatcherGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 import org.apache.flink.runtime.webmonitor.testutils.ParameterProgram;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
 import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.util.ExceptionUtils;
@@ -55,6 +54,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -73,7 +73,7 @@ class JarRunHandlerParameterTest
         extends JarHandlerParameterTest<JarRunRequestBody, JarRunMessageParameters> {
     private static final boolean ALLOW_NON_RESTORED_STATE_QUERY = true;
     private static final String RESTORE_PATH = "/foo/bar";
-    private static final RestoreMode RESTORE_MODE = RestoreMode.CLAIM;
+    private static final RecoveryClaimMode RESTORE_MODE = RecoveryClaimMode.CLAIM;
 
     @RegisterExtension
     private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
@@ -85,7 +85,7 @@ class JarRunHandlerParameterTest
 
     private static final Configuration FLINK_CONFIGURATION =
             new Configuration()
-                    .set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 120000L)
+                    .set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(120000L))
                     .set(CoreOptions.DEFAULT_PARALLELISM, 57)
                     .set(StateRecoveryOptions.SAVEPOINT_PATH, "/foo/bar/test")
                     .set(StateRecoveryOptions.SAVEPOINT_IGNORE_UNCLAIMED_STATE, false)
@@ -103,7 +103,7 @@ class JarRunHandlerParameterTest
         init(tempDir);
         final GatewayRetriever<TestingDispatcherGateway> gatewayRetriever =
                 () -> CompletableFuture.completedFuture(restfulGateway);
-        final Time timeout = Time.seconds(10);
+        final Duration timeout = Duration.ofSeconds(10);
         final Map<String, String> responseHeaders = Collections.emptyMap();
 
         final Path jarLocation = Paths.get(System.getProperty("targetDir"));
@@ -150,7 +150,7 @@ class JarRunHandlerParameterTest
     }
 
     @Override
-    JarRunMessageParameters getJarMessageParameters(ProgramArgsParType programArgsParType) {
+    JarRunMessageParameters getJarMessageParameters() {
         final JarRunMessageParameters parameters = getUnresolvedJarMessageParameters();
         parameters.allowNonRestoredStateQueryParameter.resolve(
                 Collections.singletonList(ALLOW_NON_RESTORED_STATE_QUERY));
@@ -158,20 +158,12 @@ class JarRunHandlerParameterTest
         parameters.entryClassQueryParameter.resolve(
                 Collections.singletonList(ParameterProgram.class.getCanonicalName()));
         parameters.parallelismQueryParameter.resolve(Collections.singletonList(PARALLELISM));
-        if (programArgsParType == ProgramArgsParType.String
-                || programArgsParType == ProgramArgsParType.Both) {
-            parameters.programArgsQueryParameter.resolve(
-                    Collections.singletonList(String.join(" ", PROG_ARGS)));
-        }
-        if (programArgsParType == ProgramArgsParType.List
-                || programArgsParType == ProgramArgsParType.Both) {
-            parameters.programArgQueryParameter.resolve(Arrays.asList(PROG_ARGS));
-        }
+        parameters.programArgQueryParameter.resolve(Arrays.asList(PROG_ARGS));
         return parameters;
     }
 
     @Override
-    JarRunMessageParameters getWrongJarMessageParameters(ProgramArgsParType programArgsParType) {
+    JarRunMessageParameters getWrongJarMessageParameters() {
         List<String> wrongArgs =
                 Arrays.stream(PROG_ARGS).map(a -> a + "wrong").collect(Collectors.toList());
         String argsWrongStr = String.join(" ", wrongArgs);
@@ -181,14 +173,7 @@ class JarRunHandlerParameterTest
         parameters.entryClassQueryParameter.resolve(
                 Collections.singletonList("please.dont.run.me"));
         parameters.parallelismQueryParameter.resolve(Collections.singletonList(64));
-        if (programArgsParType == ProgramArgsParType.String
-                || programArgsParType == ProgramArgsParType.Both) {
-            parameters.programArgsQueryParameter.resolve(Collections.singletonList(argsWrongStr));
-        }
-        if (programArgsParType == ProgramArgsParType.List
-                || programArgsParType == ProgramArgsParType.Both) {
-            parameters.programArgQueryParameter.resolve(wrongArgs);
-        }
+        parameters.programArgQueryParameter.resolve(wrongArgs);
         return parameters;
     }
 
@@ -198,11 +183,10 @@ class JarRunHandlerParameterTest
     }
 
     @Override
-    JarRunRequestBody getJarRequestBody(ProgramArgsParType programArgsParType) {
+    JarRunRequestBody getJarRequestBody() {
         return new JarRunRequestBody(
                 ParameterProgram.class.getCanonicalName(),
-                getProgramArgsString(programArgsParType),
-                getProgramArgsList(programArgsParType),
+                Arrays.asList(PROG_ARGS),
                 PARALLELISM,
                 null,
                 ALLOW_NON_RESTORED_STATE_QUERY,
@@ -211,12 +195,10 @@ class JarRunHandlerParameterTest
                 FLINK_CONFIGURATION.toMap());
     }
 
-    private JarRunRequestBody getJarRequestBodyWithSavepointPath(
-            ProgramArgsParType programArgsParType, String savepointPath) {
+    private JarRunRequestBody getJarRequestBodyWithSavepointPath(String savepointPath) {
         return new JarRunRequestBody(
                 ParameterProgram.class.getCanonicalName(),
-                getProgramArgsString(programArgsParType),
-                getProgramArgsList(programArgsParType),
+                Arrays.asList(PROG_ARGS),
                 PARALLELISM,
                 null,
                 ALLOW_NON_RESTORED_STATE_QUERY,
@@ -227,13 +209,13 @@ class JarRunHandlerParameterTest
 
     @Override
     JarRunRequestBody getJarRequestBodyWithJobId(JobID jobId) {
-        return new JarRunRequestBody(null, null, null, null, jobId, null, null, null, null);
+        return new JarRunRequestBody(null, null, null, jobId, null, null, null, null);
     }
 
     @Override
     JarRunRequestBody getJarRequestWithConfiguration() {
         return new JarRunRequestBody(
-                null, null, null, null, null, null, null, null, FLINK_CONFIGURATION.toMap());
+                null, null, null, null, null, null, null, FLINK_CONFIGURATION.toMap());
     }
 
     @Test
@@ -265,7 +247,7 @@ class JarRunHandlerParameterTest
 
                             final String exceptionMsg = invocationException.get().getMessage();
                             assertThat(exceptionMsg)
-                                    .contains("Job was submitted in detached mode.");
+                                    .contains("Job client must be a CoordinationRequestGateway.");
 
                             return true;
                         });
@@ -273,16 +255,15 @@ class JarRunHandlerParameterTest
 
     @Test
     void testConfigurationWithEmptySavepointPath() throws Exception {
-        final JarRunRequestBody requestBody =
-                getJarRequestBodyWithSavepointPath(ProgramArgsParType.String, "");
+        final JarRunRequestBody requestBody = getJarRequestBodyWithSavepointPath("");
         handleRequest(
                 createRequest(
                         requestBody,
                         getUnresolvedJarMessageParameters(),
                         getUnresolvedJarMessageParameters(),
                         jarWithEagerSink));
-        JobGraph jobGraph = LAST_SUBMITTED_JOB_GRAPH_REFERENCE.get();
-        assertThat(jobGraph.getSavepointRestoreSettings())
+        ExecutionPlan executionPlan = LAST_SUBMITTED_EXECUTION_PLAN_REFERENCE.get();
+        assertThat(executionPlan.getSavepointRestoreSettings())
                 .isEqualTo(SavepointRestoreSettings.none());
     }
 
@@ -295,8 +276,8 @@ class JarRunHandlerParameterTest
                         getUnresolvedJarMessageParameters(),
                         getUnresolvedJarMessageParameters(),
                         jarWithManifest));
-        JobGraph jobGraph = LAST_SUBMITTED_JOB_GRAPH_REFERENCE.get();
-        assertThat(jobGraph.getJobConfiguration().get(PipelineOptions.PARALLELISM_OVERRIDES))
+        ExecutionPlan executionPlan = LAST_SUBMITTED_EXECUTION_PLAN_REFERENCE.get();
+        assertThat(executionPlan.getJobConfiguration().get(PipelineOptions.PARALLELISM_OVERRIDES))
                 .containsOnlyKeys("v1")
                 .containsEntry("v1", "10");
     }
@@ -307,35 +288,38 @@ class JarRunHandlerParameterTest
     }
 
     @Override
-    JobGraph validateDefaultGraph() {
-        JobGraph jobGraph = super.validateDefaultGraph();
+    ExecutionPlan validateDefaultGraph() throws Exception {
+        ExecutionPlan executionPlan = super.validateDefaultGraph();
         final SavepointRestoreSettings savepointRestoreSettings =
-                jobGraph.getSavepointRestoreSettings();
+                executionPlan.getSavepointRestoreSettings();
         assertThat(savepointRestoreSettings.allowNonRestoredState()).isFalse();
         assertThat(savepointRestoreSettings.getRestorePath()).isNull();
-        return jobGraph;
+        return executionPlan;
     }
 
     @Override
-    JobGraph validateGraph() {
-        JobGraph jobGraph = super.validateGraph();
+    ExecutionPlan validateGraph() throws Exception {
+        ExecutionPlan executionPlan = super.validateGraph();
         final SavepointRestoreSettings savepointRestoreSettings =
-                jobGraph.getSavepointRestoreSettings();
+                executionPlan.getSavepointRestoreSettings();
         this.validateSavepointJarRunMessageParameters(savepointRestoreSettings);
-        return jobGraph;
+        return executionPlan;
     }
 
     @Override
-    void validateGraphWithFlinkConfig(JobGraph jobGraph) {
-        final ExecutionConfig executionConfig = getExecutionConfig(jobGraph);
+    void validateGraphWithFlinkConfig(ExecutionPlan executionPlan) {
+        final ExecutionConfig executionConfig = getExecutionConfig(executionPlan);
         assertThat(executionConfig.getParallelism())
                 .isEqualTo(FLINK_CONFIGURATION.get(CoreOptions.DEFAULT_PARALLELISM));
         assertThat(executionConfig.getTaskCancellationTimeout())
-                .isEqualTo(FLINK_CONFIGURATION.get(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT));
+                .isEqualTo(
+                        FLINK_CONFIGURATION
+                                .get(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT)
+                                .toMillis());
 
         final SavepointRestoreSettings savepointRestoreSettings =
-                jobGraph.getSavepointRestoreSettings();
-        assertThat(savepointRestoreSettings.getRestoreMode())
+                executionPlan.getSavepointRestoreSettings();
+        assertThat(savepointRestoreSettings.getRecoveryClaimMode())
                 .isEqualTo(FLINK_CONFIGURATION.get(StateRecoveryOptions.RESTORE_MODE));
         assertThat(savepointRestoreSettings.getRestorePath())
                 .isEqualTo(FLINK_CONFIGURATION.get(StateRecoveryOptions.SAVEPOINT_PATH));

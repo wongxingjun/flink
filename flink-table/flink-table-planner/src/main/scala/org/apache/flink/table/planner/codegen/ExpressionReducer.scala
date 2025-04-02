@@ -17,7 +17,7 @@
  */
 package org.apache.flink.table.planner.codegen
 
-import org.apache.flink.api.common.functions.{MapFunction, OpenContext, RichMapFunction}
+import org.apache.flink.api.common.functions.{MapFunction, RichMapFunction, WithConfigurationOpenContext}
 import org.apache.flink.configuration.{Configuration, PipelineOptions, ReadableConfig}
 import org.apache.flink.table.api.{TableConfig, TableException}
 import org.apache.flink.table.data.{DecimalData, GenericRowData, TimestampData}
@@ -25,8 +25,9 @@ import org.apache.flink.table.data.binary.{BinaryStringData, BinaryStringDataUti
 import org.apache.flink.table.functions.{FunctionContext, UserDefinedFunction}
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
 import org.apache.flink.table.planner.codegen.FunctionCodeGenerator.generateFunction
+import org.apache.flink.table.planner.codegen.JsonGenerateUtils.isJsonFunctionOperand
 import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable.{JSON_ARRAY, JSON_OBJECT}
-import org.apache.flink.table.planner.plan.utils.AsyncUtil
+import org.apache.flink.table.planner.plan.utils.{AsyncUtil, ConstantFoldingUtil}
 import org.apache.flink.table.planner.plan.utils.PythonUtil.containsPythonCall
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil.toScala
 import org.apache.flink.table.planner.utils.Logging
@@ -66,9 +67,9 @@ class ExpressionReducer(
       constExprs: java.util.List[RexNode],
       reducedValues: java.util.List[RexNode]): Unit = {
 
-    val remoteUDFExprs = new ListBuffer[RexNode]()
+    val nonReducibleExprs = new ListBuffer[RexNode]()
 
-    val literals = skipAndValidateExprs(rexBuilder, constExprs, remoteUDFExprs)
+    val literals = skipAndValidateExprs(rexBuilder, constExprs, nonReducibleExprs)
 
     val literalTypes = literals.map(e => FlinkTypeFactory.toLogicalType(e.getType))
     val resultType = RowType.of(literalTypes: _*)
@@ -107,7 +108,7 @@ class ExpressionReducer(
       .getOrElse(new Configuration)
     val reduced =
       try {
-        richMapFunction.open(parameters)
+        richMapFunction.open(new WithConfigurationOpenContext(parameters))
         // execute
         richMapFunction.map(EMPTY_ROW)
       } catch {
@@ -132,12 +133,14 @@ class ExpressionReducer(
     while (i < constExprs.size()) {
       val unreduced = constExprs.get(i)
       // use eq to compare reference
-      if (remoteUDFExprs.exists(_ eq unreduced)) {
-        // if contains async function then just insert the original expression.
+      if (nonReducibleExprs.exists(_ eq unreduced)) {
+        // if contains non reducible function calls then just insert the original expression.
         reducedValues.add(unreduced)
       } else
         unreduced match {
-          case call: RexCall if nonReducibleJsonFunctions.contains(call.getOperator) =>
+          case call: RexCall
+              if (nonReducibleJsonFunctions.contains(call.getOperator) || isJsonFunctionOperand(
+                call)) =>
             reducedValues.add(unreduced)
           case _ =>
             unreduced.getType.getSqlTypeName match {
@@ -254,15 +257,17 @@ class ExpressionReducer(
   private def skipAndValidateExprs(
       rexBuilder: RexBuilder,
       constExprs: java.util.List[RexNode],
-      remoteUDFExprs: ListBuffer[RexNode]): List[RexNode] = {
+      nonReducibleExprs: ListBuffer[RexNode]): List[RexNode] = {
     constExprs.asScala
       .map(e => (e.getType.getSqlTypeName, e))
       .flatMap {
 
         // Skip expressions that contain python or async functions because it's quite expensive to
         // call async UDFs during optimization phase. They will be optimized during the runtime.
-        case (_, e) if containsPythonCall(e) || AsyncUtil.containsAsyncCall(e) =>
-          remoteUDFExprs += e
+        case (_, e)
+            if containsPythonCall(e) || AsyncUtil.containsAsyncCall(e) ||
+              !ConstantFoldingUtil.supportsConstantFolding(e) =>
+          nonReducibleExprs += e
           None
 
         // we don't support object literals yet, we skip those constant expressions
@@ -291,7 +296,7 @@ class ExpressionReducer(
           }
           // Exclude some JSON functions which behave differently
           // when called as an argument of another call of one of these functions.
-          if (nonReducibleJsonFunctions.contains(call.getOperator)) {
+          if (nonReducibleJsonFunctions.contains(call.getOperator) || isJsonFunctionOperand(call)) {
             None
           } else {
             Some(call)
@@ -313,7 +318,7 @@ class ConstantCodeGeneratorContext(tableConfig: ReadableConfig, classLoader: Cla
     super.addReusableFunction(
       function,
       classOf[FunctionContext],
-      Seq("null", "this.getClass().getClassLoader()", "parameters"))
+      Seq("null", "this.getClass().getClassLoader()", "openContext"))
   }
 
   override def addReusableConverter(dataType: DataType, classLoaderTerm: String = null): String = {

@@ -19,6 +19,7 @@ package org.apache.flink.client.program.artifact;
 
 import org.apache.flink.client.cli.ArtifactFetchOptions;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.testutils.TestingUtils;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -37,11 +38,8 @@ import java.net.BindException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.URI;
-import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.Collection;
 import java.util.Collections;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -60,12 +58,12 @@ class ArtifactFetchManagerTest {
     @BeforeEach
     void setup() {
         configuration = new Configuration();
-        configuration.setString(ArtifactFetchOptions.BASE_DIR, tempDir.toAbsolutePath().toString());
+        configuration.set(ArtifactFetchOptions.BASE_DIR, tempDir.toAbsolutePath().toString());
     }
 
     @Test
     void testGetFetcher() throws Exception {
-        configuration.setBoolean(ArtifactFetchOptions.RAW_HTTP_ENABLED, true);
+        configuration.set(ArtifactFetchOptions.RAW_HTTP_ENABLED, true);
         ArtifactFetchManager fetchManager = new ArtifactFetchManager(configuration);
 
         ArtifactFetcher fetcher = fetchManager.getFetcher(new URI("local:///a.jar"));
@@ -86,7 +84,7 @@ class ArtifactFetchManagerTest {
 
     @Test
     void testFileSystemFetchWithoutAdditionalUri() throws Exception {
-        File sourceFile = getDummyArtifact(getClass());
+        File sourceFile = TestingUtils.getClassFile(getClass());
         String uriStr = "file://" + sourceFile.toURI().getPath();
 
         ArtifactFetchManager fetchMgr = new ArtifactFetchManager(configuration);
@@ -97,10 +95,12 @@ class ArtifactFetchManagerTest {
     }
 
     @Test
-    void testFileSystemFetchWithAdditionalUri() throws Exception {
-        File sourceFile = getDummyArtifact(getClass());
+    void testFileSystemFetchWithAdditionalUri(@TempDir Path pseudoJarDir) throws Exception {
+        File sourceFile = TestingUtils.getClassFile(getClass());
         String uriStr = "file://" + sourceFile.toURI().getPath();
-        File additionalSrcFile = getFlinkClientsJar();
+        File additionalSrcFile =
+                Files.createTempFile(pseudoJarDir, "testFileSystemFetchWithAdditionalUri", ".jar")
+                        .toFile();
         String additionalUriStr = "file://" + additionalSrcFile.toURI().getPath();
 
         ArtifactFetchManager fetchMgr = new ArtifactFetchManager(configuration);
@@ -114,12 +114,12 @@ class ArtifactFetchManagerTest {
     }
 
     @Test
-    void testHttpFetch() throws Exception {
-        configuration.setBoolean(ArtifactFetchOptions.RAW_HTTP_ENABLED, true);
+    void testHttpFetch(@TempDir Path pseudoJarDir) throws Exception {
+        configuration.set(ArtifactFetchOptions.RAW_HTTP_ENABLED, true);
         HttpServer httpServer = null;
         try {
             httpServer = startHttpServer();
-            File sourceFile = getFlinkClientsJar();
+            File sourceFile = Files.createTempFile(pseudoJarDir, "testHttpFetch", ".jar").toFile();
             httpServer.createContext(
                     "/download/" + sourceFile.getName(), new DummyHttpDownloadHandler(sourceFile));
             String uriStr =
@@ -140,10 +140,11 @@ class ArtifactFetchManagerTest {
     }
 
     @Test
-    void testMixedArtifactFetch() throws Exception {
-        File sourceFile = getDummyArtifact(getClass());
+    void testMixedArtifactFetch(@TempDir Path pseudoJarDir) throws Exception {
+        File sourceFile = TestingUtils.getClassFile(getClass());
         String uriStr = "file://" + sourceFile.toURI().getPath();
-        File sourceFile2 = getFlinkClientsJar();
+        File sourceFile2 =
+                Files.createTempFile(pseudoJarDir, "testMixedArtifactFetch", ".jar").toFile();
         String uriStr2 = "file://" + sourceFile2.toURI().getPath();
 
         ArtifactFetchManager fetchMgr = new ArtifactFetchManager(configuration);
@@ -161,7 +162,7 @@ class ArtifactFetchManagerTest {
                 new ArtifactFetchManager(
                         dummyFetcher, dummyFetcher, dummyFetcher, configuration, null);
 
-        File sourceFile = getDummyArtifact(getClass());
+        File sourceFile = TestingUtils.getClassFile(getClass());
         Path destFile = tempDir.resolve(sourceFile.getName());
         Files.copy(sourceFile.toPath(), destFile);
 
@@ -169,6 +170,21 @@ class ArtifactFetchManagerTest {
         fetchMgr.fetchArtifacts(uriStr, null);
 
         assertThat(dummyFetcher.fetchCount).isZero();
+    }
+
+    @Test
+    void testLocalFetcherNotCreatesBaseDir() throws Exception {
+        Path nonExistingPath =
+                tempDir.resolve("non").resolve("existing").resolve("path").toAbsolutePath();
+        configuration.set(ArtifactFetchOptions.BASE_DIR, nonExistingPath.toString());
+
+        File sourceFile = TestingUtils.getClassFile(getClass());
+        String uriStr = "local://" + sourceFile.toURI().getPath();
+
+        ArtifactFetchManager fetchMgr = new ArtifactFetchManager(configuration);
+        fetchMgr.fetchArtifacts(uriStr, null);
+
+        assertThat(nonExistingPath.getParent().getParent()).doesNotExist();
     }
 
     @Test
@@ -185,9 +201,6 @@ class ArtifactFetchManagerTest {
     @Test
     void testMissingRequiredFetchArgs() {
         ArtifactFetchManager fetchMgr = new ArtifactFetchManager(configuration);
-        assertThatThrownBy(() -> fetchMgr.fetchArtifacts(null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("The jobUri is required.");
 
         assertThatThrownBy(() -> fetchMgr.fetchArtifacts(null))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -218,36 +231,6 @@ class ArtifactFetchManagerTest {
             }
         }
         return httpServer;
-    }
-
-    private File getDummyArtifact(Class<?> cls) {
-        String className = String.format("%s.class", cls.getSimpleName());
-        URL url = cls.getResource(className);
-        assertThat(url).isNotNull();
-
-        return new File(url.getPath());
-    }
-
-    private File getFlinkClientsJar() throws IOException {
-        String pathStr =
-                ArtifactFetchManager.class
-                        .getProtectionDomain()
-                        .getCodeSource()
-                        .getLocation()
-                        .getPath();
-        Path mvnTargetDir = Paths.get(pathStr).getParent();
-
-        Collection<Path> jarPaths =
-                org.apache.flink.util.FileUtils.listFilesInDirectory(
-                        mvnTargetDir,
-                        p ->
-                                org.apache.flink.util.FileUtils.isJarFile(p)
-                                        && p.toFile().getName().startsWith("flink-clients")
-                                        && !p.toFile().getName().contains("test-utils"));
-
-        assertThat(jarPaths).isNotEmpty();
-
-        return jarPaths.iterator().next().toFile();
     }
 
     private static class DummyHttpDownloadHandler implements HttpHandler {

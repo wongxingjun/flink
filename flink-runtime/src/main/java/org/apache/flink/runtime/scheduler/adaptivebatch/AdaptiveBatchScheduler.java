@@ -22,7 +22,6 @@ package org.apache.flink.runtime.scheduler.adaptivebatch;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.BatchExecutionOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions.HybridPartitionDataConsumeConstraint;
@@ -34,7 +33,9 @@ import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.execution.SuppressRestartsException;
+import org.apache.flink.runtime.executiongraph.DefaultExecutionGraphBuilder;
 import org.apache.flink.runtime.executiongraph.Execution;
+import org.apache.flink.runtime.executiongraph.ExecutionGraph;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertex;
 import org.apache.flink.runtime.executiongraph.ExecutionVertexInputInfo;
@@ -42,24 +43,26 @@ import org.apache.flink.runtime.executiongraph.IOMetrics;
 import org.apache.flink.runtime.executiongraph.IndexRange;
 import org.apache.flink.runtime.executiongraph.IntermediateResult;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
+import org.apache.flink.runtime.executiongraph.JobVertexInputInfo;
 import org.apache.flink.runtime.executiongraph.MarkPartitionFinishedStrategy;
 import org.apache.flink.runtime.executiongraph.ParallelismAndInputInfos;
 import org.apache.flink.runtime.executiongraph.ResultPartitionBytes;
+import org.apache.flink.runtime.executiongraph.VertexInputInfoComputationUtils;
 import org.apache.flink.runtime.executiongraph.failover.FailoverStrategy;
 import org.apache.flink.runtime.executiongraph.failover.FailureHandlingResult;
 import org.apache.flink.runtime.executiongraph.failover.RestartBackoffTimeStrategy;
+import org.apache.flink.runtime.executiongraph.failover.RestartPipelinedRegionFailoverStrategy;
 import org.apache.flink.runtime.jobgraph.DistributionPattern;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
 import org.apache.flink.runtime.jobgraph.JobEdge;
-import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
-import org.apache.flink.runtime.jobgraph.forwardgroup.ForwardGroup;
 import org.apache.flink.runtime.jobgraph.jsonplan.JsonPlanGenerator;
 import org.apache.flink.runtime.jobgraph.topology.DefaultLogicalResult;
 import org.apache.flink.runtime.jobgraph.topology.DefaultLogicalTopology;
 import org.apache.flink.runtime.jobgraph.topology.DefaultLogicalVertex;
+import org.apache.flink.runtime.jobmaster.event.ExecutionJobVertexFinishedEvent;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.scheduler.DefaultExecutionDeployer;
 import org.apache.flink.runtime.scheduler.DefaultScheduler;
@@ -73,6 +76,7 @@ import org.apache.flink.runtime.scheduler.strategy.ExecutionVertexID;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingStrategyFactory;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
 import org.apache.flink.runtime.source.coordinator.SourceCoordinator;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
@@ -80,12 +84,17 @@ import org.slf4j.Logger;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.BiConsumer;
@@ -93,6 +102,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static org.apache.flink.runtime.executiongraph.ExecutionVertex.NUM_BYTES_UNKNOWN;
 import static org.apache.flink.runtime.io.network.partition.ResultPartitionType.HYBRID_FULL;
 import static org.apache.flink.runtime.io.network.partition.ResultPartitionType.HYBRID_SELECTIVE;
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -103,13 +113,11 @@ import static org.apache.flink.util.Preconditions.checkState;
  * This scheduler decides the parallelism of JobVertex according to the data volume it consumes. A
  * dynamically built up ExecutionGraph is used for this purpose.
  */
-public class AdaptiveBatchScheduler extends DefaultScheduler {
+public class AdaptiveBatchScheduler extends DefaultScheduler implements JobGraphUpdateListener {
 
-    private final DefaultLogicalTopology logicalTopology;
+    private DefaultLogicalTopology logicalTopology;
 
     private final VertexParallelismAndInputInfosDecider vertexParallelismAndInputInfosDecider;
-
-    private final Map<JobVertexID, ForwardGroup> forwardGroupsByJobVertexId;
 
     private final Map<IntermediateDataSetID, BlockingResultInfo> blockingResultInfos;
 
@@ -120,9 +128,23 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
 
     private final SpeculativeExecutionHandler speculativeExecutionHandler;
 
+    /**
+     * A set of JobVertex Ids associated with JobVertices whose operatorCoordinators did not
+     * successfully recover. And if any execution within these job vertices needs to be restarted in
+     * the future, all other executions within the same vertex must also be restarted to ensure the
+     * consistency and correctness of the state.
+     */
+    private Set<JobVertexID> jobVerticesWithUnRecoveredCoordinators = new HashSet<>();
+
+    private final BatchJobRecoveryHandler jobRecoveryHandler;
+
+    private final AdaptiveExecutionHandler adaptiveExecutionHandler;
+
+    private final int defaultMaxParallelism;
+
     public AdaptiveBatchScheduler(
             final Logger log,
-            final JobGraph jobGraph,
+            final AdaptiveExecutionHandler adaptiveExecutionHandler,
             final Executor ioExecutor,
             final Configuration jobMasterConfiguration,
             final Consumer<ComponentMainThreadExecutor> startUpAction,
@@ -143,17 +165,18 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
             final Collection<FailureEnricher> failureEnrichers,
             final ExecutionGraphFactory executionGraphFactory,
             final ShuffleMaster<?> shuffleMaster,
-            final Time rpcTimeout,
+            final Duration rpcTimeout,
             final VertexParallelismAndInputInfosDecider vertexParallelismAndInputInfosDecider,
             final int defaultMaxParallelism,
             final BlocklistOperations blocklistOperations,
             final HybridPartitionDataConsumeConstraint hybridPartitionDataConsumeConstraint,
-            final Map<JobVertexID, ForwardGroup> forwardGroupsByJobVertexId)
+            final BatchJobRecoveryHandler jobRecoveryHandler,
+            final ExecutionPlanSchedulingContext executionPlanSchedulingContext)
             throws Exception {
 
         super(
                 log,
-                jobGraph,
+                adaptiveExecutionHandler.getJobGraph(),
                 ioExecutor,
                 jobMasterConfiguration,
                 startUpAction,
@@ -176,15 +199,20 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
                 shuffleMaster,
                 rpcTimeout,
                 computeVertexParallelismStoreForDynamicGraph(
-                        jobGraph.getVertices(), defaultMaxParallelism),
-                new DefaultExecutionDeployer.Factory());
+                        adaptiveExecutionHandler.getJobGraph().getVertices(),
+                        defaultMaxParallelism),
+                new DefaultExecutionDeployer.Factory(),
+                executionPlanSchedulingContext);
 
-        this.logicalTopology = DefaultLogicalTopology.fromJobGraph(jobGraph);
+        this.adaptiveExecutionHandler = checkNotNull(adaptiveExecutionHandler);
+        adaptiveExecutionHandler.registerJobGraphUpdateListener(this);
+
+        this.defaultMaxParallelism = defaultMaxParallelism;
+
+        this.logicalTopology = DefaultLogicalTopology.fromJobGraph(getJobGraph());
 
         this.vertexParallelismAndInputInfosDecider =
                 checkNotNull(vertexParallelismAndInputInfosDecider);
-
-        this.forwardGroupsByJobVertexId = checkNotNull(forwardGroupsByJobVertexId);
 
         this.blockingResultInfos = new HashMap<>();
 
@@ -195,6 +223,8 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
         speculativeExecutionHandler =
                 createSpeculativeExecutionHandler(
                         log, jobMasterConfiguration, executionVertexVersioner, blocklistOperations);
+
+        this.jobRecoveryHandler = jobRecoveryHandler;
     }
 
     private SpeculativeExecutionHandler createSpeculativeExecutionHandler(
@@ -221,21 +251,144 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
     }
 
     @Override
+    public void onNewJobVerticesAdded(List<JobVertex> newVertices, int pendingOperatorsCount)
+            throws Exception {
+        log.info("Received newly created job vertices: [{}]", newVertices);
+
+        VertexParallelismStore vertexParallelismStore =
+                computeVertexParallelismStoreForDynamicGraph(newVertices, defaultMaxParallelism);
+        // 1. init vertex on master
+        DefaultExecutionGraphBuilder.initJobVerticesOnMaster(
+                newVertices,
+                getUserCodeLoader(),
+                log,
+                vertexParallelismStore,
+                getJobGraph().getName(),
+                getJobGraph().getJobID());
+
+        // 2. attach newly added job vertices
+        getExecutionGraph()
+                .addNewJobVertices(newVertices, jobManagerJobMetricGroup, vertexParallelismStore);
+
+        // 3. update logical topology
+        logicalTopology = DefaultLogicalTopology.fromJobGraph(getJobGraph());
+
+        // 4. update json plan
+        getExecutionGraph().setJsonPlan(JsonPlanGenerator.generatePlan(getJobGraph()));
+
+        // 5. In broadcast join optimization, results might be written first with a hash
+        // method and then read with a broadcast method. Therefore, we need to update the
+        // result info:
+        // 1. Update the DistributionPattern to reflect the optimized data distribution.
+        for (JobVertex newVertex : newVertices) {
+            for (JobEdge input : newVertex.getInputs()) {
+                tryUpdateResultInfo(input.getSourceId(), input.getDistributionPattern());
+            }
+        }
+    }
+
+    @Override
     protected void startSchedulingInternal() {
         speculativeExecutionHandler.init(
                 getExecutionGraph(), getMainThreadExecutor(), jobManagerJobMetricGroup);
+        jobRecoveryHandler.initialize(new DefaultBatchJobRecoveryContext());
 
-        tryComputeSourceParallelismThenRunAsync(
-                (Void value, Throwable throwable) -> {
-                    if (getExecutionGraph().getState() == JobStatus.CREATED) {
-                        initializeVerticesIfPossible();
-                        super.startSchedulingInternal();
-                    }
-                });
+        if (jobRecoveryHandler.needRecover()) {
+            jobRecoveryHandler.startRecovering();
+        } else {
+            tryComputeSourceParallelismThenRunAsync(
+                    (Void value, Throwable throwable) -> {
+                        if (getExecutionGraph().getState() == JobStatus.CREATED) {
+                            initializeVerticesIfPossible();
+                            super.startSchedulingInternal();
+                        }
+                    });
+        }
+    }
+
+    /**
+     * Modifies the vertices which need to be restarted. If any task needing restarting belongs to
+     * job vertices with unrecovered operator coordinators, all tasks within those job vertices need
+     * to be restarted once.
+     */
+    @Override
+    protected void maybeRestartTasks(final FailureHandlingResult failureHandlingResult) {
+        FailureHandlingResult wrappedResult = failureHandlingResult;
+        if (failureHandlingResult.canRestart()) {
+            Set<ExecutionVertexID> originalNeedToRestartVertices =
+                    failureHandlingResult.getVerticesToRestart();
+
+            Set<JobVertexID> extraNeedToRestartJobVertices =
+                    originalNeedToRestartVertices.stream()
+                            .map(ExecutionVertexID::getJobVertexId)
+                            .filter(jobVerticesWithUnRecoveredCoordinators::contains)
+                            .collect(Collectors.toSet());
+
+            jobVerticesWithUnRecoveredCoordinators.removeAll(extraNeedToRestartJobVertices);
+
+            Set<ExecutionVertexID> needToRestartVertices =
+                    extraNeedToRestartJobVertices.stream()
+                            .flatMap(
+                                    jobVertexId -> {
+                                        ExecutionJobVertex jobVertex =
+                                                getExecutionJobVertex(jobVertexId);
+                                        return Arrays.stream(jobVertex.getTaskVertices())
+                                                .map(ExecutionVertex::getID);
+                                    })
+                            .collect(Collectors.toSet());
+            needToRestartVertices.addAll(originalNeedToRestartVertices);
+
+            wrappedResult =
+                    FailureHandlingResult.restartable(
+                            failureHandlingResult.getFailedExecution().orElse(null),
+                            failureHandlingResult.getError(),
+                            failureHandlingResult.getTimestamp(),
+                            failureHandlingResult.getFailureLabels(),
+                            needToRestartVertices,
+                            failureHandlingResult.getRestartDelayMS(),
+                            failureHandlingResult.isGlobalFailure(),
+                            failureHandlingResult.isRootCause());
+        }
+
+        super.maybeRestartTasks(wrappedResult);
+    }
+
+    @VisibleForTesting
+    boolean isRecovering() {
+        return jobRecoveryHandler.isRecovering();
+    }
+
+    @Override
+    protected void resetForNewExecutions(Collection<ExecutionVertexID> vertices) {
+        super.resetForNewExecutions(vertices);
+        if (!isRecovering()) {
+            jobRecoveryHandler.onExecutionVertexReset(vertices);
+        }
+    }
+
+    private void initializeJobVertex(
+            ExecutionJobVertex jobVertex,
+            int parallelism,
+            Map<IntermediateDataSetID, JobVertexInputInfo> jobVertexInputInfos,
+            long createTimestamp)
+            throws JobException {
+        if (!jobVertex.isParallelismDecided()) {
+            changeJobVertexParallelism(jobVertex, parallelism);
+        } else {
+            checkState(parallelism == jobVertex.getParallelism());
+        }
+        checkState(canInitialize(jobVertex));
+        getExecutionGraph().initializeJobVertex(jobVertex, createTimestamp, jobVertexInputInfos);
+        if (!isRecovering()) {
+            jobRecoveryHandler.onExecutionJobVertexInitialization(
+                    jobVertex.getJobVertex().getID(), parallelism, jobVertexInputInfos);
+        }
     }
 
     @Override
     public CompletableFuture<Void> closeAsync() {
+        // stop job event manager.
+        jobRecoveryHandler.stop(requestJobStatus().isGloballyTerminalState());
         speculativeExecutionHandler.stopSlowTaskDetector();
         return super.closeAsync();
     }
@@ -243,9 +396,14 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
     @Override
     protected void onTaskFinished(final Execution execution, final IOMetrics ioMetrics) {
         speculativeExecutionHandler.notifyTaskFinished(execution, this::cancelPendingExecutions);
+        if (!isRecovering()) {
+            jobRecoveryHandler.onExecutionFinished(execution.getVertex().getID());
+        }
 
         checkNotNull(ioMetrics);
         updateResultPartitionBytesMetrics(ioMetrics.getResultPartitionBytes());
+        notifyJobVertexFinishedIfPossible(execution.getVertex().getJobVertex());
+
         ExecutionVertexVersion currentVersion =
                 executionVertexVersioner.getExecutionVertexVersion(execution.getVertex().getID());
         tryComputeSourceParallelismThenRunAsync(
@@ -336,13 +494,47 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
                             result.getId(),
                             (ignored, resultInfo) -> {
                                 if (resultInfo == null) {
-                                    resultInfo = createFromIntermediateResult(result);
+                                    resultInfo =
+                                            createFromIntermediateResult(result, new HashMap<>());
                                 }
                                 resultInfo.recordPartitionInfo(
                                         partitionId.getPartitionNumber(), partitionBytes);
                                 return resultInfo;
                             });
                 });
+    }
+
+    /**
+     * Notifies that fine-grained subpartition bytes may not be needed for the specified result
+     * info. This method checks if the given {@link BlockingResultInfo} instance is of type {@link
+     * AllToAllBlockingResultInfo}, if all consumer vertices are created and initialized, and if the
+     * input bytes information for all consumer vertices is initialized. If all these conditions are
+     * met, the fine-grained statistics for subpartition bytes will not be needed.
+     *
+     * @param resultInfo the {@link BlockingResultInfo} instance, which holds the fine-grained
+     *     subpartition bytes.
+     */
+    private void notifyFineGrainedSubpartitionBytesMayNotNeeded(BlockingResultInfo resultInfo) {
+        IntermediateResult intermediateResult =
+                getExecutionGraph().getAllIntermediateResults().get(resultInfo.getResultId());
+
+        if (resultInfo instanceof AllToAllBlockingResultInfo
+                && intermediateResult.areAllConsumerVerticesCreated()
+                && intermediateResult.getConsumerVertices().stream()
+                        .map(this::getExecutionJobVertex)
+                        .allMatch(ExecutionJobVertex::isInitialized)
+                && intermediateResult.getConsumerVertices().stream()
+                        .map(this::getExecutionJobVertex)
+                        .map(ExecutionJobVertex::getTaskVertices)
+                        .allMatch(
+                                taskVertices ->
+                                        Arrays.stream(taskVertices)
+                                                .allMatch(
+                                                        taskVertex ->
+                                                                taskVertex.getInputBytes()
+                                                                        != NUM_BYTES_UNKNOWN))) {
+            ((AllToAllBlockingResultInfo) resultInfo).onFineGrainedSubpartitionBytesNotNeeded();
+        }
     }
 
     @Override
@@ -422,8 +614,8 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
 
             // We need to wait for the upstream vertex to complete, otherwise, dynamic filtering
             // information will be inaccessible during source parallelism inference.
-            Optional<List<BlockingResultInfo>> consumedResultsInfo =
-                    tryGetConsumedResultsInfo(jobVertex);
+            Optional<List<BlockingInputInfo>> consumedResultsInfo =
+                    tryGetConsumedResultsInfoView(jobVertex);
             if (consumedResultsInfo.isPresent()) {
                 List<CompletableFuture<Integer>> sourceParallelismFutures =
                         sourceCoordinators.stream()
@@ -458,6 +650,17 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
                         (a, b) -> a.thenCombine(b, Math::max));
     }
 
+    private void notifyJobVertexFinishedIfPossible(ExecutionJobVertex jobVertex) {
+        Optional<Map<IntermediateDataSetID, BlockingResultInfo>> producedResultsInfo =
+                getProducedResultsInfo(jobVertex);
+
+        producedResultsInfo.ifPresent(
+                resultInfo ->
+                        adaptiveExecutionHandler.handleJobEvent(
+                                new ExecutionJobVertexFinishedEvent(
+                                        jobVertex.getJobVertexId(), resultInfo)));
+    }
+
     @VisibleForTesting
     public void initializeVerticesIfPossible() {
         final List<ExecutionJobVertex> newlyInitializedJobVertices = new ArrayList<>();
@@ -475,27 +678,30 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
 
                     // Note that in current implementation, the decider will not load balance
                     // (evenly distribute data) for job vertices whose parallelism has already been
-                    // decided, so we can call the
-                    // ExecutionGraph#initializeJobVertex(ExecutionJobVertex, long) to initialize.
+                    // decided, so we can call the initializeJobVertex method, specifying the
+                    // user-defined parallelism as its argument.
                     // TODO: In the future, if we want to load balance for job vertices whose
                     // parallelism has already been decided, we need to refactor the logic here.
-                    getExecutionGraph().initializeJobVertex(jobVertex, createTimestamp);
+                    initializeJobVertex(
+                            jobVertex,
+                            jobVertex.getParallelism(),
+                            VertexInputInfoComputationUtils.computeVertexInputInfos(
+                                    jobVertex,
+                                    getExecutionGraph().getAllIntermediateResults()::get),
+                            createTimestamp);
                     newlyInitializedJobVertices.add(jobVertex);
                 } else {
-                    Optional<List<BlockingResultInfo>> consumedResultsInfo =
-                            tryGetConsumedResultsInfo(jobVertex);
+                    Optional<List<BlockingInputInfo>> consumedResultsInfo =
+                            tryGetConsumedResultsInfoView(jobVertex);
                     if (consumedResultsInfo.isPresent()) {
                         ParallelismAndInputInfos parallelismAndInputInfos =
                                 tryDecideParallelismAndInputInfos(
                                         jobVertex, consumedResultsInfo.get());
-                        changeJobVertexParallelism(
-                                jobVertex, parallelismAndInputInfos.getParallelism());
-                        checkState(canInitialize(jobVertex));
-                        getExecutionGraph()
-                                .initializeJobVertex(
-                                        jobVertex,
-                                        createTimestamp,
-                                        parallelismAndInputInfos.getJobVertexInputInfos());
+                        initializeJobVertex(
+                                jobVertex,
+                                parallelismAndInputInfos.getParallelism(),
+                                parallelismAndInputInfos.getJobVertexInputInfos(),
+                                createTimestamp);
                         newlyInitializedJobVertices.add(jobVertex);
                     }
                 }
@@ -511,20 +717,9 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
     }
 
     private ParallelismAndInputInfos tryDecideParallelismAndInputInfos(
-            final ExecutionJobVertex jobVertex, List<BlockingResultInfo> inputs) {
-        int vertexInitialParallelism = jobVertex.getParallelism();
-        ForwardGroup forwardGroup = forwardGroupsByJobVertexId.get(jobVertex.getJobVertexId());
-        if (!jobVertex.isParallelismDecided()
-                && forwardGroup != null
-                && forwardGroup.isParallelismDecided()) {
-            vertexInitialParallelism = forwardGroup.getParallelism();
-            log.info(
-                    "Parallelism of JobVertex: {} ({}) is decided to be {} according to forward group's parallelism.",
-                    jobVertex.getName(),
-                    jobVertex.getJobVertexId(),
-                    vertexInitialParallelism);
-        }
-
+            final ExecutionJobVertex jobVertex, List<BlockingInputInfo> inputs) {
+        int vertexInitialParallelism =
+                adaptiveExecutionHandler.getInitialParallelism(jobVertex.getJobVertexId());
         int vertexMinParallelism = ExecutionConfig.PARALLELISM_DEFAULT;
         if (sourceParallelismFuturesByJobVertexId.containsKey(jobVertex.getJobVertexId())) {
             int dynamicSourceParallelism = getDynamicSourceParallelism(jobVertex);
@@ -559,9 +754,8 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
             checkState(parallelismAndInputInfos.getParallelism() == vertexInitialParallelism);
         }
 
-        if (forwardGroup != null && !forwardGroup.isParallelismDecided()) {
-            forwardGroup.setParallelism(parallelismAndInputInfos.getParallelism());
-        }
+        adaptiveExecutionHandler.notifyJobVertexParallelismDecided(
+                jobVertex.getJobVertexId(), parallelismAndInputInfos.getParallelism());
 
         return parallelismAndInputInfos;
     }
@@ -605,20 +799,31 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
                                     ir ->
                                             ir.getResultType() == HYBRID_FULL
                                                     || ir.getResultType() == HYBRID_SELECTIVE);
-            if (intermediateResults.isEmpty() || hasHybridEdge) {
+            // When inputBytes have already been set (e.g. failed to restart), we don't need to
+            // recalculate, otherwise an exception may be triggered if BlockingResultInfo has
+            // already been aggregated.
+            if (ev.getInputBytes() != ExecutionVertex.NUM_BYTES_UNKNOWN
+                    || intermediateResults.isEmpty()
+                    || hasHybridEdge) {
                 continue;
             }
             long inputBytes = 0;
             for (IntermediateResult intermediateResult : intermediateResults) {
                 ExecutionVertexInputInfo inputInfo =
                         ev.getExecutionVertexInputInfo(intermediateResult.getId());
-                IndexRange partitionIndexRange = inputInfo.getPartitionIndexRange();
-                IndexRange subpartitionIndexRange = inputInfo.getSubpartitionIndexRange();
                 BlockingResultInfo blockingResultInfo =
                         checkNotNull(getBlockingResultInfo(intermediateResult.getId()));
-                inputBytes +=
-                        blockingResultInfo.getNumBytesProduced(
-                                partitionIndexRange, subpartitionIndexRange);
+                Map<IndexRange, IndexRange> consumedSubpartitionGroups =
+                        inputInfo.getConsumedSubpartitionGroups();
+                for (Map.Entry<IndexRange, IndexRange> entry :
+                        consumedSubpartitionGroups.entrySet()) {
+                    IndexRange partitionIndexRange = entry.getKey();
+                    IndexRange subpartitionIndexRange = entry.getValue();
+                    inputBytes +=
+                            blockingResultInfo.getNumBytesProduced(
+                                    partitionIndexRange, subpartitionIndexRange);
+                }
+                notifyFineGrainedSubpartitionBytesMayNotNeeded(blockingResultInfo);
             }
             ev.setInputBytes(inputBytes);
         }
@@ -630,7 +835,7 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
         }
         // update the JSON Plan, it's needed to enable REST APIs to return the latest parallelism of
         // job vertices
-        jobVertex.getJobVertex().setParallelism(parallelism);
+        jobVertex.getJobVertex().setDynamicParallelism(parallelism);
         try {
             getExecutionGraph().setJsonPlan(JsonPlanGenerator.generatePlan(getJobGraph()));
         } catch (Throwable t) {
@@ -643,21 +848,28 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
     }
 
     /** Get information of consumable results. */
-    private Optional<List<BlockingResultInfo>> tryGetConsumedResultsInfo(
+    private Optional<List<BlockingInputInfo>> tryGetConsumedResultsInfoView(
             final ExecutionJobVertex jobVertex) {
 
-        List<BlockingResultInfo> consumableResultInfo = new ArrayList<>();
+        List<BlockingInputInfo> consumableResultInfo = new ArrayList<>();
 
         DefaultLogicalVertex logicalVertex = logicalTopology.getVertex(jobVertex.getJobVertexId());
-        Iterable<DefaultLogicalResult> consumedResults = logicalVertex.getConsumedResults();
+        Iterator<JobEdge> jobEdges = jobVertex.getJobVertex().getInputs().iterator();
 
-        for (DefaultLogicalResult consumedResult : consumedResults) {
+        for (DefaultLogicalResult consumedResult : logicalVertex.getConsumedResults()) {
+            checkState(jobEdges.hasNext());
+            JobEdge jobEdge = jobEdges.next();
             final ExecutionJobVertex producerVertex =
                     getExecutionJobVertex(consumedResult.getProducer().getId());
             if (producerVertex.isFinished()) {
                 BlockingResultInfo resultInfo =
                         checkNotNull(blockingResultInfos.get(consumedResult.getId()));
-                consumableResultInfo.add(resultInfo);
+                consumableResultInfo.add(
+                        new BlockingInputInfo(
+                                resultInfo,
+                                jobEdge.getTypeNumber(),
+                                jobEdge.areInterInputsKeysCorrelated(),
+                                jobEdge.isIntraInputKeyCorrelated()));
             } else {
                 // not all inputs consumable, return Optional.empty()
                 return Optional.empty();
@@ -667,9 +879,39 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
         return Optional.of(consumableResultInfo);
     }
 
+    private Optional<Map<IntermediateDataSetID, BlockingResultInfo>> getProducedResultsInfo(
+            final ExecutionJobVertex jobVertex) {
+        if (!jobVertex.isFinished()) {
+            return Optional.empty();
+        }
+
+        Map<IntermediateDataSetID, BlockingResultInfo> producedResultInfo = new HashMap<>();
+
+        DefaultLogicalVertex logicalVertex = logicalTopology.getVertex(jobVertex.getJobVertexId());
+        Iterable<DefaultLogicalResult> producedResults = logicalVertex.getProducedResults();
+
+        for (DefaultLogicalResult producedResult : producedResults) {
+            BlockingResultInfo resultInfo =
+                    checkNotNull(blockingResultInfos.get(producedResult.getId()));
+            producedResultInfo.put(producedResult.getId(), resultInfo);
+        }
+
+        return Optional.of(producedResultInfo);
+    }
+
     private boolean canInitialize(final ExecutionJobVertex jobVertex) {
-        if (jobVertex.isInitialized() || !jobVertex.isParallelismDecided()) {
+        if (jobVertex.isInitialized()
+                || (!jobVertex.isParallelismDecided()
+                        && adaptiveExecutionHandler.getInitialParallelism(
+                                        jobVertex.getJobVertexId())
+                                == ExecutionConfig.PARALLELISM_DEFAULT)) {
             return false;
+        }
+
+        if (!jobVertex.isParallelismDecided()) {
+            changeJobVertexParallelism(
+                    jobVertex,
+                    adaptiveExecutionHandler.getInitialParallelism(jobVertex.getJobVertexId()));
         }
 
         // all the upstream job vertices need to have been initialized
@@ -711,23 +953,38 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
     @VisibleForTesting
     public static VertexParallelismStore computeVertexParallelismStoreForDynamicGraph(
             Iterable<JobVertex> vertices, int defaultMaxParallelism) {
+        // Resets the JobVertices to their original parallelism after JM failover, maintaining
+        // consistency between the job graph loaded from the file and the one in memory.
+        resetDynamicParallelism(vertices);
+
         // for dynamic graph, there is no need to normalize vertex parallelism. if the max
         // parallelism is not configured and the parallelism is a positive value, max
         // parallelism can be computed against the parallelism, otherwise it needs to use the
         // global default max parallelism.
         return computeVertexParallelismStore(
                 vertices,
-                v -> {
-                    if (v.getParallelism() > 0) {
-                        return getDefaultMaxParallelism(v);
-                    } else {
-                        return defaultMaxParallelism;
-                    }
-                },
+                v -> computeMaxParallelism(v.getParallelism(), defaultMaxParallelism),
                 Function.identity());
     }
 
-    private static BlockingResultInfo createFromIntermediateResult(IntermediateResult result) {
+    public static int computeMaxParallelism(int parallelism, int defaultMaxParallelism) {
+        if (parallelism > 0) {
+            return getDefaultMaxParallelism(parallelism);
+        } else {
+            return defaultMaxParallelism;
+        }
+    }
+
+    private static void resetDynamicParallelism(Iterable<JobVertex> vertices) {
+        for (JobVertex vertex : vertices) {
+            if (vertex.isDynamicParallelism()) {
+                vertex.setParallelism(ExecutionConfig.PARALLELISM_DEFAULT);
+            }
+        }
+    }
+
+    private static BlockingResultInfo createFromIntermediateResult(
+            IntermediateResult result, Map<Integer, long[]> subpartitionBytesByPartitionIndex) {
         checkArgument(result != null);
         // Note that for dynamic graph, different partitions in the same result have the same number
         // of subpartitions.
@@ -735,13 +992,15 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
             return new PointwiseBlockingResultInfo(
                     result.getId(),
                     result.getNumberOfAssignedPartitions(),
-                    result.getPartitions()[0].getNumberOfSubpartitions());
+                    result.getPartitions()[0].getNumberOfSubpartitions(),
+                    subpartitionBytesByPartitionIndex);
         } else {
             return new AllToAllBlockingResultInfo(
                     result.getId(),
                     result.getNumberOfAssignedPartitions(),
                     result.getPartitions()[0].getNumberOfSubpartitions(),
-                    result.isBroadcast());
+                    result.isSingleSubpartitionContainsAllData(),
+                    subpartitionBytesByPartitionIndex);
         }
     }
 
@@ -753,5 +1012,138 @@ public class AdaptiveBatchScheduler extends DefaultScheduler {
     @VisibleForTesting
     SpeculativeExecutionHandler getSpeculativeExecutionHandler() {
         return speculativeExecutionHandler;
+    }
+
+    /**
+     * Tries to update the result information for a given IntermediateDataSetID according to the
+     * specified DistributionPattern. This ensures consistency between the distribution pattern and
+     * the stored result information.
+     *
+     * <p>The result information is updated under the following conditions:
+     *
+     * <ul>
+     *   <li>If the target pattern is ALL_TO_ALL and the current result info is POINTWISE, a new
+     *       BlockingResultInfo is created and stored.
+     *   <li>If the target pattern is POINTWISE and the current result info is ALL_TO_ALL, a
+     *       conversion is similarly triggered.
+     *   <li>Additionally, for ALL_TO_ALL patterns, the status of broadcast of the result info
+     *       should be updated.
+     * </ul>
+     *
+     * @param id The ID of the intermediate dataset to update.
+     * @param targetPattern The target distribution pattern to apply.
+     */
+    private void tryUpdateResultInfo(IntermediateDataSetID id, DistributionPattern targetPattern) {
+        if (blockingResultInfos.containsKey(id)) {
+            BlockingResultInfo resultInfo = blockingResultInfos.get(id);
+            IntermediateResult result = getExecutionGraph().getAllIntermediateResults().get(id);
+
+            if ((targetPattern == DistributionPattern.ALL_TO_ALL && resultInfo.isPointwise())
+                    || (targetPattern == DistributionPattern.POINTWISE
+                            && !resultInfo.isPointwise())) {
+
+                BlockingResultInfo newInfo =
+                        createFromIntermediateResult(
+                                result, resultInfo.getSubpartitionBytesByPartitionIndex());
+
+                blockingResultInfos.put(id, newInfo);
+            } else if (resultInfo instanceof AllToAllBlockingResultInfo) {
+                ((AllToAllBlockingResultInfo) resultInfo).setBroadcast(result.isBroadcast());
+            }
+        }
+    }
+
+    private class DefaultBatchJobRecoveryContext implements BatchJobRecoveryContext {
+
+        private final FailoverStrategy restartStrategyOnResultConsumable =
+                new RestartPipelinedRegionFailoverStrategy.Factory()
+                        .create(getSchedulingTopology(), getResultPartitionAvailabilityChecker());
+
+        private final FailoverStrategy restartStrategyNotOnResultConsumable =
+                new RestartPipelinedRegionFailoverStrategy.Factory()
+                        .create(getSchedulingTopology(), ignored -> true);
+
+        @Override
+        public ExecutionGraph getExecutionGraph() {
+            return AdaptiveBatchScheduler.this.getExecutionGraph();
+        }
+
+        @Override
+        public ShuffleMaster<?> getShuffleMaster() {
+            return shuffleMaster;
+        }
+
+        @Override
+        public Set<ExecutionVertexID> getTasksNeedingRestart(
+                ExecutionVertexID vertexId, boolean considerResultConsumable) {
+            if (considerResultConsumable) {
+                return restartStrategyOnResultConsumable.getTasksNeedingRestart(vertexId, null);
+            } else {
+                return restartStrategyNotOnResultConsumable.getTasksNeedingRestart(vertexId, null);
+            }
+        }
+
+        @Override
+        public ComponentMainThreadExecutor getMainThreadExecutor() {
+            return AdaptiveBatchScheduler.this.getMainThreadExecutor();
+        }
+
+        @Override
+        public void resetVerticesInRecovering(Set<ExecutionVertexID> verticesToReset)
+                throws Exception {
+            for (ExecutionVertexID executionVertexID : verticesToReset) {
+                notifyCoordinatorsAboutTaskFailure(
+                        getExecutionVertex(executionVertexID).getCurrentExecutionAttempt(), null);
+            }
+            resetForNewExecutions(verticesToReset);
+            restoreState(verticesToReset, false);
+        }
+
+        @Override
+        public void updateResultPartitionBytesMetrics(
+                Map<IntermediateResultPartitionID, ResultPartitionBytes> resultPartitionBytes) {
+            AdaptiveBatchScheduler.this.updateResultPartitionBytesMetrics(resultPartitionBytes);
+        }
+
+        @Override
+        public void initializeJobVertex(
+                ExecutionJobVertex jobVertex,
+                int parallelism,
+                Map<IntermediateDataSetID, JobVertexInputInfo> jobVertexInputInfos,
+                long createTimestamp)
+                throws JobException {
+            AdaptiveBatchScheduler.this.initializeJobVertex(
+                    jobVertex, parallelism, jobVertexInputInfos, createTimestamp);
+        }
+
+        @Override
+        public void updateTopology(final List<ExecutionJobVertex> newlyInitializedJobVertices) {
+            AdaptiveBatchScheduler.this.updateTopology(newlyInitializedJobVertices);
+        }
+
+        @Override
+        public void onRecoveringFinished(Set<JobVertexID> jobVerticesWithUnRecoveredCoordinators) {
+            AdaptiveBatchScheduler.this.jobVerticesWithUnRecoveredCoordinators =
+                    new HashSet<>(jobVerticesWithUnRecoveredCoordinators);
+            tryComputeSourceParallelismThenRunAsync(
+                    (Void value, Throwable throwable) ->
+                            schedulingStrategy.scheduleAllVerticesIfPossible());
+        }
+
+        @Override
+        public void onRecoveringFailed() {
+            // call #initializeVerticesIfPossible to avoid an empty execution graph
+            initializeVerticesIfPossible();
+            handleGlobalFailure(
+                    new FlinkRuntimeException("Recover failed from JM failover, fail global."));
+        }
+
+        @Override
+        public void failJob(
+                Throwable cause,
+                long timestamp,
+                CompletableFuture<Map<String, String>> failureLabels) {
+            AdaptiveBatchScheduler.this.failJob(cause, timestamp, failureLabels);
+        }
     }
 }

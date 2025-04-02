@@ -18,6 +18,7 @@
 
 package org.apache.flink.configuration;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
 import org.apache.flink.configuration.description.Description;
 import org.apache.flink.configuration.description.TextElement;
@@ -30,6 +31,7 @@ import static org.apache.flink.configuration.description.LinkElement.link;
 import static org.apache.flink.configuration.description.TextElement.text;
 
 /** The set of configuration options relating to high-availability settings. */
+@PublicEvolving
 public class HighAvailabilityOptions {
 
     // ------------------------------------------------------------------------
@@ -125,43 +127,44 @@ public class HighAvailabilityOptions {
                     .withDescription(
                             "The root path under which Flink stores its entries in ZooKeeper.");
 
-    /** ZooKeeper root path (ZNode) for job graphs. */
+    /** ZooKeeper root path (ZNode) for execution plans. */
     @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
-    public static final ConfigOption<String> HA_ZOOKEEPER_JOBGRAPHS_PATH =
-            key("high-availability.zookeeper.path.jobgraphs")
+    public static final ConfigOption<String> HA_ZOOKEEPER_EXECUTION_PLANS_PATH =
+            key("high-availability.zookeeper.path.execution-plans")
                     .stringType()
-                    .defaultValue("/jobgraphs")
-                    .withDeprecatedKeys("recovery.zookeeper.path.jobgraphs")
-                    .withDescription("ZooKeeper root path (ZNode) for job graphs");
+                    .defaultValue("/execution-plans")
+                    .withDeprecatedKeys(
+                            "recovery.zookeeper.path.jobgraphs",
+                            "high-availability.zookeeper.path.jobgraphs")
+                    .withDescription("ZooKeeper root path (ZNode) for execution plans");
 
     // ------------------------------------------------------------------------
     //  ZooKeeper Client Settings
     // ------------------------------------------------------------------------
 
     @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
-    public static final ConfigOption<Integer> ZOOKEEPER_SESSION_TIMEOUT =
+    public static final ConfigOption<Duration> ZOOKEEPER_SESSION_TIMEOUT =
             key("high-availability.zookeeper.client.session-timeout")
-                    .intType()
-                    .defaultValue(60000)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(60000))
                     .withDeprecatedKeys("recovery.zookeeper.client.session-timeout")
-                    .withDescription(
-                            "Defines the session timeout for the ZooKeeper session in ms.");
+                    .withDescription("Defines the session timeout for the ZooKeeper session.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
-    public static final ConfigOption<Integer> ZOOKEEPER_CONNECTION_TIMEOUT =
+    public static final ConfigOption<Duration> ZOOKEEPER_CONNECTION_TIMEOUT =
             key("high-availability.zookeeper.client.connection-timeout")
-                    .intType()
-                    .defaultValue(15000)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(15000))
                     .withDeprecatedKeys("recovery.zookeeper.client.connection-timeout")
-                    .withDescription("Defines the connection timeout for ZooKeeper in ms.");
+                    .withDescription("Defines the connection timeout for ZooKeeper.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
-    public static final ConfigOption<Integer> ZOOKEEPER_RETRY_WAIT =
+    public static final ConfigOption<Duration> ZOOKEEPER_RETRY_WAIT =
             key("high-availability.zookeeper.client.retry-wait")
-                    .intType()
-                    .defaultValue(5000)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(5000))
                     .withDeprecatedKeys("recovery.zookeeper.client.retry-wait")
-                    .withDescription("Defines the pause between consecutive retries in ms.");
+                    .withDescription("Defines the pause between consecutive retries.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
     public static final ConfigOption<Integer> ZOOKEEPER_MAX_RETRY_ATTEMPTS =
@@ -171,17 +174,6 @@ public class HighAvailabilityOptions {
                     .withDeprecatedKeys("recovery.zookeeper.client.max-retry-attempts")
                     .withDescription(
                             "Defines the number of connection retries before the client gives up.");
-
-    /** @deprecated Don't use this option anymore. It has no effect on Flink. */
-    @Deprecated
-    @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
-    public static final ConfigOption<String> ZOOKEEPER_RUNNING_JOB_REGISTRY_PATH =
-            key("high-availability.zookeeper.path.running-registry")
-                    .stringType()
-                    .defaultValue("/running_job_registry/")
-                    .withDescription(
-                            "Don't use this option anymore. It has no effect on Flink. The RunningJobRegistry has been "
-                                    + "replaced by the JobResultStore in Flink 1.15.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_ZOOKEEPER_HIGH_AVAILABILITY)
     public static final ConfigOption<String> ZOOKEEPER_CLIENT_ACL =
@@ -268,24 +260,6 @@ public class HighAvailabilityOptions {
                                                             + "CuratorFrameworkFactory.Builder.html#simulatedSessionExpirationPercent(int)",
                                                     "simulatedSessionExpirationPercent"))
                                     .build());
-
-    // ------------------------------------------------------------------------
-    //  Deprecated options
-    // ------------------------------------------------------------------------
-
-    /**
-     * The time before a JobManager after a fail over recovers the current jobs.
-     *
-     * @deprecated Don't use this option anymore. It has no effect on Flink.
-     */
-    @Deprecated
-    public static final ConfigOption<String> HA_JOB_DELAY =
-            key("high-availability.job.delay")
-                    .stringType()
-                    .noDefaultValue()
-                    .withDeprecatedKeys("recovery.job.delay")
-                    .withDescription(
-                            "The time before a JobManager after a fail over recovers the current jobs.");
 
     // ------------------------------------------------------------------------
 

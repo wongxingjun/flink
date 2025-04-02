@@ -31,16 +31,16 @@ import org.apache.flink.api.connector.sink2.Committer;
 import org.apache.flink.api.connector.sink2.CommitterInitContext;
 import org.apache.flink.api.connector.sink2.CommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.Sink;
-import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
-import org.apache.flink.api.connector.sink2.TwoPhaseCommittingSink;
-import org.apache.flink.api.connector.sink2.TwoPhaseCommittingSink.PrecommittingSinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.ReaderOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
+import org.apache.flink.api.connector.source.SplitEnumerator;
+import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
+import org.apache.flink.api.connector.source.lib.util.IteratorSourceEnumerator;
 import org.apache.flink.api.connector.source.lib.util.IteratorSourceReader;
 import org.apache.flink.api.connector.source.lib.util.IteratorSourceSplit;
 import org.apache.flink.api.java.tuple.Tuple3;
@@ -59,9 +59,9 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
-import org.apache.flink.streaming.api.functions.source.InputFormatSourceFunction;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.RichSinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.InputFormatSourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.util.InstantiationUtil;
 
@@ -76,6 +76,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -184,6 +185,13 @@ class SpeculativeExecutionITCase {
     }
 
     @Test
+    void testSpeculativeExecutionOfNewSourceWithFailure() throws Exception {
+        executeJob(env -> setupJobWithSlowNewSource(env, true));
+        waitUntilJobArchived();
+        checkResults();
+    }
+
+    @Test
     public void testSpeculativeSlowSink() throws Exception {
         executeJob(this::setupSpeculativeSlowSink);
         waitUntilJobArchived();
@@ -196,7 +204,7 @@ class SpeculativeExecutionITCase {
         assertThat(DummyCommitter.foundSpeculativeWriter).isTrue();
     }
 
-    /** Should be removed along {@link TwoPhaseCommittingSink}. */
+    /** Should be removed along {@link SupportsCommitter}. */
     @Deprecated
     @Test
     public void testSpeculativeSlowSinkDeprecated() throws Exception {
@@ -269,7 +277,7 @@ class SpeculativeExecutionITCase {
     private Configuration configure(final Configuration configuration) {
         configuration.set(RestOptions.BIND_PORT, "0");
         configuration.set(JobManagerOptions.ARCHIVE_DIR, temporaryFolder.getRoot().toString());
-        configuration.set(JobManagerOptions.SLOT_REQUEST_TIMEOUT, 5000L);
+        configuration.set(JobManagerOptions.SLOT_REQUEST_TIMEOUT, Duration.ofMillis(5000L));
         configuration.set(JobManagerOptions.MAX_ATTEMPTS_HISTORY_SIZE, 1);
         configuration.set(TaskManagerOptions.MEMORY_SEGMENT_SIZE, MemorySize.parse("4kb"));
         configuration.set(TaskManagerOptions.NUM_TASK_SLOTS, MAX_PARALLELISM);
@@ -357,9 +365,14 @@ class SpeculativeExecutionITCase {
     }
 
     private void setupJobWithSlowNewSource(StreamExecutionEnvironment env) {
+        setupJobWithSlowNewSource(env, false);
+    }
+
+    private void setupJobWithSlowNewSource(
+            StreamExecutionEnvironment env, boolean forceFailureFlag) {
         final DataStream<Long> source =
                 env.fromSource(
-                        new TestingNumberSequenceSource(),
+                        new TestingNumberSequenceSource(forceFailureFlag),
                         WatermarkStrategy.noWatermarks(),
                         "source");
         addSink(source);
@@ -380,7 +393,7 @@ class SpeculativeExecutionITCase {
                 .slotSharingGroup("sinkGroup");
     }
 
-    /** Should be removed along {@link TwoPhaseCommittingSink}. */
+    /** Should be removed along {@link SupportsCommitter}. */
     @Deprecated
     private void setupSpeculativeSlowSinkDeprecated(StreamExecutionEnvironment env) {
         DummyCommitter.attempts.set(0);
@@ -524,14 +537,39 @@ class SpeculativeExecutionITCase {
     }
 
     private static class TestingNumberSequenceSource extends NumberSequenceSource {
-        private TestingNumberSequenceSource() {
+
+        private final boolean forceFailureFlag;
+        // When forceFailureCounter > 0, the source task will throw an exception on reader close
+        // until forceFailureCounter reaches 0.
+        public static AtomicInteger forceFailureCounter = new AtomicInteger(0);
+
+        private TestingNumberSequenceSource(boolean forceFailureFlag) {
             super(0, NUMBERS_TO_PRODUCE - 1);
+            this.forceFailureFlag = forceFailureFlag;
+            if (forceFailureFlag) {
+                forceFailureCounter = new AtomicInteger(1);
+            }
         }
 
         @Override
         public SourceReader<Long, NumberSequenceSplit> createReader(
                 SourceReaderContext readerContext) {
             return new TestingIteratorSourceReader(readerContext);
+        }
+
+        @Override
+        public SplitEnumerator<NumberSequenceSplit, Collection<NumberSequenceSplit>>
+                createEnumerator(final SplitEnumeratorContext<NumberSequenceSplit> enumContext) {
+
+            int splitSize = enumContext.currentParallelism();
+            // Simulating the case that the splits number less than the parallelism to verify
+            // unassigned source tasks and failover.
+            if (forceFailureFlag) {
+                splitSize = 1;
+            }
+            final List<NumberSequenceSplit> splits =
+                    splitNumberRange(0, NUMBERS_TO_PRODUCE - 1, splitSize);
+            return new IteratorSourceEnumerator<>(enumContext, splits);
         }
     }
 
@@ -547,6 +585,14 @@ class SpeculativeExecutionITCase {
         public InputStatus pollNext(ReaderOutput<E> output) {
             maybeSleep();
             return super.pollNext(output);
+        }
+
+        @Override
+        public void close() throws Exception {
+            if (TestingNumberSequenceSource.forceFailureCounter.get() > 0) {
+                TestingNumberSequenceSource.forceFailureCounter.decrementAndGet();
+                throw new RuntimeException("Forced failure for testing");
+            }
         }
     }
 
@@ -570,11 +616,6 @@ class SpeculativeExecutionITCase {
             implements Sink<Long>,
                     SupportsCommitter<Tuple3<Integer, Integer, Map<Long, Long>>>,
                     SupportsConcurrentExecutionAttempts {
-
-        @Override
-        public SinkWriter<Long> createWriter(InitContext context) {
-            throw new UnsupportedOperationException("Not supported");
-        }
 
         @Override
         public CommittingSinkWriter<Long, Tuple3<Integer, Integer, Map<Long, Long>>> createWriter(
@@ -651,15 +692,16 @@ class SpeculativeExecutionITCase {
         public void close() throws Exception {}
     }
 
-    /** Should be removed along {@link TwoPhaseCommittingSink}. */
+    /** Should be removed along {@link SupportsCommitter}. */
     @Deprecated
     private static class SpeculativeSinkDeprecated
-            implements TwoPhaseCommittingSink<Long, Tuple3<Integer, Integer, Map<Long, Long>>>,
+            implements SupportsCommitter<Tuple3<Integer, Integer, Map<Long, Long>>>,
+                    Sink<Long>,
                     SupportsConcurrentExecutionAttempts {
 
         @Override
-        public PrecommittingSinkWriter<Long, Tuple3<Integer, Integer, Map<Long, Long>>>
-                createWriter(InitContext context) {
+        public CommittingSinkWriter<Long, Tuple3<Integer, Integer, Map<Long, Long>>> createWriter(
+                WriterInitContext context) {
             return new DummyPrecommittingSinkWriter(
                     context.getTaskInfo().getIndexOfThisSubtask(),
                     context.getTaskInfo().getAttemptNumber());
@@ -700,10 +742,10 @@ class SpeculativeExecutionITCase {
         }
     }
 
-    /** Should be removed along {@link TwoPhaseCommittingSink}. */
+    /** Should be removed along {@link SupportsCommitter}. */
     @Deprecated
     private static class DummyPrecommittingSinkWriter
-            implements PrecommittingSinkWriter<Long, Tuple3<Integer, Integer, Map<Long, Long>>> {
+            implements CommittingSinkWriter<Long, Tuple3<Integer, Integer, Map<Long, Long>>> {
 
         private final int subTaskIndex;
 

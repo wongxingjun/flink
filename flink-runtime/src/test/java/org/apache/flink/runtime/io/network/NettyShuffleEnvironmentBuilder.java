@@ -20,6 +20,7 @@ package org.apache.flink.runtime.io.network;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
+import org.apache.flink.configuration.NettyShuffleEnvironmentOptions.CompressionCodec;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.io.network.netty.NettyConfig;
@@ -49,6 +50,8 @@ public class NettyShuffleEnvironmentBuilder {
     private static final Duration DEFAULT_REQUEST_SEGMENTS_TIMEOUT = Duration.ofMillis(30000L);
 
     private int bufferSize = DEFAULT_NETWORK_BUFFER_SIZE;
+
+    private int startingBufferSize = Integer.MAX_VALUE;
 
     private int numNetworkBuffers = DEFAULT_NUM_NETWORK_BUFFERS;
 
@@ -82,7 +85,7 @@ public class NettyShuffleEnvironmentBuilder {
 
     private int maxOverdraftBuffersPerGate = 0;
 
-    private String compressionCodec = "LZ4";
+    private CompressionCodec compressionCodec = CompressionCodec.LZ4;
 
     private ResourceID taskManagerLocation = ResourceID.generate();
 
@@ -112,6 +115,11 @@ public class NettyShuffleEnvironmentBuilder {
 
     public NettyShuffleEnvironmentBuilder setBufferSize(int bufferSize) {
         this.bufferSize = bufferSize;
+        return this;
+    }
+
+    public NettyShuffleEnvironmentBuilder startingBufferSize(int startingBufferSize) {
+        this.startingBufferSize = startingBufferSize;
         return this;
     }
 
@@ -195,7 +203,7 @@ public class NettyShuffleEnvironmentBuilder {
         return this;
     }
 
-    public NettyShuffleEnvironmentBuilder setCompressionCodec(String compressionCodec) {
+    public NettyShuffleEnvironmentBuilder setCompressionCodec(CompressionCodec compressionCodec) {
         this.compressionCodec = compressionCodec;
         return this;
     }
@@ -256,6 +264,7 @@ public class NettyShuffleEnvironmentBuilder {
                 new NettyShuffleEnvironmentConfiguration(
                         numNetworkBuffers,
                         bufferSize,
+                        startingBufferSize,
                         partitionRequestInitialBackoff,
                         partitionRequestMaxBackoff,
                         partitionRequestTimeout,
@@ -274,11 +283,8 @@ public class NettyShuffleEnvironmentBuilder {
                         sortShuffleMinBuffers,
                         sortShuffleMinParallelism,
                         debloatConfiguration,
-                        maxNumberOfConnections,
                         connectionReuseEnabled,
                         maxOverdraftBuffersPerGate,
-                        hybridShuffleSpilledIndexSegmentSize,
-                        hybridShuffleNumRetainedInMemoryRegionsMax,
                         tieredStorageConfiguration),
                 taskManagerLocation,
                 new TaskEventDispatcher(),

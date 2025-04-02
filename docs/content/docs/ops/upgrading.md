@@ -32,7 +32,7 @@ This document describes how to update a Flink streaming application and how to m
 
 ## API compatibility guarantees
 
-The classes & members of the Java/Scala APIs that are intended for users are annotated with the following stability annotations:
+The classes & members of the Java APIs that are intended for users are annotated with the following stability annotations:
 * `Public`
 * `PublicEvolving`
 * `Experimental`
@@ -132,9 +132,9 @@ In this section, we discuss how applications can be modified to remain state com
 
 When an application is restarted from a savepoint, Flink matches the operator state stored in the savepoint to stateful operators of the started application. The matching is done based on operator IDs, which are also stored in the savepoint. Each operator has a default ID that is derived from the operator's position in the application's operator topology. Hence, an unmodified application can always be restarted from one of its own savepoints. However, the default IDs of operators are likely to change if an application is modified. Therefore, modified applications can only be started from a savepoint if the operator IDs have been explicitly specified. Assigning IDs to operators is very simple and done using the `uid(String)` method as follows:
 
-```scala
-val mappedEvents: DataStream[(Int, Long)] = events
-  .map(new MyStatefulMapFunc()).uid("mapper-1")
+```java
+DataStream<String> mappedEvents = events
+  .map(new MyStatefulMapFunc()).uid("mapper-1");
 ```
 
 **Note:** Since the operator IDs stored in a savepoint and IDs of operators in the application to start must be equal, it is highly recommended to assign unique IDs to all operators of an application that might be upgraded in the future. This advice applies to all operators, i.e., operators with and without explicitly declared operator state, because some operators have internal state that is not visible to the user. Upgrading an application without assigned operator IDs is significantly more difficult and may only be possible via a low-level workaround using the `setUidHash()` method.
@@ -283,22 +283,17 @@ Savepoints are compatible across Flink versions as indicated by the table below:
   <thead>
     <tr>
       <th class="text-left" style="width: 25%">Created with \ Resumed with</th>
-      <th class="text-center">1.16.x</th>
       <th class="text-center">1.17.x</th>
       <th class="text-center">1.18.x</th>
+      <th class="text-center">1.19.x</th>
+      <th class="text-center">1.20.x</th>
       <th class="text-center" style="width: 50%">Limitations</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-          <td class="text-center"><strong>1.7.x</strong></td>
-          <td class="text-center">O</td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-left"></td>
-    </tr>
-    <tr>
           <td class="text-center"><strong>1.8.x</strong></td>
+          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -309,10 +304,12 @@ Savepoints are compatible across Flink versions as indicated by the table below:
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
+          <td class="text-center">O</td>
           <td class="text-left"></td>
     </tr>
     <tr>
           <td class="text-center"><strong>1.10.x</strong></td>
+          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -323,10 +320,12 @@ Savepoints are compatible across Flink versions as indicated by the table below:
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
+          <td class="text-center">O</td>
           <td class="text-left"></td>
     </tr>
     <tr>
           <td class="text-center"><strong>1.12.x</strong></td>
+          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -337,6 +336,7 @@ Savepoints are compatible across Flink versions as indicated by the table below:
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
+          <td class="text-center">O</td>
           <td class="text-left">Don't upgrade from 1.12.x to 1.13.x with an unaligned checkpoint. Please use a savepoint for migrating.</td>
         </tr>
     <tr>
@@ -344,10 +344,12 @@ Savepoints are compatible across Flink versions as indicated by the table below:
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
+          <td class="text-center">O</td>
           <td class="text-left"></td>
         </tr>
     <tr>
           <td class="text-center"><strong>1.15.x</strong></td>
+          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -366,17 +368,36 @@ Savepoints are compatible across Flink versions as indicated by the table below:
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
+          <td class="text-center">O</td>
           <td class="text-left"></td>
         </tr>
     <tr>
           <td class="text-center"><strong>1.17.x</strong></td>
-          <td class="text-center"></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-left"></td>
         </tr>
     <tr>
           <td class="text-center"><strong>1.18.x</strong></td>
+          <td class="text-center"></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.19.x</strong></td>
+          <td class="text-center"></td>
+          <td class="text-center"></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.20.x</strong></td>
+          <td class="text-center"></td>
           <td class="text-center"></td>
           <td class="text-center"></td>
           <td class="text-center">O</td>

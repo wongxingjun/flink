@@ -19,20 +19,16 @@
 package org.apache.flink.table.planner.plan.nodes.exec.testutils;
 
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
-import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecGlobalWindowAggregate;
-import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecLocalWindowAggregate;
-import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecOverAggregate;
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonCalc;
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonCorrelate;
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonGroupAggregate;
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonGroupTableAggregate;
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonGroupWindowAggregate;
 import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecPythonOverAggregate;
-import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecWindowAggregate;
 import org.apache.flink.table.planner.plan.utils.ExecNodeMetadataUtil;
 import org.apache.flink.table.planner.plan.utils.ExecNodeMetadataUtil.ExecNodeNameVersion;
 
-import org.apache.flink.shaded.guava31.com.google.common.reflect.ClassPath;
+import org.apache.flink.shaded.guava33.com.google.common.reflect.ClassPath;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -52,14 +48,6 @@ public class RestoreTestCompleteness {
     private static final Set<Class<? extends ExecNode<?>>> SKIP_EXEC_NODES =
             new HashSet<Class<? extends ExecNode<?>>>() {
                 {
-                    /** TODO: Remove after FLINK-33676 is merged. */
-                    add(StreamExecWindowAggregate.class);
-                    add(StreamExecLocalWindowAggregate.class);
-                    add(StreamExecGlobalWindowAggregate.class);
-
-                    /** TODO: Remove after FLINK-33805 is merged. */
-                    add(StreamExecOverAggregate.class);
-
                     /** Ignoring python based exec nodes temporarily. */
                     add(StreamExecPythonCalc.class);
                     add(StreamExecPythonCorrelate.class);
@@ -71,7 +59,9 @@ public class RestoreTestCompleteness {
             };
 
     private Class<? extends ExecNode<?>> getExecNode(Class<?> restoreTest)
-            throws NoSuchMethodException, InvocationTargetException, InstantiationException,
+            throws NoSuchMethodException,
+                    InvocationTargetException,
+                    InstantiationException,
                     IllegalAccessException {
         Method getExecNodeMethod = restoreTest.getMethod("getExecNode");
         Class<? extends ExecNode<?>> execNode =
@@ -82,7 +72,9 @@ public class RestoreTestCompleteness {
     }
 
     private List<Class<? extends ExecNode<?>>> getChildExecNodes(Class<?> restoreTest)
-            throws NoSuchMethodException, InvocationTargetException, InstantiationException,
+            throws NoSuchMethodException,
+                    InvocationTargetException,
+                    InstantiationException,
                     IllegalAccessException {
         Method getChildExecNodesMethod = restoreTest.getMethod("getChildExecNodes");
         List<Class<? extends ExecNode<?>>> childExecNodes =
@@ -94,8 +86,11 @@ public class RestoreTestCompleteness {
 
     @Test
     public void testMissingRestoreTest()
-            throws IOException, NoSuchMethodException, InstantiationException,
-                    IllegalAccessException, InvocationTargetException {
+            throws IOException,
+                    NoSuchMethodException,
+                    InstantiationException,
+                    IllegalAccessException,
+                    InvocationTargetException {
         Map<ExecNodeNameVersion, Class<? extends ExecNode<?>>> versionedExecNodes =
                 ExecNodeMetadataUtil.getVersionedExecNodes();
 

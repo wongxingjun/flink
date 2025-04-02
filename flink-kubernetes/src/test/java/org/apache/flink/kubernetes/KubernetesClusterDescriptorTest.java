@@ -86,7 +86,8 @@ class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
                                         server.createClient().inNamespace(NAMESPACE),
                                         Executors.newSingleThreadScheduledExecutor());
                             }
-                        });
+                        },
+                        config -> {});
     }
 
     @Test
@@ -157,6 +158,21 @@ class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
     }
 
     @Test
+    void testDeployApplicationClusterWithoutJar() {
+        flinkConfig.set(DeploymentOptions.TARGET, KubernetesDeploymentTarget.APPLICATION.getName());
+        try {
+            descriptor.deployApplicationCluster(clusterSpecification, appConfig);
+        } catch (Exception ignored) {
+        }
+
+        mockExpectedServiceFromServerSide(loadBalancerSvc);
+        final ClusterClient<String> clusterClient =
+                descriptor.retrieve(CLUSTER_ID).getClusterClient();
+        checkClusterClient(clusterClient);
+        checkUpdatedConfigAndResourceSetting();
+    }
+
+    @Test
     void testDeployApplicationClusterWithClusterAlreadyExists() {
         flinkConfig.set(
                 PipelineOptions.JARS, Collections.singletonList("local:///path/of/user.jar"));
@@ -201,7 +217,7 @@ class KubernetesClusterDescriptorTest extends KubernetesClientTestBase {
                         cause ->
                                 assertThat(cause)
                                         .isInstanceOf(IllegalArgumentException.class)
-                                        .hasMessageContaining("Should only have one jar"));
+                                        .hasMessageContaining("Should only have at most one jar"));
     }
 
     @Test

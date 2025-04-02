@@ -22,15 +22,15 @@ import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichFilterFunction;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RichReduceFunction;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.common.state.CheckpointListener;
 import org.apache.flink.streaming.api.checkpoint.ListCheckpointed;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.co.RichCoFlatMapFunction;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
-import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.RichParallelSourceFunction;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
+import org.apache.flink.test.util.AbstractTestBaseJUnit4;
 import org.apache.flink.test.util.TestUtils;
 import org.apache.flink.util.Collector;
 
@@ -57,7 +57,7 @@ import static org.junit.Assert.assertTrue;
  * reflects the "exactly once" semantics.
  */
 @SuppressWarnings({"serial", "deprecation"})
-public class CoStreamCheckpointingITCase extends AbstractTestBase {
+public class CoStreamCheckpointingITCase extends AbstractTestBaseJUnit4 {
 
     private static final long NUM_STRINGS = 10_000L;
     private static final int PARALLELISM = 4;
@@ -76,7 +76,7 @@ public class CoStreamCheckpointingITCase extends AbstractTestBase {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(PARALLELISM);
         env.enableCheckpointing(50);
-        env.setRestartStrategy(RestartStrategies.fixedDelayRestart(Integer.MAX_VALUE, 0L));
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(env, Integer.MAX_VALUE, 0L);
 
         DataStream<String> stream =
                 env.addSource(new StringGeneratingSourceFunction(NUM_STRINGS, NUM_STRINGS / 5));
@@ -95,7 +95,7 @@ public class CoStreamCheckpointingITCase extends AbstractTestBase {
                 .map(new StatefulCounterFunction())
 
                 // -------------- fourth vertex - reducer (failing) and the sink ----------------
-                .keyBy("prefix")
+                .keyBy(x -> x.prefix)
                 .reduce(new OnceFailingReducer(NUM_STRINGS))
                 .addSink(
                         new SinkFunction<PrefixCount>() {

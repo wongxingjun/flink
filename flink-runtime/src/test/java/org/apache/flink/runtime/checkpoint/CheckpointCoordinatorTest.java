@@ -21,7 +21,7 @@ package org.apache.flink.runtime.checkpoint;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.core.execution.RestoreMode;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.fs.FileSystem;
@@ -29,7 +29,6 @@ import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.testutils.ManuallyTriggeredScheduledExecutorService;
 import org.apache.flink.core.testutils.ScheduledTask;
-import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinatorTestingUtils.CheckpointCoordinatorBuilder;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
 import org.apache.flink.runtime.execution.ExecutionState;
@@ -48,6 +47,7 @@ import org.apache.flink.runtime.jobmaster.TestingLogicalSlotBuilder;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.checkpoint.AcknowledgeCheckpoint;
 import org.apache.flink.runtime.messages.checkpoint.DeclineCheckpoint;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.rpc.exceptions.RpcException;
 import org.apache.flink.runtime.state.CheckpointMetadataOutputStream;
 import org.apache.flink.runtime.state.CheckpointStorage;
@@ -70,7 +70,6 @@ import org.apache.flink.runtime.state.TestingStreamStateHandle;
 import org.apache.flink.runtime.state.filesystem.FileStateHandle;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
 import org.apache.flink.runtime.state.memory.MemoryBackendCheckpointStorageAccess;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.runtime.state.memory.NonPersistentMetadataCheckpointStorageLocation;
 import org.apache.flink.runtime.state.storage.FileSystemCheckpointStorage;
 import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
@@ -87,7 +86,7 @@ import org.apache.flink.util.concurrent.ScheduledExecutor;
 import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 import org.apache.flink.util.function.TriFunctionWithException;
 
-import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Iterables;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -140,9 +139,9 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
-import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -251,8 +250,9 @@ class CheckpointCoordinatorTest {
         ExecutionVertex lateReportVertex =
                 executionGraph.getJobVertex(lateReportVertexID).getTaskVertices()[0];
         CheckpointStatsTracker statsTracker =
-                new CheckpointStatsTracker(
-                        Integer.MAX_VALUE, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        Integer.MAX_VALUE,
+                        UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
         CheckpointCoordinator coordinator =
                 new CheckpointCoordinatorBuilder()
                         .setTimer(manuallyTriggeredScheduledExecutor)
@@ -502,8 +502,9 @@ class CheckpointCoordinatorTest {
         jobVertex2.getTaskVertices()[1].getCurrentExecutionAttempt().markFinished();
 
         CheckpointStatsTracker statsTracker =
-                new CheckpointStatsTracker(
-                        Integer.MAX_VALUE, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        Integer.MAX_VALUE,
+                        UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
         CheckpointCoordinator checkpointCoordinator =
                 new CheckpointCoordinatorBuilder()
                         .setTimer(manuallyTriggeredScheduledExecutor)
@@ -745,8 +746,9 @@ class CheckpointCoordinatorTest {
         // given: Checkpoint coordinator which fails on initializeCheckpointLocation.
         TestFailJobCallback failureCallback = new TestFailJobCallback();
         CheckpointStatsTracker statsTracker =
-                new CheckpointStatsTracker(
-                        Integer.MAX_VALUE, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        Integer.MAX_VALUE,
+                        UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
         CheckpointCoordinator checkpointCoordinator =
                 new CheckpointCoordinatorBuilder()
                         .setCheckpointStatsTracker(statsTracker)
@@ -2020,8 +2022,9 @@ class CheckpointCoordinatorTest {
         ExecutionAttemptID attemptID1 = vertex1.getCurrentExecutionAttempt().getAttemptId();
         ExecutionAttemptID attemptID2 = vertex2.getCurrentExecutionAttempt().getAttemptId();
         CheckpointStatsTracker statsTracker =
-                new CheckpointStatsTracker(
-                        Integer.MAX_VALUE, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        Integer.MAX_VALUE,
+                        UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
         // set up the coordinator and validate the initial state
         CheckpointCoordinator checkpointCoordinator =
                 new CheckpointCoordinatorBuilder()
@@ -2443,7 +2446,7 @@ class CheckpointCoordinatorTest {
     @Test
     void testPeriodicSchedulingWithInactiveTasks() throws Exception {
         CheckpointCoordinator checkpointCoordinator =
-                setupCheckpointCoordinatorWithInactiveTasks(new MemoryStateBackend());
+                setupCheckpointCoordinatorWithInactiveTasks(new JobManagerCheckpointStorage());
 
         // the coordinator should start checkpointing now
         manuallyTriggeredScheduledExecutor.triggerNonPeriodicScheduledTasks(
@@ -2872,7 +2875,8 @@ class CheckpointCoordinatorTest {
 
         // set up the coordinator and validate the initial state
         CheckpointStatsTracker tracker =
-                new CheckpointStatsTracker(10, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        10, UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
         CheckpointCoordinator checkpointCoordinator =
                 new CheckpointCoordinatorBuilder()
                         .setCompletedCheckpointStore(store)
@@ -2906,7 +2910,7 @@ class CheckpointCoordinatorTest {
 
     @Test
     void testSharedStateRegistrationOnRestore() throws Exception {
-        for (RestoreMode restoreMode : RestoreMode.values()) {
+        for (RecoveryClaimMode recoveryClaimMode : RecoveryClaimMode.values()) {
             JobVertexID jobVertexID1 = new JobVertexID();
 
             int parallelism1 = 2;
@@ -2924,7 +2928,7 @@ class CheckpointCoordinatorTest {
                     SharedStateRegistry.DEFAULT_FACTORY.create(
                             org.apache.flink.util.concurrent.Executors.directExecutor(),
                             checkpoints,
-                            restoreMode);
+                            recoveryClaimMode);
             final EmbeddedCompletedCheckpointStore store =
                     new EmbeddedCompletedCheckpointStore(10, checkpoints, firstInstance);
 
@@ -3030,7 +3034,7 @@ class CheckpointCoordinatorTest {
                     SharedStateRegistry.DEFAULT_FACTORY.create(
                             org.apache.flink.util.concurrent.Executors.directExecutor(),
                             store.getAllCheckpoints(),
-                            restoreMode);
+                            recoveryClaimMode);
             final EmbeddedCompletedCheckpointStore secondStore =
                     new EmbeddedCompletedCheckpointStore(
                             10, store.getAllCheckpoints(), secondInstance);
@@ -3074,7 +3078,7 @@ class CheckpointCoordinatorTest {
             verifyDiscard(
                     sharedHandlesByCheckpoint,
                     cpId ->
-                            restoreMode == RestoreMode.CLAIM && cpId == 0
+                            recoveryClaimMode == RecoveryClaimMode.CLAIM && cpId == 0
                                     ? TernaryBoolean.TRUE
                                     : TernaryBoolean.FALSE);
 
@@ -3190,8 +3194,9 @@ class CheckpointCoordinatorTest {
         TestFailJobCallback failureCallback = new TestFailJobCallback();
 
         CheckpointStatsTracker statsTracker =
-                new CheckpointStatsTracker(
-                        Integer.MAX_VALUE, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        Integer.MAX_VALUE,
+                        UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
 
         CheckpointCoordinator checkpointCoordinator =
                 new CheckpointCoordinatorBuilder()
@@ -3241,8 +3246,9 @@ class CheckpointCoordinatorTest {
         TestFailJobCallback failureCallback = new TestFailJobCallback();
 
         CheckpointStatsTracker statsTracker =
-                new CheckpointStatsTracker(
-                        Integer.MAX_VALUE, new UnregisteredMetricsGroup(), new JobID());
+                new DefaultCheckpointStatsTracker(
+                        Integer.MAX_VALUE,
+                        UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
 
         final String exceptionMsg = "Test store exception.";
         try (SharedStateRegistry sharedStateRegistry = new SharedStateRegistryImpl()) {

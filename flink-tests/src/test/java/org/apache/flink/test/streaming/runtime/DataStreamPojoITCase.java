@@ -18,10 +18,13 @@
 package org.apache.flink.test.streaming.runtime;
 
 import org.apache.flink.api.common.functions.FlatMapFunction;
+import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.common.typeutils.CompositeType;
+import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.test.util.AbstractTestBaseJUnit4;
 import org.apache.flink.util.Collector;
 
 import org.junit.Test;
@@ -34,7 +37,7 @@ import java.util.List;
  *
  * <p>See FLINK-3697
  */
-public class DataStreamPojoITCase extends AbstractTestBase {
+public class DataStreamPojoITCase extends AbstractTestBaseJUnit4 {
     static List<Data> elements = new ArrayList<>();
 
     static {
@@ -57,9 +60,13 @@ public class DataStreamPojoITCase extends AbstractTestBase {
 
         DataStream<Data> summedStream =
                 dataStream
-                        .keyBy("aaa", "abc", "wxyz")
+                        .keyBy(
+                                x -> Tuple3.of(x.aaa, x.abc, x.wxyz),
+                                Types.TUPLE(Types.INT, Types.INT, Types.LONG))
                         .sum("sum")
-                        .keyBy("aaa", "abc", "wxyz")
+                        .keyBy(
+                                x -> Tuple3.of(x.aaa, x.abc, x.wxyz),
+                                Types.TUPLE(Types.INT, Types.INT, Types.LONG))
                         .flatMap(
                                 new FlatMapFunction<Data, Data>() {
                                     private static final long serialVersionUID =
@@ -109,9 +116,13 @@ public class DataStreamPojoITCase extends AbstractTestBase {
 
         DataStream<Data> summedStream =
                 dataStream
-                        .keyBy("aaa", "stats.count")
+                        .keyBy(
+                                x -> Tuple2.of(x.aaa, x.stats.count),
+                                Types.TUPLE(Types.INT, Types.LONG))
                         .sum("sum")
-                        .keyBy("aaa", "stats.count")
+                        .keyBy(
+                                x -> Tuple2.of(x.aaa, x.stats.count),
+                                Types.TUPLE(Types.INT, Types.LONG))
                         .flatMap(
                                 new FlatMapFunction<Data, Data>() {
                                     private static final long serialVersionUID =
@@ -164,9 +175,9 @@ public class DataStreamPojoITCase extends AbstractTestBase {
 
         DataStream<Data> summedStream =
                 dataStream
-                        .keyBy("aaa")
+                        .keyBy(x -> x.aaa)
                         .sum("stats.count")
-                        .keyBy("aaa")
+                        .keyBy(x -> x.aaa)
                         .flatMap(
                                 new FlatMapFunction<Data, Data>() {
                                     Data[] first = new Data[3];
@@ -199,7 +210,9 @@ public class DataStreamPojoITCase extends AbstractTestBase {
         StreamExecutionEnvironment see = StreamExecutionEnvironment.getExecutionEnvironment();
 
         DataStream<Data> dataStream = see.fromData(elements);
-        dataStream.keyBy("aaa", "stats.count").sum("stats.nonExistingField");
+        dataStream
+                .keyBy(x -> Tuple2.of(x.aaa, x.stats.count), Types.TUPLE(Types.INT, Types.LONG))
+                .sum("stats.nonExistingField");
     }
 
     /** POJO. */

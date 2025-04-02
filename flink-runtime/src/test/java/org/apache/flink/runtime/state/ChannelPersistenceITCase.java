@@ -21,7 +21,6 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.core.memory.MemorySegmentFactory;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
-import org.apache.flink.runtime.checkpoint.StateObjectCollection;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriteRequestExecutorFactory;
 import org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter.ChannelStateWriteResult;
@@ -71,6 +70,8 @@ import static java.util.Collections.singletonMap;
 import static org.apache.flink.runtime.checkpoint.CheckpointType.CHECKPOINT;
 import static org.apache.flink.runtime.checkpoint.channel.ChannelStateWriter.SEQUENCE_NUMBER_UNKNOWN;
 import static org.apache.flink.runtime.io.network.buffer.Buffer.DataType.RECOVERY_COMPLETION;
+import static org.apache.flink.runtime.state.ChannelStateHelper.castToInputStateCollection;
+import static org.apache.flink.runtime.state.ChannelStateHelper.castToOutputStateCollection;
 import static org.apache.flink.util.CloseableIterator.ofElements;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -80,6 +81,8 @@ class ChannelPersistenceITCase {
     private static final JobID JOB_ID = new JobID();
     private static final JobVertexID JOB_VERTEX_ID = new JobVertexID();
     private static final int SUBTASK_INDEX = 0;
+
+    private static final CheckpointStorage CHECKPOINT_STORAGE = new JobManagerCheckpointStorage();
 
     @Test
     void testUpstreamBlocksAfterRecoveringState() throws Exception {
@@ -188,7 +191,6 @@ class ChannelPersistenceITCase {
                                 () ->
                                         networkBufferPool.createBufferPool(
                                                 numberOfSubpartitions,
-                                                numberOfSubpartitions,
                                                 Integer.MAX_VALUE,
                                                 numberOfSubpartitions,
                                                 Integer.MAX_VALUE,
@@ -205,7 +207,7 @@ class ChannelPersistenceITCase {
                         .setChannelFactory(InputChannelBuilder::buildRemoteRecoveredChannel)
                         .setBufferPoolFactory(
                                 networkBufferPool.createBufferPool(
-                                        numberOfChannels, numberOfChannels, Integer.MAX_VALUE))
+                                        numberOfChannels, Integer.MAX_VALUE))
                         .setSegmentProvider(networkBufferPool)
                         .setNumberOfChannels(numberOfChannels)
                         .build();
@@ -264,7 +266,7 @@ class ChannelPersistenceITCase {
                         JOB_VERTEX_ID,
                         "test",
                         SUBTASK_INDEX,
-                        new JobManagerCheckpointStorage(maxStateSize),
+                        () -> CHECKPOINT_STORAGE.createCheckpointStorage(JOB_ID),
                         new ChannelStateWriteRequestExecutorFactory(JOB_ID),
                         5)) {
             writer.start(
@@ -304,10 +306,10 @@ class ChannelPersistenceITCase {
                         new OperatorID(),
                         OperatorSubtaskState.builder()
                                 .setInputChannelState(
-                                        new StateObjectCollection<>(
+                                        castToInputStateCollection(
                                                 t.getInputChannelStateHandles().get()))
                                 .setResultSubpartitionState(
-                                        new StateObjectCollection<>(
+                                        castToOutputStateCollection(
                                                 t.getResultSubpartitionStateHandles().get()))
                                 .build()));
     }

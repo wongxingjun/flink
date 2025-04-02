@@ -25,12 +25,9 @@ import org.apache.flink.annotation.docs.Documentation;
 import org.apache.flink.configuration.description.Description;
 import org.apache.flink.util.TimeUtils;
 
-import javax.annotation.Nonnull;
-
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
 import static org.apache.flink.configuration.description.TextElement.code;
@@ -41,12 +38,6 @@ import static org.apache.flink.configuration.description.TextElement.text;
 @ConfigGroups(groups = @ConfigGroup(name = "TaskManagerMemory", keyPrefix = "taskmanager.memory"))
 public class TaskManagerOptions {
 
-    /**
-     * @deprecated use {@link #MANAGED_MEMORY_CONSUMER_NAME_OPERATOR} and {@link
-     *     #MANAGED_MEMORY_CONSUMER_NAME_STATE_BACKEND} instead
-     */
-    @Deprecated public static final String MANAGED_MEMORY_CONSUMER_NAME_DATAPROC = "DATAPROC";
-
     public static final String MANAGED_MEMORY_CONSUMER_NAME_OPERATOR = "OPERATOR";
     public static final String MANAGED_MEMORY_CONSUMER_NAME_STATE_BACKEND = "STATE_BACKEND";
     public static final String MANAGED_MEMORY_CONSUMER_NAME_PYTHON = "PYTHON";
@@ -54,38 +45,6 @@ public class TaskManagerOptions {
     // ------------------------------------------------------------------------
     //  General TaskManager Options
     // ------------------------------------------------------------------------
-
-    /**
-     * JVM heap size for the TaskManagers with memory size.
-     *
-     * @deprecated use {@link #TOTAL_FLINK_MEMORY} for standalone setups and {@link
-     *     #TOTAL_PROCESS_MEMORY} for containerized setups.
-     */
-    @Deprecated
-    public static final ConfigOption<MemorySize> TASK_MANAGER_HEAP_MEMORY =
-            key("taskmanager.heap.size")
-                    .memoryType()
-                    .noDefaultValue()
-                    .withDescription(
-                            "JVM heap size for the TaskManagers, which are the parallel workers of"
-                                    + " the system. On YARN setups, this value is automatically configured to the size of the TaskManager's"
-                                    + " YARN container, minus a certain tolerance value.");
-
-    /**
-     * JVM heap size (in megabytes) for the TaskManagers.
-     *
-     * @deprecated use {@link #TOTAL_FLINK_MEMORY} for standalone setups and {@link
-     *     #TOTAL_PROCESS_MEMORY} for containerized setups.
-     */
-    @Deprecated
-    public static final ConfigOption<Integer> TASK_MANAGER_HEAP_MEMORY_MB =
-            key("taskmanager.heap.mb")
-                    .intType()
-                    .noDefaultValue()
-                    .withDescription(
-                            "JVM heap size (in megabytes) for the TaskManagers, which are the parallel workers of"
-                                    + " the system. On YARN setups, this value is automatically configured to the size of the TaskManager's"
-                                    + " YARN container, minus a certain tolerance value.");
 
     /** Whether to kill the TaskManager when the task thread throws an OutOfMemoryError. */
     @Documentation.Section(Documentation.Sections.ALL_TASK_MANAGER)
@@ -95,21 +54,6 @@ public class TaskManagerOptions {
                     .defaultValue(false)
                     .withDescription(
                             "Whether to kill the TaskManager when the task thread throws an OutOfMemoryError.");
-
-    /**
-     * Whether the quarantine monitor for task managers shall be started. The quarantine monitor
-     * shuts down the actor system if it detects that it has quarantined another actor system or if
-     * it has been quarantined by another actor system.
-     */
-    @Deprecated
-    public static final ConfigOption<Boolean> EXIT_ON_FATAL_AKKA_ERROR =
-            key("taskmanager.exit-on-fatal-akka-error")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withDescription(
-                            "Whether the quarantine monitor for task managers shall be started. The quarantine monitor"
-                                    + " shuts down the actor system if it detects that it has quarantined another actor system"
-                                    + " or if it has been quarantined by another actor system.");
 
     /**
      * The external address of the network interface where the TaskManager is exposed. Overrides
@@ -187,53 +131,6 @@ public class TaskManagerOptions {
                                     + "The default value is 0, which corresponds to a random port assignment.");
 
     /**
-     * The initial registration backoff between two consecutive registration attempts. The backoff
-     * is doubled for each new registration attempt until it reaches the maximum registration
-     * backoff.
-     *
-     * @deprecated use {@link ClusterOptions#INITIAL_REGISTRATION_TIMEOUT} instead
-     */
-    @Deprecated
-    public static final ConfigOption<Duration> INITIAL_REGISTRATION_BACKOFF =
-            key("taskmanager.registration.initial-backoff")
-                    .durationType()
-                    .defaultValue(TimeUtils.parseDuration("500 ms"))
-                    .withDeprecatedKeys("taskmanager.initial-registration-pause")
-                    .withDescription(
-                            "The initial registration backoff between two consecutive registration attempts. The backoff"
-                                    + " is doubled for each new registration attempt until it reaches the maximum registration backoff.");
-
-    /**
-     * The maximum registration backoff between two consecutive registration attempts.
-     *
-     * @deprecated use {@link ClusterOptions#MAX_REGISTRATION_TIMEOUT} instead
-     */
-    @Deprecated
-    public static final ConfigOption<Duration> REGISTRATION_MAX_BACKOFF =
-            key("taskmanager.registration.max-backoff")
-                    .durationType()
-                    .defaultValue(TimeUtils.parseDuration("30 s"))
-                    .withDeprecatedKeys("taskmanager.max-registration-pause")
-                    .withDescription(
-                            "The maximum registration backoff between two consecutive registration attempts. The max"
-                                    + " registration backoff requires a time unit specifier (ms/s/min/h/d).");
-
-    /**
-     * The backoff after a registration has been refused by the job manager before retrying to
-     * connect.
-     *
-     * @deprecated use {@link ClusterOptions#REFUSED_REGISTRATION_DELAY} instead
-     */
-    @Deprecated
-    public static final ConfigOption<Duration> REFUSED_REGISTRATION_BACKOFF =
-            key("taskmanager.registration.refused-backoff")
-                    .durationType()
-                    .defaultValue(TimeUtils.parseDuration("10 s"))
-                    .withDeprecatedKeys("taskmanager.refused-registration-pause")
-                    .withDescription(
-                            "The backoff after a registration has been refused by the job manager before retrying to connect.");
-
-    /**
      * Defines the timeout it can take for the TaskManager registration. If the duration is exceeded
      * without a successful registration, then the TaskManager terminates.
      */
@@ -287,13 +184,13 @@ public class TaskManagerOptions {
                             "Flag indicating whether to start a thread, which repeatedly logs the memory usage of the JVM.");
 
     @Documentation.Section(Documentation.Sections.ALL_TASK_MANAGER)
-    public static final ConfigOption<Long> DEBUG_MEMORY_USAGE_LOG_INTERVAL_MS =
+    public static final ConfigOption<Duration> DEBUG_MEMORY_USAGE_LOG_INTERVAL_MS =
             key("taskmanager.debug.memory.log-interval")
-                    .longType()
-                    .defaultValue(5000L)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(5000L))
                     .withDeprecatedKeys("taskmanager.debug.memory.logIntervalMs")
                     .withDescription(
-                            "The interval (in ms) for the log thread to log the current memory usage.");
+                            "The interval for the log thread to log the current memory usage.");
 
     // ------------------------------------------------------------------------
     //  Managed Memory Options
@@ -317,6 +214,16 @@ public class TaskManagerOptions {
                     .withDescription(
                             "Minimum possible size of memory buffers used by the network stack and the memory manager. "
                                     + "ex. can be used for automatic buffer size adjustment.");
+
+    /** Starting size of memory buffers used by the network stack and the memory manager. */
+    @Documentation.Section(Documentation.Sections.ALL_TASK_MANAGER)
+    public static final ConfigOption<MemorySize> STARTING_MEMORY_SEGMENT_SIZE =
+            key("taskmanager.memory.starting-segment-size")
+                    .memoryType()
+                    .defaultValue(MemorySize.parse("1024"))
+                    .withDescription(
+                            "Starting size of memory buffers used by the network stack and the memory manager, "
+                                    + "when using automatic buffer size adjustment.");
 
     /**
      * The config parameter for automatically defining the TaskManager's binding address, if {@link
@@ -514,8 +421,7 @@ public class TaskManagerOptions {
             key("taskmanager.memory.network.min")
                     .memoryType()
                     .defaultValue(MemorySize.parse("64m"))
-                    .withDeprecatedKeys(
-                            NettyShuffleEnvironmentOptions.NETWORK_BUFFERS_MEMORY_MIN.key())
+                    .withDeprecatedKeys("taskmanager.network.memory.min")
                     .withDescription(
                             "Min Network Memory size for TaskExecutors. Network Memory is off-heap memory reserved for"
                                     + " ShuffleEnvironment (e.g., network buffers). Network Memory size is derived to make up the configured"
@@ -530,8 +436,7 @@ public class TaskManagerOptions {
             key("taskmanager.memory.network.max")
                     .memoryType()
                     .defaultValue(MemorySize.MAX_VALUE)
-                    .withDeprecatedKeys(
-                            NettyShuffleEnvironmentOptions.NETWORK_BUFFERS_MEMORY_MAX.key())
+                    .withDeprecatedKeys("taskmanager.network.memory.max")
                     .withDescription(
                             "Max Network Memory size for TaskExecutors. Network Memory is off-heap memory reserved for"
                                     + " ShuffleEnvironment (e.g., network buffers). Network Memory size is derived to make up the configured"
@@ -545,8 +450,7 @@ public class TaskManagerOptions {
             key("taskmanager.memory.network.fraction")
                     .floatType()
                     .defaultValue(0.1f)
-                    .withDeprecatedKeys(
-                            NettyShuffleEnvironmentOptions.NETWORK_BUFFERS_MEMORY_FRACTION.key())
+                    .withDeprecatedKeys("taskmanager.network.memory.fraction")
                     .withDescription(
                             "Fraction of Total Flink Memory to be used as Network Memory. Network Memory is off-heap"
                                     + " memory reserved for ShuffleEnvironment (e.g., network buffers). Network Memory size is derived to"
@@ -683,13 +587,13 @@ public class TaskManagerOptions {
 
     /** Time interval in milliseconds between two successive task cancellation attempts. */
     @Documentation.Section(Documentation.Sections.ALL_TASK_MANAGER)
-    public static final ConfigOption<Long> TASK_CANCELLATION_INTERVAL =
+    public static final ConfigOption<Duration> TASK_CANCELLATION_INTERVAL =
             key("task.cancellation.interval")
-                    .longType()
-                    .defaultValue(30000L)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000L))
                     .withDeprecatedKeys("task.cancellation-interval")
                     .withDescription(
-                            "Time interval between two successive task cancellation attempts in milliseconds.");
+                            "Time interval between two successive task cancellation attempts.");
 
     /**
      * Timeout in milliseconds after which a task cancellation times out and leads to a fatal
@@ -699,29 +603,30 @@ public class TaskManagerOptions {
      * by a task failure or a clean shutdown.
      */
     @Documentation.Section(Documentation.Sections.ALL_TASK_MANAGER)
-    public static final ConfigOption<Long> TASK_CANCELLATION_TIMEOUT =
+    public static final ConfigOption<Duration> TASK_CANCELLATION_TIMEOUT =
             key("task.cancellation.timeout")
-                    .longType()
-                    .defaultValue(180000L)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(180000L))
                     .withDescription(
-                            "Timeout in milliseconds after which a task cancellation times out and"
+                            "Timeout after which a task cancellation times out and"
                                     + " leads to a fatal TaskManager error. A value of 0 deactivates"
                                     + " the watch dog. Notice that a task cancellation is different from"
                                     + " both a task failure and a clean shutdown. "
                                     + " Task cancellation timeout only applies to task cancellation and does not apply to"
                                     + " task closing/clean-up caused by a task failure or a clean shutdown.");
+
     /**
      * This configures how long we wait for the timers in milliseconds to finish all pending timer
      * threads when the stream task is cancelled.
      */
     @Documentation.Section(Documentation.Sections.ALL_TASK_MANAGER)
-    public static final ConfigOption<Long> TASK_CANCELLATION_TIMEOUT_TIMERS =
+    public static final ConfigOption<Duration> TASK_CANCELLATION_TIMEOUT_TIMERS =
             ConfigOptions.key("task.cancellation.timers.timeout")
-                    .longType()
-                    .defaultValue(7500L)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(7500L))
                     .withDeprecatedKeys("timerservice.exceptional.shutdown.timeout")
                     .withDescription(
-                            "Time we wait for the timers in milliseconds to finish all pending timer threads"
+                            "Time we wait for the timers to finish all pending timer threads"
                                     + " when the stream task is cancelled.");
 
     /** This configures how to redirect the {@link System#out} and {@link System#err}. */
@@ -804,6 +709,12 @@ public class TaskManagerOptions {
                                                     code(TaskManagerLoadBalanceMode.SLOTS.name()),
                                                     code("TaskManagers")),
                                             text(
+                                                    "The %s mode tries to allocate slots on minimum number of available %s.",
+                                                    code(
+                                                            TaskManagerLoadBalanceMode.MIN_RESOURCES
+                                                                    .name()),
+                                                    code("TaskManagers")),
+                                            text(
                                                     "The %s mode is the default mode without any specified strategy.",
                                                     code(TaskManagerLoadBalanceMode.NONE.name())))
                                     .build());
@@ -849,27 +760,8 @@ public class TaskManagerOptions {
     /** Type of {@link TaskManagerOptions#TASK_MANAGER_LOAD_BALANCE_MODE}. */
     public enum TaskManagerLoadBalanceMode {
         NONE,
-        SLOTS;
-
-        /**
-         * The method is mainly to load the {@link
-         * TaskManagerOptions#TASK_MANAGER_LOAD_BALANCE_MODE} from {@link Configuration}, which is
-         * compatible with {@link ClusterOptions#EVENLY_SPREAD_OUT_SLOTS_STRATEGY}.
-         */
-        public static TaskManagerLoadBalanceMode loadFromConfiguration(
-                @Nonnull Configuration configuration) {
-            Optional<TaskManagerLoadBalanceMode> taskManagerLoadBalanceModeOptional =
-                    configuration.getOptional(TaskManagerOptions.TASK_MANAGER_LOAD_BALANCE_MODE);
-            if (taskManagerLoadBalanceModeOptional.isPresent()) {
-                return taskManagerLoadBalanceModeOptional.get();
-            }
-            boolean evenlySpreadOutSlots =
-                    configuration.get(ClusterOptions.EVENLY_SPREAD_OUT_SLOTS_STRATEGY);
-
-            return evenlySpreadOutSlots
-                    ? TaskManagerLoadBalanceMode.SLOTS
-                    : TaskManagerOptions.TASK_MANAGER_LOAD_BALANCE_MODE.defaultValue();
-        }
+        SLOTS,
+        MIN_RESOURCES
     }
 
     // ------------------------------------------------------------------------

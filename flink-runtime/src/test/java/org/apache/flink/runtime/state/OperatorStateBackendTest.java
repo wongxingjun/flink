@@ -18,6 +18,7 @@
 package org.apache.flink.runtime.state;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.state.BroadcastState;
 import org.apache.flink.api.common.state.ListState;
@@ -41,12 +42,13 @@ import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManage
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager.SubtaskKey;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManagerBuilder;
 import org.apache.flink.runtime.checkpoint.filemerging.FileMergingType;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.state.filemerging.FileMergingOperatorStreamStateHandle;
 import org.apache.flink.runtime.state.filesystem.AbstractFsCheckpointStorageAccess;
 import org.apache.flink.runtime.state.filesystem.FsMergingCheckpointStorageLocation;
+import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.runtime.state.memory.MemCheckpointStreamFactory;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.runtime.util.BlockerCheckpointStreamFactory;
 import org.apache.flink.runtime.util.BlockingCheckpointOutputStream;
 import org.apache.flink.runtime.util.TestingUserCodeClassLoader;
@@ -93,7 +95,7 @@ class OperatorStateBackendTest {
     @Test
     void testCreateOnAbstractStateBackend() throws Exception {
         // we use the memory state backend as a subclass of the AbstractStateBackend
-        final AbstractStateBackend abstractStateBackend = new MemoryStateBackend();
+        final AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
         CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
         Environment env = createMockEnvironment();
         final OperatorStateBackend operatorStateBackend =
@@ -122,7 +124,7 @@ class OperatorStateBackendTest {
                 .isFalse();
 
         final ExecutionConfig cfg = new ExecutionConfig();
-        cfg.getSerializerConfig()
+        ((SerializerConfigImpl) cfg.getSerializerConfig())
                 .registerTypeWithKryoSerializer(
                         registeredType, com.esotericsoftware.kryo.serializers.JavaSerializer.class);
 
@@ -254,7 +256,7 @@ class OperatorStateBackendTest {
     @Test
     void testCorrectClassLoaderUsedOnSnapshot() throws Exception {
 
-        AbstractStateBackend abstractStateBackend = new MemoryStateBackend(4096);
+        AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
 
         final Environment env = createMockEnvironment();
         CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
@@ -406,7 +408,7 @@ class OperatorStateBackendTest {
 
     @Test
     void testSnapshotEmpty() throws Exception {
-        final AbstractStateBackend abstractStateBackend = new MemoryStateBackend(4096);
+        final AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
         CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
 
         Environment env = createMockEnvironment();
@@ -432,7 +434,7 @@ class OperatorStateBackendTest {
 
     @Test
     void testFileMergingSnapshotEmpty(@TempDir File tmpFolder) throws Exception {
-        final AbstractStateBackend abstractStateBackend = new MemoryStateBackend(4096);
+        final AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
         CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
 
         Environment env = createMockEnvironment();
@@ -451,8 +453,9 @@ class OperatorStateBackendTest {
                         checkpointBaseDir,
                         AbstractFsCheckpointStorageAccess.CHECKPOINT_TASK_OWNED_STATE_DIR);
 
+        JobID jobId = JobID.generate();
         final FileMergingSnapshotManager.SubtaskKey subtaskKey =
-                new FileMergingSnapshotManager.SubtaskKey("opId", 1, 1);
+                new FileMergingSnapshotManager.SubtaskKey(jobId.toHexString(), "opId", 1, 1);
         LocalFileSystem fs = getSharedInstance();
         CheckpointStorageLocationReference cslReference =
                 AbstractFsCheckpointStorageAccess.encodePathAsReference(
@@ -488,7 +491,7 @@ class OperatorStateBackendTest {
 
     @Test
     void testSnapshotBroadcastStateWithEmptyOperatorState() throws Exception {
-        final AbstractStateBackend abstractStateBackend = new MemoryStateBackend(4096);
+        final AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
 
         Environment env = createMockEnvironment();
         CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
@@ -610,7 +613,7 @@ class OperatorStateBackendTest {
 
     @Test
     void testSnapshotRestoreSync() throws Exception {
-        AbstractStateBackend abstractStateBackend = new MemoryStateBackend(2 * 4096);
+        AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
 
         Environment env1 = createMockEnvironment();
         CloseableRegistry cancelStreamRegistry1 = new CloseableRegistry();
@@ -863,7 +866,7 @@ class OperatorStateBackendTest {
             operatorStateBackend.close();
             operatorStateBackend.dispose();
 
-            AbstractStateBackend abstractStateBackend = new MemoryStateBackend(4096);
+            AbstractStateBackend abstractStateBackend = new HashMapStateBackend();
             CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
 
             Environment env = createMockEnvironment();
@@ -1123,7 +1126,9 @@ class OperatorStateBackendTest {
             SubtaskKey subtaskKey) {
         FileMergingSnapshotManager mgr =
                 new FileMergingSnapshotManagerBuilder(
-                                "test-1", FileMergingType.MERGE_WITHIN_CHECKPOINT)
+                                JobID.fromHexString(subtaskKey.getJobIDString()),
+                                new ResourceID("test-1"),
+                                FileMergingType.MERGE_WITHIN_CHECKPOINT)
                         .build();
 
         mgr.initFileSystem(

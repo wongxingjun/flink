@@ -25,6 +25,7 @@ import org.apache.flink.runtime.checkpoint.FullyFinishedOperatorState;
 import org.apache.flink.runtime.checkpoint.MasterState;
 import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
+import org.apache.flink.runtime.checkpoint.filemerging.LogicalFile;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.CheckpointedStateScope;
 import org.apache.flink.runtime.state.DiscardRecordedStateObject;
@@ -49,7 +50,6 @@ import org.apache.flink.util.StringUtils;
 
 import javax.annotation.Nullable;
 
-import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -97,7 +97,13 @@ public class CheckpointTestUtils {
                                 + numFullyFinishedTaskStates);
 
         for (int stateIdx = 0; stateIdx < numAllRunningTaskStates; ++stateIdx) {
-            OperatorState taskState = new OperatorState(new OperatorID(), numSubtasksPerTask, 128);
+            OperatorState taskState =
+                    new OperatorState(
+                            "operatorName-" + stateIdx,
+                            "operatorUid-" + stateIdx,
+                            new OperatorID(),
+                            numSubtasksPerTask,
+                            128);
             randomlySetCoordinatorState(taskState, random);
             randomlySetSubtaskState(
                     taskState, IntStream.range(0, numSubtasksPerTask).toArray(), random, basePath);
@@ -105,7 +111,8 @@ public class CheckpointTestUtils {
         }
 
         for (int stateIdx = 0; stateIdx < numPartlyFinishedTaskStates; ++stateIdx) {
-            OperatorState taskState = new OperatorState(new OperatorID(), numSubtasksPerTask, 128);
+            OperatorState taskState =
+                    new OperatorState(null, null, new OperatorID(), numSubtasksPerTask, 128);
             randomlySetCoordinatorState(taskState, random);
             randomlySetSubtaskState(
                     taskState,
@@ -122,7 +129,8 @@ public class CheckpointTestUtils {
 
         for (int stateIdx = 0; stateIdx < numFullyFinishedTaskStates; ++stateIdx) {
             taskStates.add(
-                    new FullyFinishedOperatorState(new OperatorID(), numSubtasksPerTask, 128));
+                    new FullyFinishedOperatorState(
+                            null, null, new OperatorID(), numSubtasksPerTask, 128));
         }
 
         return taskStates;
@@ -211,11 +219,9 @@ public class CheckpointTestUtils {
         boolean enableFileMerging = rnd.nextBoolean();
         if (enableFileMerging) {
             DirectoryStreamStateHandle taskOwnedDirHandle =
-                    DirectoryStreamStateHandle.forPathWithZeroSize(
-                            new File(String.valueOf(createRandomUUID(rnd))).toPath());
+                    DirectoryStreamStateHandle.of(new Path(createRandomUUID(rnd).toString()));
             DirectoryStreamStateHandle sharedDirHandle =
-                    DirectoryStreamStateHandle.forPathWithZeroSize(
-                            new File(String.valueOf(createRandomUUID(rnd))).toPath());
+                    DirectoryStreamStateHandle.of(new Path(createRandomUUID(rnd).toString()));
             return rnd.nextBoolean()
                     ? new FileMergingOperatorStreamStateHandle(
                             taskOwnedDirHandle,
@@ -342,7 +348,11 @@ public class CheckpointTestUtils {
     private static StreamStateHandle createDummySegmentFileStateHandle(
             Random rnd, boolean isEmpty) {
         return isEmpty
-                ? TestingSegmentFileStateHandle.EMPTY_INSTANCE
+                ? new TestingSegmentFileStateHandle(
+                        new Path(UUID.randomUUID().toString()),
+                        0,
+                        0,
+                        CheckpointedStateScope.EXCLUSIVE)
                 : new TestingSegmentFileStateHandle(
                         new Path(String.valueOf(createRandomUUID(rnd))),
                         0,
@@ -355,15 +365,16 @@ public class CheckpointTestUtils {
 
         private static final long serialVersionUID = 1L;
 
-        private static final TestingSegmentFileStateHandle EMPTY_INSTANCE =
-                new TestingSegmentFileStateHandle(
-                        new Path("empty"), 0, 0, CheckpointedStateScope.EXCLUSIVE);
-
         private boolean disposed;
 
         public TestingSegmentFileStateHandle(
                 Path filePath, long startPos, long stateSize, CheckpointedStateScope scope) {
-            super(filePath, startPos, stateSize, scope);
+            super(
+                    filePath,
+                    startPos,
+                    stateSize,
+                    scope,
+                    LogicalFile.LogicalFileId.generateRandomId());
         }
 
         @Override

@@ -20,7 +20,6 @@ package org.apache.flink.runtime.jobmaster.utils;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple4;
 import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.api.java.tuple.Tuple6;
@@ -55,6 +54,7 @@ import org.apache.flink.runtime.query.KvStateLocation;
 import org.apache.flink.runtime.registration.RegistrationResponse;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
+import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorToJobManagerHeartbeatPayload;
@@ -68,7 +68,9 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Collection;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
@@ -172,6 +174,13 @@ public class TestingJobMasterGateway implements JobMasterGateway {
                     Tuple4<JobID, JobVertexID, KeyGroupRange, String>,
                     CompletableFuture<Acknowledge>>
             notifyKvStateUnregisteredFunction;
+
+    @Nonnull
+    private final BiFunction<
+                    Duration,
+                    Set<ResultPartitionID>,
+                    CompletableFuture<Collection<PartitionWithMetrics>>>
+            getPartitionWithMetricsFunction;
 
     @Nonnull TriFunction<String, Object, byte[], CompletableFuture<Object>> updateAggregateFunction;
 
@@ -312,7 +321,13 @@ public class TestingJobMasterGateway implements JobMasterGateway {
                             requestJobResourceRequirementsSupplier,
             @Nonnull
                     Function<JobResourceRequirements, CompletableFuture<Acknowledge>>
-                            updateJobResourceRequirementsFunction) {
+                            updateJobResourceRequirementsFunction,
+            @Nonnull
+                    BiFunction<
+                                    Duration,
+                                    Set<ResultPartitionID>,
+                                    CompletableFuture<Collection<PartitionWithMetrics>>>
+                            getPartitionWithMetricsFunction) {
         this.address = address;
         this.hostname = hostname;
         this.cancelFunction = cancelFunction;
@@ -345,10 +360,17 @@ public class TestingJobMasterGateway implements JobMasterGateway {
         this.notifyNewBlockedNodesFunction = notifyNewBlockedNodesFunction;
         this.requestJobResourceRequirementsSupplier = requestJobResourceRequirementsSupplier;
         this.updateJobResourceRequirementsFunction = updateJobResourceRequirementsFunction;
+        this.getPartitionWithMetricsFunction = getPartitionWithMetricsFunction;
     }
 
     @Override
-    public CompletableFuture<Acknowledge> cancel(Time timeout) {
+    public CompletableFuture<Collection<PartitionWithMetrics>> getPartitionWithMetrics(
+            Duration timeout, Set<ResultPartitionID> expectedPartitions) {
+        return getPartitionWithMetricsFunction.apply(timeout, expectedPartitions);
+    }
+
+    @Override
+    public CompletableFuture<Acknowledge> cancel(Duration timeout) {
         return cancelFunction.get();
     }
 
@@ -383,7 +405,7 @@ public class TestingJobMasterGateway implements JobMasterGateway {
 
     @Override
     public CompletableFuture<Collection<SlotOffer>> offerSlots(
-            ResourceID taskManagerId, Collection<SlotOffer> slots, Time timeout) {
+            ResourceID taskManagerId, Collection<SlotOffer> slots, Duration timeout) {
         return offerSlotsFunction.apply(taskManagerId, slots);
     }
 
@@ -396,7 +418,7 @@ public class TestingJobMasterGateway implements JobMasterGateway {
     public CompletableFuture<RegistrationResponse> registerTaskManager(
             JobID jobId,
             TaskManagerRegistrationInformation taskManagerRegistrationInformation,
-            Time timeout) {
+            Duration timeout) {
         return registerTaskManagerFunction.apply(jobId, taskManagerRegistrationInformation);
     }
 
@@ -412,17 +434,17 @@ public class TestingJobMasterGateway implements JobMasterGateway {
     }
 
     @Override
-    public CompletableFuture<JobStatus> requestJobStatus(Time timeout) {
+    public CompletableFuture<JobStatus> requestJobStatus(Duration timeout) {
         return requestJobStatusSupplier.get();
     }
 
     @Override
-    public CompletableFuture<ExecutionGraphInfo> requestJob(Time timeout) {
+    public CompletableFuture<ExecutionGraphInfo> requestJob(Duration timeout) {
         return requestJobSupplier.get();
     }
 
     @Override
-    public CompletableFuture<CheckpointStatsSnapshot> requestCheckpointStats(Time timeout) {
+    public CompletableFuture<CheckpointStatsSnapshot> requestCheckpointStats(Duration timeout) {
         return checkpointStatsSnapshotSupplier.get();
     }
 
@@ -431,13 +453,13 @@ public class TestingJobMasterGateway implements JobMasterGateway {
             @Nullable final String targetDirectory,
             final boolean cancelJob,
             final SavepointFormatType formatType,
-            final Time timeout) {
+            final Duration timeout) {
         return triggerSavepointFunction.apply(targetDirectory, cancelJob, formatType);
     }
 
     @Override
     public CompletableFuture<CompletedCheckpoint> triggerCheckpoint(
-            CheckpointType checkpointType, Time timeout) {
+            CheckpointType checkpointType, Duration timeout) {
         return triggerCheckpointFunction.apply(checkpointType);
     }
 
@@ -446,7 +468,7 @@ public class TestingJobMasterGateway implements JobMasterGateway {
             @Nullable final String targetDirectory,
             final SavepointFormatType formatType,
             final boolean terminate,
-            final Time timeout) {
+            final Duration timeout) {
         return stopWithSavepointFunction.apply(targetDirectory, terminate, formatType);
     }
 
@@ -486,7 +508,9 @@ public class TestingJobMasterGateway implements JobMasterGateway {
 
     @Override
     public void reportInitializationMetrics(
-            JobID jobId, SubTaskInitializationMetrics initializationMetrics) {}
+            JobID jobId,
+            ExecutionAttemptID executionAttemptId,
+            SubTaskInitializationMetrics initializationMetrics) {}
 
     @Override
     public JobMasterId getFencingToken() {
@@ -559,7 +583,7 @@ public class TestingJobMasterGateway implements JobMasterGateway {
     public CompletableFuture<CoordinationResponse> deliverCoordinationRequestToCoordinator(
             OperatorID operatorId,
             SerializedValue<CoordinationRequest> serializedRequest,
-            Time timeout) {
+            Duration timeout) {
         return deliverCoordinationRequestFunction.apply(operatorId, serializedRequest);
     }
 

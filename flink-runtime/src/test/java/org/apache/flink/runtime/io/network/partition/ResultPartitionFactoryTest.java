@@ -17,12 +17,13 @@
 
 package org.apache.flink.runtime.io.network.partition;
 
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.NettyShuffleEnvironmentOptions.CompressionCodec;
 import org.apache.flink.runtime.deployment.ResultPartitionDeploymentDescriptor;
 import org.apache.flink.runtime.io.disk.BatchShuffleReadBufferPool;
 import org.apache.flink.runtime.io.disk.FileChannelManager;
 import org.apache.flink.runtime.io.disk.FileChannelManagerImpl;
 import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
-import org.apache.flink.runtime.io.network.partition.hybrid.HsResultPartition;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageConfiguration;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.netty.TieredStorageNettyServiceImpl;
 import org.apache.flink.runtime.io.network.partition.hybrid.tiered.shuffle.TieredResultPartition;
@@ -37,7 +38,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.Optional;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,20 +85,7 @@ class ResultPartitionFactoryTest {
     }
 
     @Test
-    void testHybridFullResultPartitionOfLegacyModeCreated() throws IOException {
-        ResultPartition resultPartition = createResultPartition(ResultPartitionType.HYBRID_FULL);
-        assertThat(resultPartition).isInstanceOf(HsResultPartition.class);
-    }
-
-    @Test
-    void testHybridSelectiveResultPartitionOfLegacyModeCreated() throws IOException {
-        ResultPartition resultPartition =
-                createResultPartition(ResultPartitionType.HYBRID_SELECTIVE);
-        assertThat(resultPartition).isInstanceOf(HsResultPartition.class);
-    }
-
-    @Test
-    void testHybridFullResultPartitionOfNewModeCreated() throws IOException {
+    void testHybridFullResultPartitionCreated() throws IOException {
         ResultPartition resultPartition =
                 createResultPartition(
                         ResultPartitionType.HYBRID_FULL, createTieredResultPartitionFactory());
@@ -106,7 +93,7 @@ class ResultPartitionFactoryTest {
     }
 
     @Test
-    void testHybridSelectiveResultPartitionOfNewModeCreated() throws IOException {
+    void testHybridSelectiveResultPartitionCreated() throws IOException {
         ResultPartition resultPartition =
                 createResultPartition(
                         ResultPartitionType.HYBRID_SELECTIVE, createTieredResultPartitionFactory());
@@ -133,27 +120,7 @@ class ResultPartitionFactoryTest {
     }
 
     @Test
-    void testNoReleaseOnConsumptionForHybridFullPartitionOfLegacyMode() throws IOException {
-        final ResultPartition resultPartition =
-                createResultPartition(ResultPartitionType.HYBRID_FULL);
-
-        resultPartition.onConsumedSubpartition(0);
-
-        assertThat(resultPartition.isReleased()).isFalse();
-    }
-
-    @Test
-    void testNoReleaseOnConsumptionForHybridSelectivePartitionOfLegacyMode() throws IOException {
-        final ResultPartition resultPartition =
-                createResultPartition(ResultPartitionType.HYBRID_SELECTIVE);
-
-        resultPartition.onConsumedSubpartition(0);
-
-        assertThat(resultPartition.isReleased()).isFalse();
-    }
-
-    @Test
-    void testNoReleaseOnConsumptionForHybridFullPartitionOfNewMode() throws IOException {
+    void testNoReleaseOnConsumptionForHybridFullPartition() throws IOException {
         ResultPartition resultPartition =
                 createResultPartition(
                         ResultPartitionType.HYBRID_FULL, createTieredResultPartitionFactory());
@@ -164,7 +131,7 @@ class ResultPartitionFactoryTest {
     }
 
     @Test
-    void testNoReleaseOnConsumptionForHybridSelectivePartitionOfNewMode() throws IOException {
+    void testNoReleaseOnConsumptionForHybridSelectivePartition() throws IOException {
         ResultPartition resultPartition =
                 createResultPartition(
                         ResultPartitionType.HYBRID_SELECTIVE, createTieredResultPartitionFactory());
@@ -176,26 +143,25 @@ class ResultPartitionFactoryTest {
 
     private static ResultPartition createResultPartition(ResultPartitionType partitionType)
             throws IOException {
-        return createResultPartition(partitionType, Integer.MAX_VALUE, false, Optional.empty());
+        return createResultPartition(partitionType, Integer.MAX_VALUE, false, null);
     }
 
     private static ResultPartition createResultPartition(
-            ResultPartitionType partitionType, Optional<TieredResultPartitionFactory> tieredStorage)
+            ResultPartitionType partitionType, TieredResultPartitionFactory tieredStorage)
             throws IOException {
         return createResultPartition(partitionType, Integer.MAX_VALUE, false, tieredStorage);
     }
 
     private static ResultPartition createResultPartition(
             ResultPartitionType partitionType, int sortShuffleMinParallelism) throws IOException {
-        return createResultPartition(
-                partitionType, sortShuffleMinParallelism, false, Optional.empty());
+        return createResultPartition(partitionType, sortShuffleMinParallelism, false, null);
     }
 
     private static ResultPartition createResultPartition(
             ResultPartitionType partitionType,
             int sortShuffleMinParallelism,
             boolean isBroadcast,
-            Optional<TieredResultPartitionFactory> tieredStorage)
+            TieredResultPartitionFactory tieredStorage)
             throws IOException {
         final ResultPartitionManager manager = new ResultPartitionManager();
 
@@ -210,15 +176,14 @@ class ResultPartitionFactoryTest {
                         1,
                         1,
                         SEGMENT_SIZE,
+                        Integer.MAX_VALUE,
                         false,
-                        "LZ4",
+                        CompressionCodec.LZ4,
                         Integer.MAX_VALUE,
                         10,
                         sortShuffleMinParallelism,
                         false,
                         0,
-                        256,
-                        Long.MAX_VALUE,
                         tieredStorage);
 
         final ResultPartitionDeploymentDescriptor descriptor =
@@ -239,17 +204,16 @@ class ResultPartitionFactoryTest {
         return partition;
     }
 
-    private Optional<TieredResultPartitionFactory> createTieredResultPartitionFactory() {
+    private TieredResultPartitionFactory createTieredResultPartitionFactory() {
         TieredStorageConfiguration tieredStorageConfiguration =
-                TieredStorageConfiguration.builder(null).build();
+                TieredStorageConfiguration.fromConfiguration(new Configuration());
         TieredStorageResourceRegistry tieredStorageResourceRegistry =
                 new TieredStorageResourceRegistry();
         TieredStorageNettyServiceImpl tieredStorageNettyService =
                 new TieredStorageNettyServiceImpl(tieredStorageResourceRegistry);
-        return Optional.of(
-                new TieredResultPartitionFactory(
-                        tieredStorageConfiguration,
-                        tieredStorageNettyService,
-                        tieredStorageResourceRegistry));
+        return new TieredResultPartitionFactory(
+                tieredStorageConfiguration,
+                tieredStorageNettyService,
+                tieredStorageResourceRegistry);
     }
 }

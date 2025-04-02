@@ -39,8 +39,8 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.FromElementsFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.FromElementsFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.streaming.api.graph.StreamGraphGenerator;
 import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
@@ -395,7 +395,7 @@ class StreamExecutionEnvironmentTest {
         assertThat(env.getConfig().isPeriodicMaterializeEnabled())
                 .isEqualTo(StateChangelogOptions.PERIODIC_MATERIALIZATION_ENABLED.defaultValue());
 
-        config.setBoolean(StateChangelogOptions.PERIODIC_MATERIALIZATION_ENABLED.key(), false);
+        config.set(StateChangelogOptions.PERIODIC_MATERIALIZATION_ENABLED, false);
         env.configure(config, this.getClass().getClassLoader());
         assertThat(env.getConfig().isPeriodicMaterializeEnabled()).isFalse();
     }
@@ -460,6 +460,36 @@ class StreamExecutionEnvironmentTest {
         env.setBufferTimeout(-1);
         assertThat(env.getBufferTimeout())
                 .isEqualTo(ExecutionOptions.DISABLED_NETWORK_BUFFER_TIMEOUT);
+    }
+
+    @Test
+    void testAsyncExecutionConfigurations() {
+        Configuration config = new Configuration();
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.configure(config, this.getClass().getClassLoader());
+
+        assertThat(env.getConfig().getAsyncStateTotalBufferSize())
+                .isEqualTo(ExecutionOptions.ASYNC_STATE_TOTAL_BUFFER_SIZE.defaultValue());
+        assertThat(env.getConfig().getAsyncStateActiveBufferSize())
+                .isEqualTo(ExecutionOptions.ASYNC_STATE_ACTIVE_BUFFER_SIZE.defaultValue());
+        assertThat(env.getConfig().getAsyncStateActiveBufferTimeout())
+                .isEqualTo(ExecutionOptions.ASYNC_STATE_ACTIVE_BUFFER_TIMEOUT.defaultValue());
+
+        config.set(ExecutionOptions.ASYNC_STATE_TOTAL_BUFFER_SIZE, 3);
+        config.set(ExecutionOptions.ASYNC_STATE_ACTIVE_BUFFER_SIZE, 2);
+        config.set(ExecutionOptions.ASYNC_STATE_ACTIVE_BUFFER_TIMEOUT, 1L);
+        env.configure(config, this.getClass().getClassLoader());
+        assertThat(env.getConfig().getAsyncStateTotalBufferSize()).isEqualTo(3);
+        assertThat(env.getConfig().getAsyncStateActiveBufferSize()).isEqualTo(2);
+        assertThat(env.getConfig().getAsyncStateActiveBufferTimeout()).isEqualTo(1);
+
+        env.getConfig()
+                .setAsyncStateTotalBufferSize(6)
+                .setAsyncStateActiveBufferSize(5)
+                .setAsyncStateActiveBufferTimeout(4);
+        assertThat(env.getConfig().getAsyncStateTotalBufferSize()).isEqualTo(6);
+        assertThat(env.getConfig().getAsyncStateActiveBufferSize()).isEqualTo(5);
+        assertThat(env.getConfig().getAsyncStateActiveBufferTimeout()).isEqualTo(4);
     }
 
     private void testBufferTimeout(Configuration config, StreamExecutionEnvironment env) {

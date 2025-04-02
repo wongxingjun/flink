@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.scheduler;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.BatchExecutionOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
@@ -48,7 +47,10 @@ import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.scheduler.adaptivebatch.AdaptiveBatchScheduler;
 import org.apache.flink.runtime.scheduler.adaptivebatch.AdaptiveBatchSchedulerFactory;
-import org.apache.flink.runtime.scheduler.adaptivebatch.BlockingResultInfo;
+import org.apache.flink.runtime.scheduler.adaptivebatch.BatchJobRecoveryHandler;
+import org.apache.flink.runtime.scheduler.adaptivebatch.BlockingInputInfo;
+import org.apache.flink.runtime.scheduler.adaptivebatch.DummyBatchJobRecoveryHandler;
+import org.apache.flink.runtime.scheduler.adaptivebatch.NonAdaptiveExecutionPlanSchedulingContext;
 import org.apache.flink.runtime.scheduler.adaptivebatch.VertexParallelismAndInputInfosDecider;
 import org.apache.flink.runtime.scheduler.strategy.AllFinishedInputConsumableDecider;
 import org.apache.flink.runtime.scheduler.strategy.InputConsumableDecider;
@@ -62,6 +64,7 @@ import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
@@ -89,7 +92,7 @@ public class DefaultSchedulerBuilder {
     private CheckpointsCleaner checkpointCleaner = new CheckpointsCleaner();
     private CheckpointRecoveryFactory checkpointRecoveryFactory =
             new StandaloneCheckpointRecoveryFactory();
-    private Time rpcTimeout = Time.seconds(300);
+    private Duration rpcTimeout = Duration.ofSeconds(300);
     private BlobWriter blobWriter = VoidBlobWriter.getInstance();
     private JobManagerJobMetricGroup jobManagerJobMetricGroup =
             UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup();
@@ -118,6 +121,7 @@ public class DefaultSchedulerBuilder {
             HybridPartitionDataConsumeConstraint.UNFINISHED_PRODUCERS;
     private InputConsumableDecider.Factory inputConsumableDeciderFactory =
             AllFinishedInputConsumableDecider.Factory.INSTANCE;
+    private BatchJobRecoveryHandler jobRecoveryHandler = new DummyBatchJobRecoveryHandler();
 
     public DefaultSchedulerBuilder(
             JobGraph jobGraph,
@@ -185,7 +189,7 @@ public class DefaultSchedulerBuilder {
         return this;
     }
 
-    public DefaultSchedulerBuilder setRpcTimeout(Time rpcTimeout) {
+    public DefaultSchedulerBuilder setRpcTimeout(Duration rpcTimeout) {
         this.rpcTimeout = rpcTimeout;
         return this;
     }
@@ -291,6 +295,12 @@ public class DefaultSchedulerBuilder {
         return this;
     }
 
+    public DefaultSchedulerBuilder setJobRecoveryHandler(
+            BatchJobRecoveryHandler jobRecoveryHandler) {
+        this.jobRecoveryHandler = jobRecoveryHandler;
+        return this;
+    }
+
     public DefaultScheduler build() throws Exception {
         return new DefaultScheduler(
                 log,
@@ -317,7 +327,8 @@ public class DefaultSchedulerBuilder {
                 shuffleMaster,
                 rpcTimeout,
                 computeVertexParallelismStore(jobGraph),
-                executionDeployerFactory);
+                executionDeployerFactory,
+                NonAdaptiveExecutionPlanSchedulingContext.INSTANCE);
     }
 
     public AdaptiveBatchScheduler buildAdaptiveBatchJobScheduler() throws Exception {
@@ -350,6 +361,7 @@ public class DefaultSchedulerBuilder {
                 futureExecutor,
                 userCodeLoader,
                 checkpointRecoveryFactory,
+                checkpointCleaner,
                 rpcTimeout,
                 blobWriter,
                 jobManagerJobMetricGroup,
@@ -365,7 +377,8 @@ public class DefaultSchedulerBuilder {
                 executionSlotAllocatorFactory,
                 restartBackoffTimeStrategy,
                 delayExecutor,
-                vertexParallelismAndInputInfosDecider);
+                vertexParallelismAndInputInfosDecider,
+                jobRecoveryHandler);
     }
 
     private ExecutionGraphFactory createExecutionGraphFactory(boolean isDynamicGraph) {
@@ -403,7 +416,7 @@ public class DefaultSchedulerBuilder {
             @Override
             public ParallelismAndInputInfos decideParallelismAndInputInfosForVertex(
                     JobVertexID jobVertexId,
-                    List<BlockingResultInfo> consumedResults,
+                    List<BlockingInputInfo> consumedResults,
                     int vertexInitialParallelism,
                     int vertexMinParallelism,
                     int vertexMaxParallelism) {

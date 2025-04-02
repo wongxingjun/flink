@@ -21,7 +21,6 @@ package org.apache.flink.api.java.typeutils.runtime;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.operators.Keys.ExpressionKeys;
 import org.apache.flink.api.common.operators.Keys.IncompatibleKeysException;
-import org.apache.flink.api.common.serialization.SerializerConfig;
 import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.CompositeType.FlatFieldDescriptor;
@@ -53,7 +52,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** A test for the {@link PojoSerializer}. */
 class PojoSerializerTest extends SerializerTestBase<PojoSerializerTest.TestUserClass> {
-    private TypeInformation<TestUserClass> type = TypeExtractor.getForClass(TestUserClass.class);
+    private final TypeInformation<TestUserClass> type =
+            TypeExtractor.getForClass(TestUserClass.class);
 
     @Override
     protected TypeSerializer<TestUserClass> createSerializer() {
@@ -173,11 +173,8 @@ class PojoSerializerTest extends SerializerTestBase<PojoSerializerTest.TestUserC
                 return false;
             }
 
-            if ((nestedClass == null && otherTUC.nestedClass != null)
-                    || (nestedClass != null && !nestedClass.equals(otherTUC.nestedClass))) {
-                return false;
-            }
-            return true;
+            return (nestedClass != null || otherTUC.nestedClass == null)
+                    && (nestedClass == null || nestedClass.equals(otherTUC.nestedClass));
         }
     }
 
@@ -372,7 +369,7 @@ class PojoSerializerTest extends SerializerTestBase<PojoSerializerTest.TestUserC
      */
     @Test
     void testReconfigureDifferentSubclassRegistrationOrder() throws Exception {
-        SerializerConfig serializerConfig = new SerializerConfigImpl();
+        SerializerConfigImpl serializerConfig = new SerializerConfigImpl();
         serializerConfig.registerPojoType(SubTestUserClassA.class);
         serializerConfig.registerPojoType(SubTestUserClassB.class);
 
@@ -533,7 +530,7 @@ class PojoSerializerTest extends SerializerTestBase<PojoSerializerTest.TestUserC
 
         // instantiate new PojoSerializer, with new execution config that has the subclass
         // registrations
-        SerializerConfig serializerConfig = new SerializerConfigImpl();
+        SerializerConfigImpl serializerConfig = new SerializerConfigImpl();
         serializerConfig.registerPojoType(SubTestUserClassA.class);
         serializerConfig.registerPojoType(SubTestUserClassB.class);
         pojoSerializer = (PojoSerializer<TestUserClass>) type.createSerializer(serializerConfig);

@@ -23,6 +23,7 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.accumulators.StringifiedAccumulatorResult;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.util.OptionalFailure;
@@ -47,6 +48,15 @@ public interface AccessExecutionGraph extends JobStatusProvider {
     String getJsonPlan();
 
     /**
+     * Returns the stream graph as a JSON string.
+     *
+     * @return stream graph as a JSON string, or null if the job is submitted with a JobGraph or if
+     *     it's a streaming job.
+     */
+    @Nullable
+    String getStreamGraphJson();
+
+    /**
      * Returns the {@link JobID} for this execution graph.
      *
      * @return job ID for this execution graph
@@ -66,6 +76,14 @@ public interface AccessExecutionGraph extends JobStatusProvider {
      * @return job status for this execution graph
      */
     JobStatus getState();
+
+    /**
+     * Returns the {@link JobType} for this execution graph.
+     *
+     * @return job type for this execution graph. It may be null when an exception occurs.
+     */
+    @Nullable
+    JobType getJobType();
 
     /**
      * Returns the exception that caused the job to fail. This is the first root exception that was
@@ -190,4 +208,13 @@ public interface AccessExecutionGraph extends JobStatusProvider {
      * @return The changelog storage name, or an empty Optional in the case of batch jobs
      */
     Optional<String> getChangelogStorageName();
+
+    /**
+     * Retrieves the count of pending operators waiting to be transferred to job vertices in the
+     * adaptive execution of batch jobs. This value will be zero if the job is submitted with a
+     * JobGraph or if it's a streaming job.
+     *
+     * @return the number of pending operators.
+     */
+    int getPendingOperatorCount();
 }

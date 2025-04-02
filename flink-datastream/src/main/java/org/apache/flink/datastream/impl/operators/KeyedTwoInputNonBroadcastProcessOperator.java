@@ -19,20 +19,28 @@
 package org.apache.flink.datastream.impl.operators;
 
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.datastream.api.context.ProcessingTimeManager;
 import org.apache.flink.datastream.api.function.TwoInputNonBroadcastStreamProcessFunction;
 import org.apache.flink.datastream.api.stream.KeyedPartitionStream;
-import org.apache.flink.datastream.impl.common.KeyCheckedOutputCollector;
-import org.apache.flink.datastream.impl.common.OutputCollector;
-import org.apache.flink.datastream.impl.common.TimestampCollector;
+import org.apache.flink.datastream.impl.context.DefaultProcessingTimeManager;
+import org.apache.flink.datastream.impl.extension.eventtime.functions.EventTimeWrappedTwoInputNonBroadcastStreamProcessFunction;
+import org.apache.flink.runtime.state.VoidNamespace;
+import org.apache.flink.runtime.state.VoidNamespaceSerializer;
+import org.apache.flink.streaming.api.operators.InternalTimer;
+import org.apache.flink.streaming.api.operators.InternalTimerService;
+import org.apache.flink.streaming.api.operators.Triggerable;
 
 import javax.annotation.Nullable;
+
+import java.util.function.Supplier;
 
 /**
  * Operator for {@link TwoInputNonBroadcastStreamProcessFunction} in {@link KeyedPartitionStream}.
  */
 public class KeyedTwoInputNonBroadcastProcessOperator<KEY, IN1, IN2, OUT>
-        extends TwoInputNonBroadcastProcessOperator<IN1, IN2, OUT> {
-    @Nullable private final KeySelector<OUT, KEY> outKeySelector;
+        extends BaseKeyedTwoInputNonBroadcastProcessOperator<KEY, IN1, IN2, OUT>
+        implements Triggerable<KEY, VoidNamespace> {
+    private transient InternalTimerService<VoidNamespace> timerService;
 
     public KeyedTwoInputNonBroadcastProcessOperator(
             TwoInputNonBroadcastStreamProcessFunction<IN1, IN2, OUT> userFunction) {
@@ -42,15 +50,42 @@ public class KeyedTwoInputNonBroadcastProcessOperator<KEY, IN1, IN2, OUT>
     public KeyedTwoInputNonBroadcastProcessOperator(
             TwoInputNonBroadcastStreamProcessFunction<IN1, IN2, OUT> userFunction,
             @Nullable KeySelector<OUT, KEY> outKeySelector) {
-        super(userFunction);
-        this.outKeySelector = outKeySelector;
+        super(userFunction, outKeySelector);
     }
 
     @Override
-    protected TimestampCollector<OUT> getOutputCollector() {
-        return outKeySelector == null
-                ? new OutputCollector<>(output)
-                : new KeyCheckedOutputCollector<>(
-                        new OutputCollector<>(output), outKeySelector, () -> (KEY) getCurrentKey());
+    public void open() throws Exception {
+        this.timerService =
+                getInternalTimerService("processing timer", VoidNamespaceSerializer.INSTANCE, this);
+        super.open();
+    }
+
+    protected ProcessingTimeManager getProcessingTimeManager() {
+        return new DefaultProcessingTimeManager(timerService);
+    }
+
+    @Override
+    public void onEventTime(InternalTimer<KEY, VoidNamespace> timer) throws Exception {
+        if (userFunction instanceof EventTimeWrappedTwoInputNonBroadcastStreamProcessFunction) {
+            ((EventTimeWrappedTwoInputNonBroadcastStreamProcessFunction<IN1, IN2, OUT>)
+                            userFunction)
+                    .onEventTime(timer.getTimestamp(), getOutputCollector(), partitionedContext);
+        }
+    }
+
+    @Override
+    public void onProcessingTime(InternalTimer<KEY, VoidNamespace> timer) throws Exception {
+        userFunction.onProcessingTimer(
+                timer.getTimestamp(), getOutputCollector(), partitionedContext);
+    }
+
+    @Override
+    protected InternalTimerService<VoidNamespace> getTimerService() {
+        return timerService;
+    }
+
+    @Override
+    protected Supplier<Long> getEventTimeSupplier() {
+        return () -> timerService.currentWatermark();
     }
 }

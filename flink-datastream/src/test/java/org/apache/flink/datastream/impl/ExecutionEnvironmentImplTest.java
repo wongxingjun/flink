@@ -26,7 +26,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.DefaultExecutorServiceLoader;
 import org.apache.flink.datastream.api.ExecutionEnvironment;
 import org.apache.flink.datastream.api.common.Collector;
-import org.apache.flink.datastream.api.context.RuntimeContext;
+import org.apache.flink.datastream.api.context.PartitionedContext;
 import org.apache.flink.datastream.api.function.OneInputStreamProcessFunction;
 import org.apache.flink.datastream.api.stream.NonKeyedPartitionStream;
 import org.apache.flink.datastream.impl.stream.StreamTestUtils;
@@ -93,8 +93,11 @@ class ExecutionEnvironmentImplTest {
         Collection<StreamNode> nodes = streamGraph.getStreamNodes();
         assertThat(nodes).hasSize(2);
         Collection<Integer> sourceIDs = streamGraph.getSourceIDs();
-        StreamNode sourceNode = nodes.iterator().next();
-        assertThat(sourceIDs).containsExactly(sourceNode.getId());
+        for (StreamNode node : nodes) {
+            if (node.getOperatorName().contains("source")) {
+                assertThat(sourceIDs).containsExactly(node.getId());
+            }
+        }
     }
 
     @Test
@@ -110,7 +113,7 @@ class ExecutionEnvironmentImplTest {
                 new OneInputStreamProcessFunction<Long, Long>() {
                     @Override
                     public void processRecord(
-                            Long record, Collector<Long> output, RuntimeContext ctx)
+                            Long record, Collector<Long> output, PartitionedContext<Long> ctx)
                             throws Exception {
                         // do nothing.
                     }
@@ -118,7 +121,10 @@ class ExecutionEnvironmentImplTest {
         StreamGraph streamGraph = StreamTestUtils.getStreamGraph(env);
         Collection<StreamNode> nodes = streamGraph.getStreamNodes();
         Collection<Integer> sourceIDs = streamGraph.getSourceIDs();
-        StreamNode sourceNode = nodes.iterator().next();
-        assertThat(sourceIDs).containsExactly(sourceNode.getId());
+        for (StreamNode node : nodes) {
+            if (node.getOperatorName().contains("source")) {
+                assertThat(sourceIDs).containsExactly(node.getId());
+            }
+        }
     }
 }

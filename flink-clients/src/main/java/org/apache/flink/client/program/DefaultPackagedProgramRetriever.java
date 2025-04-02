@@ -35,6 +35,7 @@ import java.io.File;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.FileVisitOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -114,7 +115,7 @@ public class DefaultPackagedProgramRetriever implements PackagedProgramRetriever
         List<URL> userClasspaths;
         try {
             final List<URL> classpathsFromUserLibDir =
-                    getClasspathsFromUserDir(userLibDir, jarFile);
+                    getClasspathsFromUserLibDir(userLibDir, jarFile);
             final List<URL> classpathsFromUserArtifactDir =
                     getClasspathsFromArtifacts(userArtifacts, jarFile);
             final List<URL> classpathsFromConfiguration =
@@ -231,13 +232,13 @@ public class DefaultPackagedProgramRetriever implements PackagedProgramRetriever
         }
     }
 
-    private static List<URL> getClasspathsFromUserDir(
-            @Nullable File userDir, @Nullable File jarFile) throws IOException {
-        if (userDir == null) {
+    private static List<URL> getClasspathsFromUserLibDir(
+            @Nullable File userLibDir, @Nullable File jarFile) throws IOException {
+        if (userLibDir == null) {
             return Collections.emptyList();
         }
 
-        try (Stream<Path> files = Files.list(userDir.toPath())) {
+        try (Stream<Path> files = Files.walk(userLibDir.toPath(), FileVisitOption.FOLLOW_LINKS)) {
             return getClasspathsFromArtifacts(files, jarFile);
         }
     }

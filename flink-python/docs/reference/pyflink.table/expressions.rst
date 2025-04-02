@@ -140,6 +140,7 @@ arithmetic functions
     Expression.collect
     Expression.array_agg
     Expression.alias
+    Expression.as_argument
     Expression.cast
     Expression.try_cast
     Expression.asc
@@ -149,7 +150,9 @@ arithmetic functions
     Expression.end
     Expression.bin
     Expression.hex
+    Expression.unhex
     Expression.truncate
+    Expression.percentile
 
 string functions
 ----------------
@@ -159,12 +162,15 @@ string functions
 .. autosummary::
     :toctree: api/
 
+    Expression.starts_with
+    Expression.ends_with
     Expression.substring
     Expression.substr
     Expression.trim_leading
     Expression.trim_trailing
     Expression.trim
     Expression.replace
+    Expression.translate
     Expression.char_length
     Expression.upper_case
     Expression.lower_case
@@ -176,8 +182,12 @@ string functions
     Expression.rpad
     Expression.overlay
     Expression.regexp
+    Expression.regexp_count
     Expression.regexp_replace
     Expression.regexp_extract
+    Expression.regexp_extract_all
+    Expression.regexp_instr
+    Expression.regexp_substr
     Expression.from_base64
     Expression.to_base64
     Expression.ascii
@@ -188,14 +198,19 @@ string functions
     Expression.right
     Expression.instr
     Expression.locate
+    Expression.url_decode
+    Expression.url_encode
     Expression.parse_url
+    Expression.printf
     Expression.ltrim
     Expression.rtrim
+    Expression.btrim
     Expression.repeat
     Expression.over
     Expression.reverse
     Expression.split_index
     Expression.str_to_map
+    Expression.elt
 
 temporal functions
 ------------------
@@ -243,7 +258,8 @@ advanced type helper functions
     Expression.map_union
     Expression.map_values
     Expression.array_except
-
+    Expression.array_intersect
+    Expression.split
 
 time definition functions
 -------------------------
@@ -304,3 +320,5 @@ JSON functions
     Expression.json_exists
     Expression.json_value
     Expression.json_query
+    Expression.json_quote
+    Expression.json_unquote

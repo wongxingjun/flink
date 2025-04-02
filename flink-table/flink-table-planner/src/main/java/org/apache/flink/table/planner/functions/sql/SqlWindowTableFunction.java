@@ -22,7 +22,7 @@ import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.util.Preconditions;
 
-import org.apache.flink.shaded.guava31.com.google.common.collect.ImmutableList;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ImmutableList;
 
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
@@ -42,6 +42,7 @@ import org.apache.calcite.sql.type.SqlTypeName;
 import org.apache.calcite.sql.type.SqlTypeUtil;
 import org.apache.calcite.sql.validate.SqlNameMatcher;
 import org.apache.calcite.sql.validate.SqlValidator;
+import org.apache.calcite.sql.validate.SqlValidatorScope;
 
 import java.util.Collections;
 import java.util.List;
@@ -96,6 +97,27 @@ public class SqlWindowTableFunction extends org.apache.calcite.sql.SqlWindowTabl
         return ARG0_TABLE_FUNCTION_WINDOWING;
     }
 
+    @Override
+    public void validateCall(
+            SqlCall call,
+            SqlValidator validator,
+            SqlValidatorScope scope,
+            SqlValidatorScope operandScope) {
+        assert call.getOperator() == this;
+        final List<SqlNode> operandList = call.getOperandList();
+        // Validation for DESCRIPTOR or PARTITION BY of SESSION window is broken, and we
+        // make assumptions at different locations those are not validated and not properly scoped.
+        // Theoretically, we should scope identifiers of the above to the result of the subquery
+        // from the first argument. Unfortunately this breaks at other locations which do not expect
+        // it. We run additional validations while deriving the return type, therefore we can skip
+        // it here.
+        SqlNode selectQuery = operandList.get(0);
+        if (selectQuery.getKind().equals(SqlKind.SET_SEMANTICS_TABLE)) {
+            selectQuery = ((SqlCall) selectQuery).getOperandList().get(0);
+        }
+        selectQuery.validate(validator, scope);
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -109,27 +131,15 @@ public class SqlWindowTableFunction extends org.apache.calcite.sql.SqlWindowTabl
 
     /** Helper for {@link #ARG0_TABLE_FUNCTION_WINDOWING}. */
     private static RelDataType inferRowType(SqlOperatorBinding opBinding) {
-        final RelDataTypeFactory typeFactory = opBinding.getTypeFactory();
-        final RelDataType inputRowType = opBinding.getOperandType(0);
-        final RelDataType descriptorType = opBinding.getOperandType(1);
-        final RelDataTypeField timeField = descriptorType.getFieldList().get(0);
-        final RelDataType timeAttributeType;
-        if (timeField.getType().getSqlTypeName() == SqlTypeName.NULL) {
-            // the type is not inferred yet, we should infer the type here,
-            // see org.apache.flink.table.planner.functions.sql.SqlDescriptorOperator.deriveType
-            RelDataTypeField field = inputRowType.getField(timeField.getName(), false, false);
-            if (field == null) {
-                throw new IllegalArgumentException(
-                        String.format(
-                                "Can't find the time attribute field '%s' in the input schema %s.",
-                                timeField.getName(), inputRowType.getFullTypeString()));
-            }
-            timeAttributeType = field.getType();
-        } else {
-            // the type has been inferred, use it directly
-            timeAttributeType = timeField.getType();
-        }
-        return inferRowType(typeFactory, inputRowType, timeAttributeType);
+        final SqlCallBinding callBinding = (SqlCallBinding) opBinding;
+        final RelDataType inputRowType = callBinding.getOperandType(0);
+        final SqlCall descriptorCall = (SqlCall) callBinding.operand(1);
+        final String timeField =
+                ((SqlIdentifier) descriptorCall.getOperandList().get(0)).getSimple();
+        final RelDataTypeField timeAttributeField = inputRowType.getField(timeField, false, false);
+        assert timeAttributeField != null;
+        return inferRowType(
+                callBinding.getTypeFactory(), inputRowType, timeAttributeField.getType());
     }
 
     public static RelDataType inferRowType(

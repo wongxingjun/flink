@@ -37,6 +37,7 @@ import org.apache.flink.runtime.io.disk.iomanager.IOManager;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.InputSplitProvider;
 import org.apache.flink.runtime.jobgraph.tasks.TaskOperatorEventGateway;
@@ -76,6 +77,8 @@ public interface Environment {
      * @return the ID of the job from the original job graph
      */
     JobID getJobID();
+
+    JobType getJobType();
 
     /**
      * Gets the ID of the JobVertex for which this task executes a parallel subtask.
@@ -158,7 +161,9 @@ public interface Environment {
      */
     MemoryManager getMemoryManager();
 
-    /** @return the resources shared among all tasks of this task manager. */
+    /**
+     * @return the resources shared among all tasks of this task manager.
+     */
     SharedResources getSharedResources();
 
     /** Returns the user code class loader. */

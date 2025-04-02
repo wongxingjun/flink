@@ -27,11 +27,14 @@ import org.apache.flink.runtime.checkpoint.channel.ResultSubpartitionInfo;
 import org.apache.flink.runtime.executiongraph.Execution;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.executiongraph.IntermediateResult;
+import org.apache.flink.runtime.io.network.api.writer.SubtaskStateMapper;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSet;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.jobgraph.JobEdge;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.OperatorInstanceID;
 import org.apache.flink.runtime.state.AbstractChannelStateHandle;
+import org.apache.flink.runtime.state.ChannelStateHelper;
 import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
@@ -75,6 +78,7 @@ public class StateAssignmentOperation {
 
     /** The state assignments for each ExecutionJobVertex that will be filled in multiple passes. */
     private final Map<ExecutionJobVertex, TaskStateAssignment> vertexAssignments;
+
     /**
      * Stores the assignment of a consumer. {@link IntermediateResult} only allows to traverse
      * producer.
@@ -117,6 +121,8 @@ public class StateAssignmentOperation {
                 if (operatorState == null) {
                     operatorState =
                             new OperatorState(
+                                    operatorIDPair.getUserDefinedOperatorName(),
+                                    operatorIDPair.getUserDefinedOperatorUid(),
                                     operatorID,
                                     executionJobVertex.getParallelism(),
                                     executionJobVertex.getMaxParallelism());
@@ -361,12 +367,12 @@ public class StateAssignmentOperation {
 
         checkForUnsupportedToplogyChanges(
                 assignment.oldState,
-                OperatorSubtaskState::getResultSubpartitionState,
+                ChannelStateHelper::extractUnmergedOutputHandles,
                 assignment.outputOperatorID);
 
         final OperatorState outputState = assignment.oldState.get(assignment.outputOperatorID);
         final List<List<ResultSubpartitionStateHandle>> outputOperatorState =
-                splitBySubtasks(outputState, OperatorSubtaskState::getResultSubpartitionState);
+                splitBySubtasks(outputState, ChannelStateHelper::extractUnmergedOutputHandles);
 
         final ExecutionJobVertex executionJobVertex = assignment.executionJobVertex;
         final List<IntermediateDataSet> outputs =
@@ -410,7 +416,7 @@ public class StateAssignmentOperation {
 
         checkForUnsupportedToplogyChanges(
                 stateAssignment.oldState,
-                OperatorSubtaskState::getInputChannelState,
+                ChannelStateHelper::extractUnmergedInputHandles,
                 stateAssignment.inputOperatorID);
 
         final ExecutionJobVertex executionJobVertex = stateAssignment.executionJobVertex;
@@ -420,8 +426,32 @@ public class StateAssignmentOperation {
         final OperatorState inputState =
                 stateAssignment.oldState.get(stateAssignment.inputOperatorID);
         final List<List<InputChannelStateHandle>> inputOperatorState =
-                splitBySubtasks(inputState, OperatorSubtaskState::getInputChannelState);
-        if (inputState.getParallelism() == executionJobVertex.getParallelism()) {
+                splitBySubtasks(inputState, ChannelStateHelper::extractUnmergedInputHandles);
+
+        boolean hasAnyFullMapper =
+                executionJobVertex.getJobVertex().getInputs().stream()
+                        .map(JobEdge::getDownstreamSubtaskStateMapper)
+                        .anyMatch(m -> m.equals(SubtaskStateMapper.FULL));
+        boolean hasAnyPreviousOperatorChanged =
+                executionJobVertex.getInputs().stream()
+                        .map(IntermediateResult::getProducer)
+                        .map(vertexAssignments::get)
+                        .anyMatch(
+                                taskStateAssignment -> {
+                                    final int oldParallelism =
+                                            stateAssignment
+                                                    .oldState
+                                                    .get(stateAssignment.inputOperatorID)
+                                                    .getParallelism();
+                                    return oldParallelism
+                                            != taskStateAssignment.executionJobVertex
+                                                    .getParallelism();
+                                });
+
+        // need rescale if any input operator parallelism was changed and have any input with FULL
+        // subtask state mapper
+        if (inputState.getParallelism() == executionJobVertex.getParallelism()
+                && !(hasAnyFullMapper && hasAnyPreviousOperatorChanged)) {
             stateAssignment.inputChannelStates.putAll(
                     toInstanceMap(stateAssignment.inputOperatorID, inputOperatorState));
             return;

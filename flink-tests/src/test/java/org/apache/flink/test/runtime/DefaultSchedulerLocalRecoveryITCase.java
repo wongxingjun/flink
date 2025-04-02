@@ -18,9 +18,7 @@
 
 package org.apache.flink.test.runtime;
 
-import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.client.program.MiniClusterClient;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
@@ -38,6 +36,7 @@ import org.apache.flink.runtime.minicluster.MiniClusterConfiguration;
 import org.apache.flink.runtime.scheduler.DefaultScheduler;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.runtime.testutils.WaitingCancelableInvokable;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
 import org.apache.flink.testutils.junit.FailsWithAdaptiveScheduler;
 import org.apache.flink.util.TestLogger;
 
@@ -45,6 +44,7 @@ import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -113,7 +113,7 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
 
     private ArchivedExecutionGraph executeSchedulingTest(
             Configuration configuration, int parallelism) throws Exception {
-        final long slotIdleTimeout = TIMEOUT;
+        final Duration slotIdleTimeout = Duration.ofMillis(TIMEOUT);
         configuration.set(JobManagerOptions.SLOT_IDLE_TIMEOUT, slotIdleTimeout);
 
         configuration.set(TaskManagerOptions.TOTAL_FLINK_MEMORY, MemorySize.parse("64mb"));
@@ -171,12 +171,13 @@ public class DefaultSchedulerLocalRecoveryITCase extends TestLogger {
         source.setInvokableClass(WaitingCancelableInvokable.class);
         source.setParallelism(parallelism);
 
-        ExecutionConfig executionConfig = new ExecutionConfig();
-        executionConfig.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 10));
+        JobGraph jobGraph =
+                JobGraphBuilder.newStreamingJobGraphBuilder()
+                        .addJobVertices(Arrays.asList(source))
+                        .build();
 
-        return JobGraphBuilder.newStreamingJobGraphBuilder()
-                .addJobVertices(Arrays.asList(source))
-                .setExecutionConfig(executionConfig)
-                .build();
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(jobGraph, 1, 10L);
+
+        return jobGraph;
     }
 }

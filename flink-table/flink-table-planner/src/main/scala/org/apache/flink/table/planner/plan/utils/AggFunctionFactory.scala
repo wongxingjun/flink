@@ -18,7 +18,7 @@
 package org.apache.flink.table.planner.plan.utils
 
 import org.apache.flink.table.api.TableException
-import org.apache.flink.table.functions.{DeclarativeAggregateFunction, UserDefinedFunction}
+import org.apache.flink.table.functions.{BuiltInFunctionDefinitions, DeclarativeAggregateFunction, UserDefinedFunction}
 import org.apache.flink.table.planner.functions.aggfunctions._
 import org.apache.flink.table.planner.functions.aggfunctions.SingleValueAggFunction._
 import org.apache.flink.table.planner.functions.aggfunctions.SumWithRetractAggFunction._
@@ -27,6 +27,7 @@ import org.apache.flink.table.planner.functions.sql.{SqlFirstLastValueAggFunctio
 import org.apache.flink.table.planner.functions.utils.AggSqlFunction
 import org.apache.flink.table.runtime.functions.aggregate._
 import org.apache.flink.table.runtime.functions.aggregate.BatchApproxCountDistinctAggFunctions._
+import org.apache.flink.table.runtime.functions.aggregate.PercentileAggFunction.{MultiPercentileAggFunction, SinglePercentileAggFunction}
 import org.apache.flink.table.types.logical._
 import org.apache.flink.table.types.logical.LogicalTypeRoot._
 
@@ -165,7 +166,14 @@ class AggFunctionFactory(
         udagg.makeFunction(constants.toArray, argTypes)
 
       case bridge: BridgingSqlAggFunction =>
-        bridge.getDefinition.asInstanceOf[UserDefinedFunction]
+        bridge.getDefinition match {
+          // built-in imperativeFunction
+          case BuiltInFunctionDefinitions.PERCENTILE =>
+            createPercentileAggFunction(argTypes)
+          // DeclarativeAggregateFunction & UDF
+          case _ =>
+            bridge.getDefinition.asInstanceOf[UserDefinedFunction]
+        }
 
       case unSupported: SqlAggFunction =>
         throw new TableException(s"Unsupported Function: '${unSupported.getName}'")
@@ -532,18 +540,23 @@ class AggFunctionFactory(
   }
 
   private def createRankAggFunction(argTypes: Array[LogicalType]): UserDefinedFunction = {
-    val argTypes = orderKeyIndexes.map(inputRowType.getChildren.get(_))
-    new RankAggFunction(argTypes)
+    new RankAggFunction(getArgTypesOrEmpty())
   }
 
   private def createDenseRankAggFunction(argTypes: Array[LogicalType]): UserDefinedFunction = {
-    val argTypes = orderKeyIndexes.map(inputRowType.getChildren.get(_))
-    new DenseRankAggFunction(argTypes)
+    new DenseRankAggFunction(getArgTypesOrEmpty())
   }
 
   private def createPercentRankAggFunction(argTypes: Array[LogicalType]): UserDefinedFunction = {
-    val argTypes = orderKeyIndexes.map(inputRowType.getChildren.get(_))
-    new PercentRankAggFunction(argTypes)
+    new PercentRankAggFunction(getArgTypesOrEmpty())
+  }
+
+  private def getArgTypesOrEmpty(): Array[LogicalType] = {
+    if (orderKeyIndexes != null) {
+      orderKeyIndexes.map(inputRowType.getChildren.get(_))
+    } else {
+      Array[LogicalType]()
+    }
   }
 
   private def createNTILEAggFUnction(argTypes: Array[LogicalType]): UserDefinedFunction = {
@@ -628,5 +641,19 @@ class AggFunctionFactory(
       types: Array[LogicalType],
       ignoreNulls: Boolean): UserDefinedFunction = {
     new ArrayAggFunction(types(0), ignoreNulls)
+  }
+
+  private def createPercentileAggFunction(
+      argTypes: Array[LogicalType]
+  ): UserDefinedFunction = {
+    val isMultiPercentile = argTypes(1).is(LogicalTypeRoot.ARRAY)
+    val firstArg = argTypes(0)
+    val secondArg = if (argTypes.length < 3) null else argTypes(2)
+
+    if (isMultiPercentile) {
+      new MultiPercentileAggFunction(firstArg, secondArg)
+    } else {
+      new SinglePercentileAggFunction(firstArg, secondArg)
+    }
   }
 }

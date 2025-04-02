@@ -21,13 +21,12 @@ package org.apache.flink.runtime.operators.coordination;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.testutils.OneShotLatch;
-import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureManager;
 import org.apache.flink.runtime.checkpoint.CheckpointPlanCalculatorContext;
-import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.checkpoint.DefaultCheckpointPlanCalculator;
+import org.apache.flink.runtime.checkpoint.NoOpCheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.NoOpFailJobCall;
 import org.apache.flink.runtime.checkpoint.StandaloneCheckpointIDCounter;
 import org.apache.flink.runtime.checkpoint.StandaloneCompletedCheckpointStore;
@@ -42,7 +41,7 @@ import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.operators.coordination.EventReceivingTasks.EventWithSubtask;
 import org.apache.flink.runtime.scheduler.GlobalFailureHandler;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
+import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
@@ -554,7 +553,7 @@ class OperatorCoordinatorHolderTest {
                         Collections.emptyList(),
                         new StandaloneCheckpointIDCounter(),
                         new StandaloneCompletedCheckpointStore(10),
-                        new MemoryStateBackend(),
+                        new JobManagerCheckpointStorage(),
                         mainThreadExecutor,
                         new CheckpointsCleaner(),
                         mainThreadExecutor,
@@ -574,7 +573,7 @@ class OperatorCoordinatorHolderTest {
                                 },
                                 IteratorChain::new,
                                 false),
-                        new CheckpointStatsTracker(1, new UnregisteredMetricsGroup(), jobId)));
+                        NoOpCheckpointStatsTracker.INSTANCE));
         holder.start();
 
         return holder;

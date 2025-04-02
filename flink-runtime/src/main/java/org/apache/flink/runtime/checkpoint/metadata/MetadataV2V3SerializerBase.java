@@ -26,10 +26,11 @@ import org.apache.flink.runtime.checkpoint.MasterState;
 import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.runtime.checkpoint.StateObjectCollection;
+import org.apache.flink.runtime.checkpoint.filemerging.LogicalFile;
 import org.apache.flink.runtime.state.CheckpointedStateScope;
 import org.apache.flink.runtime.state.IncrementalKeyedStateHandle.HandleAndLocalPath;
 import org.apache.flink.runtime.state.IncrementalRemoteKeyedStateHandle;
-import org.apache.flink.runtime.state.InputChannelStateHandle;
+import org.apache.flink.runtime.state.InputStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeOffsets;
 import org.apache.flink.runtime.state.KeyGroupsSavepointStateHandle;
@@ -37,7 +38,7 @@ import org.apache.flink.runtime.state.KeyGroupsStateHandle;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.OperatorStreamStateHandle;
-import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
+import org.apache.flink.runtime.state.OutputStateHandle;
 import org.apache.flink.runtime.state.StateHandleID;
 import org.apache.flink.runtime.state.StateObject;
 import org.apache.flink.runtime.state.StreamStateHandle;
@@ -72,7 +73,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -312,8 +312,8 @@ public abstract class MetadataV2V3SerializerBase {
             state.setRawKeyedState(rawKeyedState);
         }
 
-        state.setInputChannelState(deserializeInputChannelStateHandle(dis, context));
-        state.setResultSubpartitionState(deserializeResultSubpartitionStateHandle(dis, context));
+        state.setInputChannelState(deserializeInputStateHandle(dis, context));
+        state.setResultSubpartitionState(deserializeOutputStateHandle(dis, context));
 
         return state.build();
     }
@@ -674,17 +674,13 @@ public abstract class MetadataV2V3SerializerBase {
                 Preconditions.checkArgument(stateHandle instanceof SegmentFileStateHandle);
                 return isEmpty
                         ? new EmptyFileMergingOperatorStreamStateHandle(
-                                DirectoryStreamStateHandle.forPathWithZeroSize(
-                                        new File(taskOwnedDirPathStr).toPath()),
-                                DirectoryStreamStateHandle.forPathWithZeroSize(
-                                        new File(sharedDirPathStr).toPath()),
+                                DirectoryStreamStateHandle.of(new Path(taskOwnedDirPathStr)),
+                                DirectoryStreamStateHandle.of(new Path(sharedDirPathStr)),
                                 offsetsMap,
                                 stateHandle)
                         : new FileMergingOperatorStreamStateHandle(
-                                DirectoryStreamStateHandle.forPathWithZeroSize(
-                                        new File(taskOwnedDirPathStr).toPath()),
-                                DirectoryStreamStateHandle.forPathWithZeroSize(
-                                        new File(sharedDirPathStr).toPath()),
+                                DirectoryStreamStateHandle.of(new Path(taskOwnedDirPathStr)),
+                                DirectoryStreamStateHandle.of(new Path(sharedDirPathStr)),
                                 offsetsMap,
                                 stateHandle);
             } else {
@@ -700,24 +696,20 @@ public abstract class MetadataV2V3SerializerBase {
     //  channel state (unaligned checkpoints)
     // ------------------------------------------------------------------------
 
-    protected StateObjectCollection<ResultSubpartitionStateHandle>
-            deserializeResultSubpartitionStateHandle(
-                    DataInputStream dis, @Nullable DeserializationContext context)
-                    throws IOException {
-        return StateObjectCollection.empty();
-    }
-
-    protected StateObjectCollection<InputChannelStateHandle> deserializeInputChannelStateHandle(
+    protected StateObjectCollection<OutputStateHandle> deserializeOutputStateHandle(
             DataInputStream dis, @Nullable DeserializationContext context) throws IOException {
         return StateObjectCollection.empty();
     }
 
-    protected void serializeResultSubpartitionStateHandle(
-            ResultSubpartitionStateHandle resultSubpartitionStateHandle, DataOutputStream dos)
+    protected StateObjectCollection<InputStateHandle> deserializeInputStateHandle(
+            DataInputStream dis, @Nullable DeserializationContext context) throws IOException {
+        return StateObjectCollection.empty();
+    }
+
+    protected void serializeOutputStateHandle(OutputStateHandle handle, DataOutputStream dos)
             throws IOException {}
 
-    protected void serializeInputChannelStateHandle(
-            InputChannelStateHandle inputChannelStateHandle, DataOutputStream dos)
+    protected void serializeInputStateHandle(InputStateHandle handle, DataOutputStream dos)
             throws IOException {}
 
     // ------------------------------------------------------------------------
@@ -745,6 +737,7 @@ public abstract class MetadataV2V3SerializerBase {
                 dos.writeLong(segmentFileStateHandle.getStateSize());
                 dos.writeInt(segmentFileStateHandle.getScope().ordinal());
                 dos.writeUTF(segmentFileStateHandle.getFilePath().toString());
+                dos.writeUTF(segmentFileStateHandle.getLogicalFileId().getKeyString());
             }
         } else if (stateHandle instanceof FileStateHandle) {
             dos.writeByte(FILE_STREAM_STATE_HANDLE);
@@ -819,7 +812,9 @@ public abstract class MetadataV2V3SerializerBase {
             long stateSize = dis.readLong();
             CheckpointedStateScope scope = CheckpointedStateScope.values()[dis.readInt()];
             Path physicalFilePath = new Path(dis.readUTF());
-            return new SegmentFileStateHandle(physicalFilePath, startPos, stateSize, scope);
+            LogicalFile.LogicalFileId logicalFileId = new LogicalFile.LogicalFileId(dis.readUTF());
+            return new SegmentFileStateHandle(
+                    physicalFilePath, startPos, stateSize, scope, logicalFileId);
         } else if (EMPTY_SEGMENT_FILE_HANDLE == type) {
             return EmptySegmentFileStateHandle.INSTANCE;
         } else {

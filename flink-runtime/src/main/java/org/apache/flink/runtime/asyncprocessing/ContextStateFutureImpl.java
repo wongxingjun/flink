@@ -37,10 +37,13 @@ import org.apache.flink.core.state.StateFutureImpl;
  */
 public class ContextStateFutureImpl<T> extends StateFutureImpl<T> {
 
-    private final RecordContext<?, ?> recordContext;
+    private final RecordContext<?> recordContext;
 
-    ContextStateFutureImpl(CallbackRunner callbackRunner, RecordContext<?, ?> recordContext) {
-        super(callbackRunner);
+    ContextStateFutureImpl(
+            CallbackRunner callbackRunner,
+            AsyncFrameworkExceptionHandler exceptionHandler,
+            RecordContext<?> recordContext) {
+        super(callbackRunner, exceptionHandler);
         this.recordContext = recordContext;
         // When state request submitted, ref count +1, as described in FLIP-425:
         // To cover the statements without a callback, in addition to the reference count marked
@@ -50,7 +53,7 @@ public class ContextStateFutureImpl<T> extends StateFutureImpl<T> {
 
     @Override
     public <A> StateFutureImpl<A> makeNewStateFuture() {
-        return new ContextStateFutureImpl<>(callbackRunner, recordContext);
+        return new ContextStateFutureImpl<>(callbackRunner, exceptionHandler, recordContext);
     }
 
     @Override
@@ -61,17 +64,29 @@ public class ContextStateFutureImpl<T> extends StateFutureImpl<T> {
     }
 
     @Override
-    public void postComplete() {
+    public void postComplete(boolean inCallbackRunner) {
         // When a state request completes, ref count -1, as described in FLIP-425:
         // To cover the statements without a callback, in addition to the reference count marked
         // in Fig.5, each state request itself is also protected by a paired reference count.
-        recordContext.release();
+        if (inCallbackRunner) {
+            recordContext.release(Runnable::run);
+        } else {
+            recordContext.release(
+                    runnable -> {
+                        try {
+                            callbackRunner.submit(runnable::run);
+                        } catch (Exception e) {
+                            exceptionHandler.handleException(
+                                    "Caught exception when post complete StateFuture.", e);
+                        }
+                    });
+        }
     }
 
     @Override
     public void callbackFinished() {
         // When a callback ends, as shown in Fig.5 of FLIP-425, at the
         // point of 2,4 and 6, the ref count -1.
-        recordContext.release();
+        recordContext.release(Runnable::run);
     }
 }

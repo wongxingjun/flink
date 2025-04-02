@@ -26,13 +26,18 @@ import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.legacy.table.connector.source.SourceFunctionProvider;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.ParallelSourceFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.ParallelSourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
+import org.apache.flink.streaming.api.lineage.LineageDataset;
+import org.apache.flink.streaming.api.lineage.LineageVertex;
+import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.StreamSource;
 import org.apache.flink.streaming.api.transformations.LegacySourceTransformation;
 import org.apache.flink.streaming.api.transformations.PartitionTransformation;
 import org.apache.flink.streaming.api.transformations.SourceTransformationWrapper;
+import org.apache.flink.streaming.api.transformations.TransformationWithLineage;
 import org.apache.flink.streaming.runtime.partitioner.KeyGroupStreamPartitioner;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.ResolvedSchema;
@@ -42,11 +47,13 @@ import org.apache.flink.table.connector.ProviderContext;
 import org.apache.flink.table.connector.source.DataStreamScanProvider;
 import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.ScanTableSource;
-import org.apache.flink.table.connector.source.SourceFunctionProvider;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.planner.connectors.TransformationScanProvider;
 import org.apache.flink.table.planner.delegation.PlannerBase;
+import org.apache.flink.table.planner.lineage.TableLineageUtils;
+import org.apache.flink.table.planner.lineage.TableSourceLineageVertex;
+import org.apache.flink.table.planner.lineage.TableSourceLineageVertexImpl;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeBase;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeConfig;
@@ -67,6 +74,7 @@ import org.apache.flink.types.RowKind;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
@@ -121,9 +129,11 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                 tableSource.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
         final int sourceParallelism = deriveSourceParallelism(provider);
         final boolean sourceParallelismConfigured = isParallelismConfigured(provider);
+        Optional<LineageVertex> lineageVertex = Optional.empty();
         if (provider instanceof SourceFunctionProvider) {
             final SourceFunctionProvider sourceFunctionProvider = (SourceFunctionProvider) provider;
             final SourceFunction<RowData> function = sourceFunctionProvider.createSourceFunction();
+            lineageVertex = TableLineageUtils.extractLineageDataset(function);
             sourceTransform =
                     createSourceFunctionTransformation(
                             env,
@@ -133,6 +143,20 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                             outputTypeInfo,
                             sourceParallelism,
                             sourceParallelismConfigured);
+
+            LineageDataset tableLineageDataset =
+                    TableLineageUtils.createTableLineageDataset(
+                            tableSourceSpec.getContextResolvedTable(), lineageVertex);
+
+            TableSourceLineageVertex sourceLineageVertex =
+                    new TableSourceLineageVertexImpl(
+                            Arrays.asList(tableLineageDataset),
+                            provider.isBounded()
+                                    ? Boundedness.BOUNDED
+                                    : Boundedness.CONTINUOUS_UNBOUNDED);
+
+            ((TransformationWithLineage<RowData>) sourceTransform)
+                    .setLineageVertex(sourceLineageVertex);
             if (function instanceof ParallelSourceFunction && sourceParallelismConfigured) {
                 meta.fill(sourceTransform);
                 return new SourceTransformationWrapper<>(sourceTransform);
@@ -142,12 +166,14 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
         } else if (provider instanceof InputFormatProvider) {
             final InputFormat<RowData, ?> inputFormat =
                     ((InputFormatProvider) provider).createInputFormat();
+            lineageVertex = TableLineageUtils.extractLineageDataset(inputFormat);
             sourceTransform =
                     createInputFormatTransformation(
                             env, inputFormat, outputTypeInfo, meta.getName());
             meta.fill(sourceTransform);
         } else if (provider instanceof SourceProvider) {
             final Source<RowData, ?, ?> source = ((SourceProvider) provider).createSource();
+            lineageVertex = TableLineageUtils.extractLineageDataset(source);
             // TODO: Push down watermark strategy to source scan
             sourceTransform =
                     env.fromSource(
@@ -175,17 +201,35 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
                     provider.getClass().getSimpleName() + " is unsupported now.");
         }
 
-        if (sourceParallelismConfigured) {
-            return applySourceTransformationWrapper(
-                    sourceTransform,
-                    planner.getFlinkContext().getClassLoader(),
-                    outputTypeInfo,
-                    config,
-                    tableSource.getChangelogMode(),
-                    sourceParallelism);
-        } else {
-            return sourceTransform;
+        LineageDataset tableLineageDataset =
+                TableLineageUtils.createTableLineageDataset(
+                        tableSourceSpec.getContextResolvedTable(), lineageVertex);
+
+        TableSourceLineageVertex sourceLineageVertex =
+                new TableSourceLineageVertexImpl(
+                        Arrays.asList(tableLineageDataset),
+                        provider.isBounded()
+                                ? Boundedness.BOUNDED
+                                : Boundedness.CONTINUOUS_UNBOUNDED);
+
+        if (sourceTransform instanceof TransformationWithLineage) {
+            ((TransformationWithLineage<RowData>) sourceTransform)
+                    .setLineageVertex(sourceLineageVertex);
         }
+
+        if (sourceParallelismConfigured) {
+            Transformation<RowData> sourceTransformationWrapper =
+                    applySourceTransformationWrapper(
+                            sourceTransform,
+                            planner.getFlinkContext().getClassLoader(),
+                            outputTypeInfo,
+                            config,
+                            tableSource.getChangelogMode(),
+                            sourceParallelism);
+            return sourceTransformationWrapper;
+        }
+
+        return sourceTransform;
     }
 
     private boolean isParallelismConfigured(ScanTableSource.ScanRuntimeProvider runtimeProvider) {
@@ -277,9 +321,7 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
      * Adopted from {@link StreamExecutionEnvironment#addSource(SourceFunction, String,
      * TypeInformation)} but with custom {@link Boundedness}.
      *
-     * @deprecated This method relies on the {@link
-     *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
-     *     removed.
+     * @deprecated This method relies on the {@link SourceFunction} API, which is due to be removed.
      */
     @Deprecated
     protected Transformation<RowData> createSourceFunctionTransformation(
@@ -313,13 +355,16 @@ public abstract class CommonExecTableSourceScan extends ExecNodeBase<RowData>
         }
 
         final StreamSource<RowData, ?> sourceOperator = new StreamSource<>(function, !isBounded);
-        return new LegacySourceTransformation<>(
-                operatorName,
-                sourceOperator,
-                outputTypeInfo,
-                parallelism,
-                boundedness,
-                sourceParallelismConfigured);
+        LegacySourceTransformation<RowData> transformation =
+                new LegacySourceTransformation<>(
+                        operatorName,
+                        sourceOperator,
+                        outputTypeInfo,
+                        parallelism,
+                        boundedness,
+                        sourceParallelismConfigured);
+        transformation.setChainingStrategy(ChainingStrategy.HEAD);
+        return transformation;
     }
 
     /**

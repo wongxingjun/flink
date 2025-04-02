@@ -33,6 +33,7 @@ import org.apache.flink.configuration.HighAvailabilityOptions;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.kubernetes.artifact.KubernetesArtifactUploader;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptionsInternal;
 import org.apache.flink.kubernetes.configuration.KubernetesDeploymentTarget;
@@ -51,7 +52,6 @@ import org.apache.flink.kubernetes.utils.KubernetesUtils;
 import org.apache.flink.runtime.entrypoint.ClusterEntrypoint;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServicesUtils;
 import org.apache.flink.runtime.highavailability.nonha.standalone.StandaloneClientHAServices;
-import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import org.apache.flink.runtime.rpc.AddressResolution;
 import org.apache.flink.util.FlinkException;
@@ -79,12 +79,17 @@ public class KubernetesClusterDescriptor implements ClusterDescriptor<String> {
 
     private final FlinkKubeClient client;
 
+    private final KubernetesArtifactUploader artifactUploader;
+
     private final String clusterId;
 
     public KubernetesClusterDescriptor(
-            Configuration flinkConfig, FlinkKubeClientFactory clientFactory) {
+            Configuration flinkConfig,
+            FlinkKubeClientFactory clientFactory,
+            KubernetesArtifactUploader artifactUploader) {
         this.flinkConfig = flinkConfig;
         this.clientFactory = clientFactory;
+        this.artifactUploader = artifactUploader;
         this.client = clientFactory.fromConfiguration(flinkConfig, "client");
         this.clusterId =
                 checkNotNull(
@@ -214,7 +219,14 @@ public class KubernetesClusterDescriptor implements ClusterDescriptor<String> {
                 || PackagedProgramUtils.isPython(applicationConfiguration.getProgramArguments()))) {
             final List<URI> pipelineJars =
                     KubernetesUtils.checkJarFileForApplicationMode(flinkConfig);
-            Preconditions.checkArgument(pipelineJars.size() == 1, "Should only have one jar");
+            Preconditions.checkArgument(
+                    pipelineJars.size() <= 1, "Should only have at most one jar.");
+        }
+
+        try {
+            artifactUploader.uploadAll(flinkConfig);
+        } catch (Exception ex) {
+            throw new ClusterDeploymentException(ex);
         }
 
         final ClusterClientProvider<String> clusterClientProvider =
@@ -230,14 +242,6 @@ public class KubernetesClusterDescriptor implements ClusterDescriptor<String> {
                     clusterClient.getWebInterfaceURL());
         }
         return clusterClientProvider;
-    }
-
-    @Override
-    public ClusterClientProvider<String> deployJobCluster(
-            ClusterSpecification clusterSpecification, JobGraph jobGraph, boolean detached)
-            throws ClusterDeploymentException {
-        throw new ClusterDeploymentException(
-                "Per-Job Mode not supported by Active Kubernetes deployments.");
     }
 
     private ClusterClientProvider<String> deployClusterInternal(

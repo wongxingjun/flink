@@ -35,23 +35,29 @@ import org.apache.flink.yarn.configuration.YarnConfigOptions;
 import org.apache.flink.yarn.configuration.YarnConfigOptionsInternal;
 import org.apache.flink.yarn.configuration.YarnDeploymentTarget;
 import org.apache.flink.yarn.configuration.YarnLogConfigUtil;
+import org.apache.flink.yarn.token.TestYarnAMDelegationTokenProvider;
 
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.service.Service;
 import org.apache.hadoop.yarn.api.ApplicationConstants;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
 import org.apache.hadoop.yarn.client.api.YarnClient;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.util.Records;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -69,6 +75,7 @@ import java.util.UUID;
 import static org.apache.flink.core.testutils.CommonTestUtils.assertThrows;
 import static org.apache.flink.runtime.jobmanager.JobManagerProcessUtils.createDefaultJobManagerProcessSpec;
 import static org.apache.flink.yarn.Utils.getPathFromLocalFile;
+import static org.apache.flink.yarn.configuration.YarnConfigOptions.APP_MASTER_TOKEN_SERVICES;
 import static org.apache.flink.yarn.configuration.YarnConfigOptions.CLASSPATH_INCLUDE_USER_JAR;
 import static org.apache.flink.yarn.configuration.YarnConfigOptions.YARN_CONTAINER_START_COMMAND_TEMPLATE;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -880,7 +887,7 @@ class YarnClusterDescriptorTest {
         try (final YarnClusterDescriptor yarnClusterDescriptor =
                 createYarnClusterDescriptor(flinkConfig)) {
             assertThrows(
-                    "Should only have one jar",
+                    "Should only have at most one jar",
                     IllegalArgumentException.class,
                     () ->
                             yarnClusterDescriptor.deployApplicationCluster(
@@ -914,11 +921,14 @@ class YarnClusterDescriptorTest {
         final String fakeLocalFlinkJar = "./lib/flink_dist.jar";
         final String fakeClassPath = fakeLocalFlinkJar + ":./usrlib/user.jar";
         final ApplicationId appId = ApplicationId.newInstance(0, 0);
+        final Configuration flinkConfig = new Configuration();
+        flinkConfig.set(CoreOptions.FLINK_JAVA_HOME, "/opt/jdk");
         final Map<String, String> masterEnv =
                 getTestMasterEnv(
-                        new Configuration(), flinkHomeDir, fakeClassPath, fakeLocalFlinkJar, appId);
+                        flinkConfig, flinkHomeDir, fakeClassPath, fakeLocalFlinkJar, appId);
 
         assertThat(masterEnv)
+                .containsEntry(ConfigConstants.ENV_JAVA_HOME, "/opt/jdk")
                 .containsEntry(ConfigConstants.ENV_FLINK_LIB_DIR, "./lib")
                 .containsEntry(YarnConfigKeys.ENV_APP_ID, appId.toString())
                 .containsEntry(
@@ -931,6 +941,20 @@ class YarnClusterDescriptorTest {
         assertThat(masterEnv)
                 .containsEntry(YarnConfigKeys.FLINK_DIST_JAR, fakeLocalFlinkJar)
                 .containsEntry(YarnConfigKeys.ENV_CLIENT_HOME_DIR, flinkHomeDir.getPath());
+    }
+
+    @Test
+    public void testContainerEnvJavaHomeNotOverriddenByDefault(@TempDir File flinkHomeDir)
+            throws IOException {
+        final Configuration flinkConfig = new Configuration();
+        final Map<String, String> masterEnv =
+                getTestMasterEnv(
+                        flinkConfig,
+                        flinkHomeDir,
+                        "",
+                        "./lib/flink_dist.jar",
+                        ApplicationId.newInstance(0, 0));
+        assertThat(masterEnv).doesNotContainKey(ConfigConstants.ENV_JAVA_HOME);
     }
 
     @Test
@@ -972,6 +996,30 @@ class YarnClusterDescriptorTest {
                     fakeClassPath,
                     fakeLocalFlinkJar,
                     appId.toString());
+        }
+    }
+
+    @Test
+    public void testSetTokensForYarnAppMaster() {
+        final Configuration flinkConfig = new Configuration();
+        flinkConfig.set(
+                APP_MASTER_TOKEN_SERVICES,
+                Arrays.asList(TestYarnAMDelegationTokenProvider.SERVICE_NAME));
+        YarnClusterDescriptor yarnClusterDescriptor = createYarnClusterDescriptor(flinkConfig);
+        ContainerLaunchContext amContainer = Records.newRecord(ContainerLaunchContext.class);
+        try {
+            yarnClusterDescriptor.setTokensFor(amContainer, true);
+            Credentials credentials = new Credentials();
+            try (DataInputStream dis =
+                    new DataInputStream(
+                            new ByteArrayInputStream(amContainer.getTokens().array()))) {
+                credentials.readTokenStorageStream(dis);
+            }
+            assertThat(credentials.getAllTokens())
+                    .hasSize(1)
+                    .contains(TestYarnAMDelegationTokenProvider.TEST_YARN_AM_TOKEN);
+        } catch (Exception e) {
+            fail("Should not throw exception when setting tokens for AM container.");
         }
     }
 }

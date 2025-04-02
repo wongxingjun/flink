@@ -157,6 +157,7 @@ CREATE TABLE [IF NOT EXISTS] [catalog_name.][db_name.]table_name
   )
   [COMMENT table_comment]
   [PARTITIONED BY (partition_column_name1, partition_column_name2, ...)]
+  [ <distribution> ]
   WITH (key1=val1, key2=val2, ...)
   [ LIKE source_table [( <like_options> )] | AS select_query ]
    
@@ -183,9 +184,15 @@ CREATE TABLE [IF NOT EXISTS] [catalog_name.][db_name.]table_name
 
 <like_options>:
 {
-   { INCLUDING | EXCLUDING } { ALL | CONSTRAINTS | PARTITIONS }
+   { INCLUDING | EXCLUDING } { ALL | CONSTRAINTS | DISTRIBUTION | PARTITIONS }
  | { INCLUDING | EXCLUDING | OVERWRITING } { GENERATED | OPTIONS | WATERMARKS } 
 }[, ...]
+
+<distribution>:
+{
+    DISTRIBUTION BY [ { HASH | RANGE } ] (bucket_column_name1, bucket_column_name2, ...) [INTO n BUCKETS]
+  | DISTRIBUTION INTO n BUCKETS
+}
 
 ```
 
@@ -405,6 +412,36 @@ Flink 假设声明了主键的列都是不包含 Null 值的，Connector 在处�
 
 根据指定的列对已经创建的表进行分区。若表使用 filesystem sink ，则将会为每个分区创建一个目录。
 
+### `DISTRIBUTED`
+
+Buckets enable load balancing in an external storage system by splitting data into disjoint subsets. These subsets group rows with potentially "infinite" keyspace into smaller and more manageable chunks that allow for efficient parallel processing.
+
+Bucketing depends heavily on the semantics of the underlying connector. However, a user can influence the bucketing behavior by specifying the number of buckets, the bucketing algorithm, and (if the algorithm allows it) the columns which are used for target bucket calculation.
+
+All bucketing components (i.e. bucket number, distribution algorithm, bucket key columns) are
+optional from a SQL syntax perspective.
+
+Given the following SQL statements:
+
+```sql
+-- Example 1
+CREATE TABLE MyTable (uid BIGINT, name STRING) DISTRIBUTED BY HASH(uid) INTO 4 BUCKETS;
+
+-- Example 2
+CREATE TABLE MyTable (uid BIGINT, name STRING) DISTRIBUTED BY (uid) INTO 4 BUCKETS;
+
+-- Example 3
+CREATE TABLE MyTable (uid BIGINT, name STRING) DISTRIBUTED BY (uid);
+
+-- Example 4
+CREATE TABLE MyTable (uid BIGINT, name STRING) DISTRIBUTED INTO 4 BUCKETS;
+```
+
+Example 1 declares a hash function on a fixed number of 4 buckets (i.e. HASH(uid) % 4 = target
+bucket). Example 2 leaves the selection of an algorithm up to the connector. Additionally,
+Example 3 leaves the number of buckets up  to the connector.
+In contrast, Example 4 only defines the number of buckets.
+
 ### `WITH` Options
 
 表属性用于创建 table source/sink ，一般用于寻找和创建底层的连接器。
@@ -464,6 +501,7 @@ CREATE TABLE Orders_with_watermark (
 * CONSTRAINTS - 主键和唯一键约束
 * GENERATED - 计算列
 * OPTIONS - 连接器信息、格式化方式等配置项
+* DISTRIBUTION - distribution definition
 * PARTITIONS - 表分区信息
 * WATERMARKS - watermark 定义
 
@@ -547,12 +585,102 @@ CREATE TABLE my_ctas_table (
 INSERT INTO my_ctas_table SELECT id, name, age FROM source_table WHERE mod(id, 10) = 0;
 ```
 
+The `CREATE` part allows you to specify explicit columns. The resulting table schema will contain the columns defined in the `CREATE` part first followed by the columns from the `SELECT` part. Columns named in both parts, in the `CREATE` and `SELECT` parts, keep the same column position as defined in the `SELECT` part. The data type of `SELECT` columns can also be overridden if specified in the `CREATE` part.
+
+Consider the example statement below:
+
+```sql
+CREATE TABLE my_ctas_table (
+    desc STRING,
+    quantity DOUBLE,   
+    cost AS price * quantity,
+    WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND,
+) WITH (
+    'connector' = 'kafka',
+    ...
+) AS SELECT id, price, quantity, order_time FROM source_table;
+```
+
+The resulting table `my_ctas_table` will be equivalent to create the following table and insert the data with the following statement:
+
+```
+CREATE TABLE my_ctas_table (
+    desc STRING,
+    cost AS price * quantity,
+    id BIGINT,
+    price DOUBLE,
+    quantity DOUBLE,
+    order_time TIMESTAMP(3),
+    WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND
+) WITH (
+    'connector' = 'kafka',
+    ...
+);
+
+INSERT INTO my_ctas_table (id, price, quantity, order_time)
+    SELECT id, price, quantity, order_time FROM source_table;
+```
+
+The `CREATE` part also lets you specify primary keys and distribution strategies. Notice that primary keys work only on `NOT NULL` columns. Currently, primary keys only allow you to define columns from the `SELECT` part which may be `NOT NULL`. The `CREATE` part does not allow `NOT NULL` column definitions.
+
+Consider the example statement below where `id` is a not null column in the `SELECT` part:
+
+```sql
+CREATE TABLE my_ctas_table (
+    PRIMARY KEY (id) NOT ENFORCED
+) DISTRIBUTED BY (id) INTO 4 buckets 
+AS SELECT id, name FROM source_table;
+```
+
+The resulting table `my_ctas_table` will be equivalent to create the following table and insert the data with the following statement:
+
+```
+CREATE TABLE my_ctas_table (
+    id BIGINT NOT NULL PRIMARY KEY NOT ENFORCED,
+    name STRING 
+) DISTRIBUTED BY (id) INTO 4 buckets;
+
+INSERT INTO my_ctas_table SELECT id, name FROM source_table;
+```
+
+`CTAS` also allows you to reorder the columns defined in the `SELECT` part by specifying all column names without data types in the `CREATE` part. This feature is equivalent to the `INSERT INTO` statement.
+The columns specified must match the names and number of columns in the `SELECT` part. This definition cannot be combined with new columns, which requires defining data types.
+
+Consider the example statement below:
+
+```sql
+CREATE TABLE my_ctas_table (
+    order_time, price, quantity, id
+) WITH (
+    'connector' = 'kafka',
+    ...
+) AS SELECT id, price, quantity, order_time FROM source_table;
+```
+
+The resulting table `my_ctas_table` will be equivalent to create the following table and insert the data with the following statement:
+
+```
+CREATE TABLE my_ctas_table (
+    order_time TIMESTAMP(3),
+    price DOUBLE,
+    quantity DOUBLE,
+    id BIGINT
+) WITH (
+    'connector' = 'kafka',
+    ...
+);
+
+INSERT INTO my_ctas_table (order_time, price, quantity, id)
+    SELECT id, price, quantity, order_time FROM source_table;
+```
+
+**Note:** CTAS has these restrictions:
+* Does not support creating a temporary table yet.
+* Does not support creating partitioned table yet.
+
 **注意：** CTAS 有如下约束：
 * 暂不支持创建临时表。
-* 暂不支持指定列信息。
-* 暂不支持指定 Watermark。
 * 暂不支持创建分区表。
-* 暂不支持主键约束。
 
 **注意：** 默认情况下，CTAS 是非原子性的，这意味着如果在向表中插入数据时发生错误，该表不会被自动删除。
 
@@ -567,7 +695,13 @@ INSERT INTO my_ctas_table SELECT id, name, age FROM source_table WHERE mod(id, 1
 ## [CREATE OR] REPLACE TABLE
 ```sql
 [CREATE OR] REPLACE TABLE [catalog_name.][db_name.]table_name
+  [(
+    { <physical_column_definition> | <metadata_column_definition> | <computed_column_definition> }[ , ...n]
+    [ <watermark_definition> ]
+    [ <table_constraint> ][ , ...n]
+  )]
 [COMMENT table_comment]
+[ <distribution> ]
 WITH (key1=val1, key2=val2, ...)
 AS select_query
 ```
@@ -607,12 +741,46 @@ CREATE TABLE my_rtas_table (
 INSERT INTO my_rtas_table SELECT id, name, age FROM source_table WHERE mod(id, 10) = 0;
 ```
 
+Similar to `CREATE TABLE AS`, `REPLACE TABLE AS` allows you to specify explicit columns, watermarks, primary keys and distribution strategies. The resulting table schema is built from the `CREATE` part first followed by the columns from the `SELECT` part. Columns named in both parts, in the `CREATE` and `SELECT` parts, keep the same column position as defined in the `SELECT` part. The data type of `SELECT` columns can also be overridden if specified in the `CREATE` part.
+
+Consider the example statement below:
+
+```sql
+REPLACE TABLE my_rtas_table (
+    desc STRING,
+    quantity DOUBLE,   
+    cost AS price * quantity,
+    WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND,
+    PRIMARY KEY (id) NOT ENFORCED
+) DISTRIBUTED BY (id) INTO 4 buckets
+AS SELECT id, price, quantity, order_time FROM source_table;
+```
+
+The resulting table `my_rtas_table` will be equivalent to create the following table and insert the data with the following statement:
+
+```sql
+DROP TABLE my_rtas_table;
+
+CREATE TABLE my_rtas_table (
+    desc STRING,
+    cost AS price * quantity,
+    id BIGINT NOT NULL PRIMARY KEY NOT ENFORCED,
+    price DOUBLE,
+    quantity DOUBLE,
+    order_time TIMESTAMP(3),
+    WATERMARK FOR order_time AS order_time - INTERVAL '5' SECOND
+) WITH (
+    'connector' = 'kafka',
+    ...
+);
+
+INSERT INTO my_rtas_table (id, price, quantity, order_time)
+    SELECT id, price, quantity, order_time FROM source_table;
+```
+
 **注意：** RTAS 有如下约束：
 * 暂不支持替换临时表。
-* 暂不支持指定列信息。
-* 暂不支持指定 Watermark。
 * 暂不支持创建分区表。
-* 暂不支持主键约束。
 
 **注意：** 默认情况下，RTAS 是非原子性的，这意味着如果在向表中插入数据时发生错误，该表不会被自动删除或还原成原来的表。
 **注意：** RTAS 会先删除表，然后创建表并写入数据。但如果表是在基于内存的 Catalog 里，删除表只会将其从 Catalog 里移除，并不会移除物理表中的数据。因此，执行RTAS语句之前的数据仍然存在。
@@ -628,18 +796,23 @@ INSERT INTO my_rtas_table SELECT id, name, age FROM source_table WHERE mod(id, 1
 ## CREATE CATALOG
 
 ```sql
-CREATE CATALOG catalog_name
+CREATE CATALOG [IF NOT EXISTS] catalog_name
+  [COMMENT catalog_comment]
   WITH (key1=val1, key2=val2, ...)
 ```
 
-Create a catalog with the given catalog properties. If a catalog with the same name already exists, an exception is thrown.
+根据给定的属性创建 catalog。若已存在同名 catalog，会抛出异常。
+
+**IF NOT EXISTS**
+
+若 catalog 已经存在，则不会进行任何操作。
 
 **WITH OPTIONS**
 
-Catalog properties used to store extra information related to this catalog.
-The key and value of expression `key1=val1` should both be string literal.
+catalog 属性一般用于存储关于这个 catalog 的额外的信息。
+表达式 `key1=val1` 中的键和值都需要是字符串文本常量。
 
-Check out more details at [Catalogs]({{< ref "docs/dev/table/catalogs" >}}).
+详情见 [Catalogs]({{< ref "docs/dev/table/catalogs" >}})。
 
 {{< top >}}
 

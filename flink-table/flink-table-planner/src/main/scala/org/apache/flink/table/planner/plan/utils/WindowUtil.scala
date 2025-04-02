@@ -17,38 +17,41 @@
  */
 package org.apache.flink.table.planner.plan.utils
 
+import org.apache.flink.configuration.ReadableConfig
 import org.apache.flink.table.api.{DataTypes, TableConfig, TableException, ValidationException}
+import org.apache.flink.table.api.config.ExecutionConfigOptions
 import org.apache.flink.table.planner.JBigDecimal
-import org.apache.flink.table.planner.calcite.{FlinkTypeFactory, RexSetSemanticsTableCall}
+import org.apache.flink.table.planner.calcite.{FlinkTypeFactory, RexTableArgCall}
 import org.apache.flink.table.planner.functions.sql.{FlinkSqlOperatorTable, SqlWindowTableFunction}
 import org.apache.flink.table.planner.plan.`trait`.RelWindowProperties
 import org.apache.flink.table.planner.plan.logical._
 import org.apache.flink.table.planner.plan.metadata.FlinkRelMetadataQuery
-import org.apache.flink.table.planner.plan.nodes.logical.{FlinkLogicalAggregate, FlinkLogicalJoin, FlinkLogicalRank, FlinkLogicalTableFunctionScan}
+import org.apache.flink.table.planner.plan.nodes.logical._
 import org.apache.flink.table.planner.plan.utils.AggregateUtil.inferAggAccumulatorNames
 import org.apache.flink.table.planner.plan.utils.WindowEmitStrategy.{TABLE_EXEC_EMIT_EARLY_FIRE_ENABLED, TABLE_EXEC_EMIT_LATE_FIRE_ENABLED}
 import org.apache.flink.table.planner.typeutils.RowTypeUtils
 import org.apache.flink.table.runtime.groupwindow._
+import org.apache.flink.table.runtime.operators.window.tvf.common.WindowAssigner
+import org.apache.flink.table.runtime.operators.window.tvf.slicing.SliceAssigner
 import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter.fromDataTypeToLogicalType
 import org.apache.flink.table.types.logical.TimestampType
 import org.apache.flink.table.types.logical.utils.LogicalTypeChecks.canBeTimeAttributeType
 
 import org.apache.calcite.plan.volcano.RelSubset
 import org.apache.calcite.rel.`type`.RelDataType
-import org.apache.calcite.rel.{RelNode, SingleRel}
+import org.apache.calcite.rel.{BiRel, RelNode, RelVisitor}
 import org.apache.calcite.rel.core._
 import org.apache.calcite.rex._
 import org.apache.calcite.sql.`type`.SqlTypeFamily
-import org.apache.calcite.sql.SqlKind
+import org.apache.calcite.sql.{SqlKind, SqlUtil}
 import org.apache.calcite.util.{ImmutableBitSet, Util}
 
 import java.time.Duration
 import java.util.Collections
 
-import scala.annotation.tailrec
 import scala.collection.JavaConversions._
 import scala.collection.mutable
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 
 /** Utilities for window table-valued functions. */
 object WindowUtil {
@@ -174,7 +177,7 @@ object WindowUtil {
   }
 
   def validateTimeFieldWithTimeAttribute(windowCall: RexCall, inputRowType: RelDataType): Unit = {
-    val timeIndex = getTimeAttributeIndex(windowCall.operands(0))
+    val timeIndex = getTimeAttributeIndex(windowCall)
     val fieldType = inputRowType.getFieldList.get(timeIndex).getType
     if (!FlinkTypeFactory.isTimeIndicatorType(fieldType)) {
       throw new ValidationException(
@@ -195,8 +198,8 @@ object WindowUtil {
           "function, can't convert it into WindowingStrategy")
     }
 
-    val timeIndex = getTimeAttributeIndex(windowCall.operands(0))
     val inputRowType = scanInput.getRowType
+    val timeIndex = getTimeAttributeIndex(windowCall)
     val fieldType = inputRowType.getFieldList.get(timeIndex).getType
     val timeAttributeType = FlinkTypeFactory.toLogicalType(fieldType)
     if (!canBeTimeAttributeType(timeAttributeType)) {
@@ -208,49 +211,69 @@ object WindowUtil {
     val windowFunction = windowCall.getOperator.asInstanceOf[SqlWindowTableFunction]
     val windowSpec = windowFunction match {
       case FlinkSqlOperatorTable.TUMBLE =>
-        val offset: Duration = if (windowCall.operands.size() == 3) {
-          Duration.ofMillis(getOperandAsLong(windowCall.operands(2)))
+        val offset: Duration = if (windowCall.operands.size() == 4) {
+          Duration.ofMillis(getOperandAsLong(windowCall.operands(3)))
         } else {
           null
         }
-        val interval = getOperandAsLong(windowCall.operands(1))
+        val interval = getOperandAsLong(windowCall.operands(2))
+        if (interval <= 0) {
+          throw new ValidationException(
+            s"TUMBLE table function based aggregate requires size to be positive," +
+              s" but got $interval ms.")
+        }
+        if (offset != null && Math.abs(offset.toMillis) >= interval) {
+          throw new ValidationException(
+            s"TUMBLE table function parameters must satisfy abs(offset) < size, " +
+              s"but got size $interval ms and offset ${offset.toMillis} ms.")
+        }
         new TumblingWindowSpec(Duration.ofMillis(interval), offset)
 
       case FlinkSqlOperatorTable.HOP =>
-        val offset = if (windowCall.operands.size() == 4) {
-          Duration.ofMillis(getOperandAsLong(windowCall.operands(3)))
+        val offset = if (windowCall.operands.size() == 5) {
+          Duration.ofMillis(getOperandAsLong(windowCall.operands(4)))
         } else {
           null
         }
-        val slide = getOperandAsLong(windowCall.operands(1))
-        val size = getOperandAsLong(windowCall.operands(2))
+        val slide = getOperandAsLong(windowCall.operands(2))
+        val size = getOperandAsLong(windowCall.operands(3))
+        if (slide <= 0 || size <= 0) {
+          throw new ValidationException(
+            s"HOP table function based aggregate requires slide and size to be positive," +
+              s" but got slide $slide ms and size $size ms.")
+        }
         new HoppingWindowSpec(Duration.ofMillis(size), Duration.ofMillis(slide), offset)
 
       case FlinkSqlOperatorTable.CUMULATE =>
-        val offset = if (windowCall.operands.size() == 4) {
-          Duration.ofMillis(getOperandAsLong(windowCall.operands(3)))
+        val offset = if (windowCall.operands.size() == 5) {
+          Duration.ofMillis(getOperandAsLong(windowCall.operands(4)))
         } else {
           null
         }
-        val step = getOperandAsLong(windowCall.operands(1))
-        val maxSize = getOperandAsLong(windowCall.operands(2))
+        val step = getOperandAsLong(windowCall.operands(2))
+        val maxSize = getOperandAsLong(windowCall.operands(3))
+        if (step <= 0 || maxSize <= 0) {
+          throw new ValidationException(
+            s"CUMULATE table function based aggregate requires maxSize and step to be positive," +
+              s" but got maxSize $maxSize ms and step $step ms.")
+        }
+        if (maxSize % step != 0) {
+          throw new ValidationException("CUMULATE table function based aggregate requires maxSize " +
+            s"must be an integral multiple of step, but got maxSize $maxSize ms and step $step ms.")
+        }
         new CumulativeWindowSpec(Duration.ofMillis(maxSize), Duration.ofMillis(step), offset)
       case FlinkSqlOperatorTable.SESSION =>
-        windowCall match {
-          // with syntax partition key
-          case setSemanticsTableCall: RexSetSemanticsTableCall =>
-            if (!setSemanticsTableCall.getOrderKeys.isEmpty) {
-              throw new ValidationException("Session window TVF doesn't support order by clause.")
-            }
-            val gap = getOperandAsLong(windowCall.operands(1))
-            new SessionWindowSpec(
-              Duration.ofMillis(gap),
-              windowCall.asInstanceOf[RexSetSemanticsTableCall].getPartitionKeys)
-          // without syntax partition key
-          case _ =>
-            val gap = getOperandAsLong(windowCall.operands(1))
-            new SessionWindowSpec(Duration.ofMillis(gap), new Array[Int](0))
+        val tableArgCall = windowCall.operands(0).asInstanceOf[RexTableArgCall]
+        if (!tableArgCall.getOrderKeys.isEmpty) {
+          throw new ValidationException("Session window TVF doesn't support order by clause.")
         }
+        val gap = getOperandAsLong(windowCall.operands(2))
+        if (gap <= 0) {
+          throw new ValidationException(
+            s"SESSION table function based aggregate requires gap to be positive," +
+              s" but got gap $gap ms.")
+        }
+        new SessionWindowSpec(Duration.ofMillis(gap), tableArgCall.getPartitionKeys)
     }
 
     new TimeAttributeWindowingStrategy(windowSpec, timeAttributeType, timeIndex)
@@ -333,7 +356,8 @@ object WindowUtil {
 
   /**
    * For rowtime window, return true if the given aggregate grouping contains window start and end.
-   * For proctime window, we should also check if it exists a neighbour windowTableFunctionCall.
+   * For proctime window, we should also check if it exists a neighbour windowTableFunctionCall and
+   * doesn't exist any [[RexCall]] on window time columns.
    *
    * If the window is a session window, we should also check if the partition keys are the same as
    * the group keys. See more at [[WindowUtil.validGroupKeyPartitionKey()]].
@@ -346,31 +370,45 @@ object WindowUtil {
       return false
     }
     if (WindowUtil.groupingContainsWindowStartEnd(grouping, windowProperties)) {
-      windowProperties.isRowtime || existNeighbourWindowTableFunc(agg.getInput)
+      isValidRowtimeWindow(windowProperties) || isValidProcTimeWindow(windowProperties, fmq, agg)
     } else {
       false
     }
+  }
+
+  def isAsyncStateEnabled(
+      config: ReadableConfig,
+      windowAssigner: WindowAssigner,
+      aggInfoList: AggregateInfoList): Boolean = {
+    if (!config.get(ExecutionConfigOptions.TABLE_EXEC_ASYNC_STATE_ENABLED)) {
+      return false
+    }
+    // currently, unsliced assigner does not support async state
+    if (!windowAssigner.isInstanceOf[SliceAssigner]) {
+      return false
+    }
+
+    AggregateUtil.isAsyncStateEnabled(config, aggInfoList)
   }
 
   // ------------------------------------------------------------------------------------------
   // Private Helpers
   // ------------------------------------------------------------------------------------------
 
-  private def getTimeAttributeIndex(operand: RexNode): Int = {
-    val timeAttributeIndex = operand match {
-      case call: RexCall if call.getKind == SqlKind.DESCRIPTOR =>
-        call.operands(0) match {
-          case inputRef: RexInputRef => inputRef.getIndex
-          case _ => -1
-        }
-      case _ => -1
-    }
-    if (timeAttributeIndex == -1) {
+  private def getTimeAttributeIndex(windowCall: RexNode): Int = {
+    val call = windowCall.asInstanceOf[RexCall]
+    val tableArg = call.operands(0)
+    val onTimeArg = call.operands(1)
+
+    val fieldName = RexLiteral.stringValue(onTimeArg.asInstanceOf[RexCall].operands(0))
+    val timeAttributeIndex = tableArg.getType.getField(fieldName, true, false)
+
+    if (timeAttributeIndex == null) {
       throw new TableException(
-        s"Failed to get time attribute index from $operand. " +
+        s"Failed to get time attribute index from $onTimeArg. " +
           "This is a bug, please file a JIRA issue.")
     }
-    timeAttributeIndex
+    timeAttributeIndex.getIndex
   }
 
   private def getOperandAsLong(operand: RexNode): Long = {
@@ -385,35 +423,94 @@ object WindowUtil {
     }
   }
 
-  private def existNeighbourWindowTableFunc(rel: RelNode): Boolean = {
+  private def isValidRowtimeWindow(windowProperties: RelWindowProperties): Boolean = {
+    // rowtime tvf window can support calculation on window columns even before aggregation
+    windowProperties.isRowtime
+  }
 
-    @tailrec
-    def find(rel: RelNode): Unit = {
-      rel match {
-        case rss: RelSubset =>
-          val innerRel = Option.apply(rss.getBest).getOrElse(rss.getOriginal)
-          find(innerRel)
+  /**
+   * If the middle Calc(s) contains call(s) on window columns, we should not convert the Aggregate
+   * into WindowAggregate but GroupAggregate instead.
+   *
+   * The valid plan structure is like:
+   *
+   * {{{
+   * Aggregate
+   *  |
+   * Calc (should not contain call on window columns)
+   *  |
+   * WindowTableFunctionScan
+   * }}}
+   *
+   * and unlike:
+   *
+   * {{{
+   * Aggregate
+   *  |
+   * Calc
+   *  |
+   * Aggregate
+   *  |
+   * Calc
+   *  |
+   * WindowTableFunctionScan
+   * }}}
+   */
+  private def isValidProcTimeWindow(
+      windowProperties: RelWindowProperties,
+      fmq: FlinkRelMetadataQuery,
+      agg: FlinkLogicalAggregate): Boolean = {
+    val calcMatcher = new CalcWindowFunctionScanMatcher
+    try {
+      calcMatcher.go(agg.getInput(0))
+    } catch {
+      case _: Throwable => // do nothing
+    }
+    if (!calcMatcher.existNeighbourWindowTableFunc) {
+      return false
+    }
+    var existCallOnWindowColumns = calcMatcher.calcNodes.nonEmpty &&
+      calcMatcher.calcNodes.exists(calc => calcContainsCallsOnWindowColumns(calc, fmq))
 
+    // aggregate call shouldn't be on window columns
+    val aggInputWindowProps = windowProperties.getWindowColumns
+    existCallOnWindowColumns = existCallOnWindowColumns || !agg.getAggCallList.forall {
+      call => aggInputWindowProps.intersect(ImmutableBitSet.of(call.getArgList)).isEmpty
+    }
+    // proctime tvf window can't support calculation on window columns before aggregation
+    !existCallOnWindowColumns
+  }
+
+  private class CalcWindowFunctionScanMatcher extends RelVisitor {
+    val calcNodes: ListBuffer[Calc] = ListBuffer[Calc]()
+    var existNeighbourWindowTableFunc = false
+
+    override def visit(node: RelNode, ordinal: Int, parent: RelNode): Unit = {
+      node match {
+        case calc: Calc =>
+          calcNodes += calc
+          // continue to visit children
+          super.visit(calc, 0, parent)
         case scan: FlinkLogicalTableFunctionScan =>
           if (WindowUtil.isWindowTableFunctionCall(scan.getCall)) {
+            existNeighbourWindowTableFunc = true
+            // stop visiting
             throw new Util.FoundOne
           }
-          find(scan.getInput(0))
-
-        // proctime attribute comes from these operators can not be used directly for proctime
-        // window aggregate, so further traversal of child nodes is unnecessary
-        case _: FlinkLogicalAggregate | _: FlinkLogicalRank | _: FlinkLogicalJoin =>
-
-        case sr: SingleRel => find(sr.getInput)
+        case rss: RelSubset =>
+          val innerRel = Option.apply(rss.getBest).getOrElse(rss.getOriginal)
+          // special case doesn't call super.visit for RelSubSet because it has no children
+          visit(innerRel, 0, rss)
+        case _: FlinkLogicalAggregate | _: FlinkLogicalMatch | _: FlinkLogicalOverAggregate |
+            _: FlinkLogicalRank | _: BiRel | _: SetOp =>
+          // proctime attribute comes from these operators can't be used directly for proctime
+          // window aggregate, so further tree walk is unnecessary
+          throw new Util.FoundOne
+        case _ =>
+          // continue to visit children
+          super.visit(node, ordinal, parent)
       }
     }
-
-    try {
-      find(rel)
-    } catch {
-      case _: Util.FoundOne => return true
-    }
-    false
   }
 
   /**

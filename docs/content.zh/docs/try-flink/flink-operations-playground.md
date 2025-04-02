@@ -83,8 +83,8 @@ Job 监控以及资源管理。Flink TaskManager 运行 worker 进程，
 环境搭建只需要几步就可以完成，我们将会带你过一遍必要的操作命令，
 并说明如何验证我们正在操作的一切都是运行正常的。
 
-你需要在自己的主机上提前安装好 [docker](https://docs.docker.com/) (1.12+) 和 
-[docker-compose](https://docs.docker.com/compose/) (2.1+)。
+你需要在自己的主机上提前安装好 [docker](https://docs.docker.com/) (20.10+) 和 
+[docker compose](https://docs.docker.com/compose/) (2.1+)。
 
 我们所使用的配置文件位于 
 [flink-playgrounds](https://github.com/apache/flink-playgrounds) 仓库中，
@@ -93,7 +93,7 @@ Job 监控以及资源管理。Flink TaskManager 运行 worker 进程，
 ```bash
 git clone https://github.com/apache/flink-playgrounds.git
 cd flink-playgrounds/operations-playground
-docker-compose build
+docker compose build
 ```
 
 接下来在开始运行之前先在 Docker 主机上创建检查点和保存点目录（这些卷由 jobmanager 和 taskmanager 挂载，如 docker-compose.yaml 中所指定的）：
@@ -106,13 +106,13 @@ mkdir -p /tmp/flink-savepoints-directory
 然后启动环境：
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 接下来你可以执行如下命令来查看正在运行中的 Docker 容器：
 
 ```bash
-docker-compose ps
+docker compose ps
 
                     Name                                  Command               State                   Ports                
 -----------------------------------------------------------------------------------------------------------------------------
@@ -130,7 +130,7 @@ operations-playground_zookeeper_1              /bin/sh -c /usr/sbin/sshd  ...   
 你可以执行如下命令停止 docker 环境：
 
 ```bash
-docker-compose down -v
+docker compose down -v
 ```
 
 <a name="entering-the-playground"></a>
@@ -157,10 +157,10 @@ Flink WebUI 界面包含许多关于 Flink 集群以及运行在其上的 Jobs �
 
 **JobManager**
 
-JobManager 日志可以通过 `docker-compose` 命令进行查看。
+JobManager 日志可以通过 `docker compose` 命令进行查看。
 
 ```bash
-docker-compose logs -f jobmanager
+docker compose logs -f jobmanager
 ```
 
 JobManager 刚启动完成之时，你会看到很多关于 checkpoint completion (检查点完成)的日志。
@@ -169,7 +169,7 @@ JobManager 刚启动完成之时，你会看到很多关于 checkpoint completio
 
 TaskManager 日志也可以通过同样的方式进行查看。
 ```bash
-docker-compose logs -f taskmanager
+docker compose logs -f taskmanager
 ```
 
 TaskManager 刚启动完成之时，你同样会看到很多关于 checkpoint completion (检查点完成)的日志。
@@ -179,7 +179,7 @@ TaskManager 刚启动完成之时，你同样会看到很多关于 checkpoint co
 [Flink CLI]({{< ref "docs/deployment/cli" >}}) 相关命令可以在 client 容器内进行使用。
 比如，想查看 Flink CLI 的 `help` 命令，可以通过如下方式进行查看：
 ```bash
-docker-compose run --no-deps client flink --help
+docker compose run --no-deps client flink --help
 ```
 
 ### Flink REST API
@@ -195,7 +195,7 @@ curl localhost:8081/jobs
 {{< hint info >}}
   **注意:** 如果你的主机上没有 _curl_ 命令，那么你可以通过 client 容器进行访问（类似于 Flink CLI 命令）：
 ```bash
-docker-compose run --no-deps client curl jobmanager:8081/jobs 
+docker compose run --no-deps client curl jobmanager:8081/jobs 
 ```
 {{< /hint >}}
 {{< /unstable >}}
@@ -205,11 +205,11 @@ docker-compose run --no-deps client curl jobmanager:8081/jobs
 可以运行如下命令查看 Kafka Topics 中的记录：
 ```bash
 //input topic (1000 records/s)
-docker-compose exec kafka kafka-console-consumer.sh \
+docker compose exec kafka kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic input
 
 //output topic (24 records/min)
-docker-compose exec kafka kafka-console-consumer.sh \
+docker compose exec kafka kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic output
 ```
 
@@ -230,7 +230,7 @@ docker-compose exec kafka kafka-console-consumer.sh \
 {{< tab "CLI" >}}
 **命令**
 ```bash
-docker-compose run --no-deps client flink list
+docker compose run --no-deps client flink list
 ```
 **预期输出**
 ```plain
@@ -281,7 +281,7 @@ curl localhost:8081/jobs
 为此，通过控制台命令消费 *output* topic，保持消费直到 Job 从失败中恢复 (Step 3)。
 
 ```bash
-docker-compose exec kafka kafka-console-consumer.sh \
+docker compose exec kafka kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic output
 ```
 
@@ -293,7 +293,7 @@ docker-compose exec kafka kafka-console-consumer.sh \
 TaskManager 进程挂掉、TaskManager 机器宕机或者从框架或用户代码中抛出的一个临时异常（例如，由于外部资源暂时不可用）而导致的失败。   
 
 ```bash
-docker-compose kill taskmanager
+docker compose kill taskmanager
 ```
 
 几秒钟后，JobManager 就会感知到 TaskManager 已失联，接下来它会
@@ -319,7 +319,7 @@ docker-compose kill taskmanager
 一旦 TaskManager 重启成功，它将会重新连接到 JobManager。
 
 ```bash
-docker-compose up -d taskmanager
+docker compose up -d taskmanager
 ```
 
 当 TaskManager 注册成功后，JobManager 就会将处于 `SCHEDULED` 状态的所有任务调度到该 TaskManager 
@@ -354,7 +354,7 @@ Savepoint 是整个应用程序状态的一次快照（类似于 checkpoint ）�
 以便观察在升级过程中没有数据丢失或损坏。
 
 ```bash
-docker-compose exec kafka kafka-console-consumer.sh \
+docker compose exec kafka kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic output
 ```
 
@@ -369,7 +369,7 @@ JobID 可以通过[获取所有运行中的 Job](#listing-running-jobs) 接口�
 {{< tab "CLI" >}}
 **命令**
 ```bash
-docker-compose run --no-deps client flink stop <job-id>
+docker compose run --no-deps client flink stop <job-id>
 ```
 **预期输出**
 ```bash
@@ -377,7 +377,7 @@ Suspending job "<job-id>" with a savepoint.
 Suspended job "<job-id>" with a savepoint.
 ```
 
-Savepoint 已保存在 `state.savepoints.dir` 指定的路径中，该配置在 [*Flink 配置文件*]({{< ref "docs/deployment/config#flink-配置文件" >}})
+Savepoint 已保存在 `execution.checkpointing.savepoint-dir` 指定的路径中，该配置在 [*Flink 配置文件*]({{< ref "docs/deployment/config#flink-配置文件" >}})
 中定义，[*Flink 配置文件*]({{< ref "docs/deployment/config#flink-配置文件" >}}) 挂载在本机的 */tmp/flink-savepoints-directory/* 目录下。
 在下一步操作中我们会用到这个 Savepoint 路径，如果我们是通过 REST API 操作的，
 那么 Savepoint 路径会随着响应结果一起返回，我们可以直接查看文件系统来确认 Savepoint 保存情况。
@@ -440,7 +440,7 @@ curl -X POST localhost:8081/jobs/<job-id>/stop -d '{"drain": false}'
 {{< tab "CLI" >}}
 **命令**
 ```bash
-docker-compose run --no-deps client flink run -s <savepoint-path> \
+docker compose run --no-deps client flink run -s <savepoint-path> \
   -d /opt/ClickCountJob.jar \
   --bootstrap.servers kafka:9092 --checkpointing --event-time
 ```
@@ -455,7 +455,7 @@ Job has been submitted with JobID <job-id>
 **请求**
 ```bash
 # 从客户端容器上传 JAR
-docker-compose run --no-deps client curl -X POST -H "Expect:" \
+docker compose run --no-deps client curl -X POST -H "Expect:" \
   -F "jarfile=@/opt/ClickCountJob.jar" http://jobmanager:8081/jars/upload
 ```
 
@@ -497,7 +497,7 @@ curl -X POST http://localhost:8081/jars/<jar-id>/run \
 {{< tab "CLI" >}}
 **命令**
 ```bash
-docker-compose run --no-deps client flink run -p 3 -s <savepoint-path> \
+docker compose run --no-deps client flink run -p 3 -s <savepoint-path> \
   -d /opt/ClickCountJob.jar \
   --bootstrap.servers kafka:9092 --checkpointing --event-time
 ```
@@ -512,7 +512,7 @@ Job has been submitted with JobID <job-id>
 **请求**
 ```bash
 # Uploading the JAR from the Client container
-docker-compose run --no-deps client curl -X POST -H "Expect:" \
+docker compose run --no-deps client curl -X POST -H "Expect:" \
   -F "jarfile=@/opt/ClickCountJob.jar" http://jobmanager:8081/jars/upload
 ```
 
@@ -541,7 +541,7 @@ curl -X POST http://localhost:8081/jars/<jar-id>/run \
 {{< /tabs >}}
 现在 Job 已重新提交，但由于我们提高了并行度所以导致 TaskSlots 不够用（1 个 TaskSlot 可用，总共需要 3 个），最终 Job 会重启失败。通过如下命令：
 ```bash
-docker-compose scale taskmanager=2
+docker compose scale taskmanager=2
 ```
 你可以向 Flink 集群添加第二个 TaskManager（为 Flink 集群提供 2 个 TaskSlots 资源），
 它会自动向 JobManager 注册，TaskManager 注册完成后，Job 会再次处于 "RUNNING" 状态。

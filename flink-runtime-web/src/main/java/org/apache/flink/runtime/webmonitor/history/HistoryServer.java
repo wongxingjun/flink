@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.webmonitor.history;
 
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.HistoryServerOptions;
@@ -46,6 +45,7 @@ import org.apache.flink.util.ExecutorUtils;
 import org.apache.flink.util.FatalExitExceptionHandler;
 import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.ParameterTool;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.ShutdownHookUtil;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
@@ -195,7 +195,7 @@ public class HistoryServer {
         webAddress = config.get(HistoryServerOptions.HISTORY_SERVER_WEB_ADDRESS);
         webPort = config.get(HistoryServerOptions.HISTORY_SERVER_WEB_PORT);
         webRefreshIntervalMillis =
-                config.get(HistoryServerOptions.HISTORY_SERVER_WEB_REFRESH_INTERVAL);
+                config.get(HistoryServerOptions.HISTORY_SERVER_WEB_REFRESH_INTERVAL).toMillis();
 
         String webDirectory = config.get(HistoryServerOptions.HISTORY_SERVER_WEB_DIR);
         if (webDirectory == null) {
@@ -237,7 +237,7 @@ public class HistoryServer {
         }
 
         refreshIntervalMillis =
-                config.get(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_REFRESH_INTERVAL);
+                config.get(HistoryServerOptions.HISTORY_SERVER_ARCHIVE_REFRESH_INTERVAL).toMillis();
         int maxHistorySize = config.get(HistoryServerOptions.HISTORY_SERVER_RETAINED_JOBS);
         if (maxHistorySize == 0 || maxHistorySize < -1) {
             throw new IllegalConfigurationException(

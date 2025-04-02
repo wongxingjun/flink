@@ -20,6 +20,7 @@ package org.apache.flink.table.planner.plan.rules.physical.batch;
 
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableConfig;
+import org.apache.flink.table.api.config.AggregatePhaseStrategy;
 import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.table.api.config.OptimizerConfigOptions;
 import org.apache.flink.table.planner.utils.BatchTableTestUtil;
@@ -38,9 +39,6 @@ class PushLocalAggIntoTableSourceScanRuleTest extends TableTestBase {
 
     @BeforeEach
     void setup() {
-        TableConfig tableConfig = util.tableEnv().getConfig();
-        tableConfig.set(
-                OptimizerConfigOptions.TABLE_OPTIMIZER_SOURCE_AGGREGATE_PUSHDOWN_ENABLED, true);
         String ddl =
                 "CREATE TABLE inventory (\n"
                         + "  id BIGINT,\n"
@@ -121,27 +119,28 @@ class PushLocalAggIntoTableSourceScanRuleTest extends TableTestBase {
 
     @Test
     void testDisablePushDownLocalAgg() {
-        // disable push down local agg
-        util.getTableEnv()
-                .getConfig()
-                .set(
-                        OptimizerConfigOptions.TABLE_OPTIMIZER_SOURCE_AGGREGATE_PUSHDOWN_ENABLED,
-                        false);
+        String ddl =
+                "CREATE TABLE inventory_without_agg_push_down (\n"
+                        + "  id BIGINT,\n"
+                        + "  name STRING not null,\n"
+                        + "  amount BIGINT,\n"
+                        + "  price BIGINT,\n"
+                        + "  type STRING\n"
+                        + ") WITH (\n"
+                        + " 'connector' = 'values',\n"
+                        + " 'filterable-fields' = 'id;type',\n"
+                        + " 'bounded' = 'true',\n"
+                        + " 'enable-aggregate-push-down' = 'false'\n"
+                        + ")";
+        util.tableEnv().executeSql(ddl);
 
         util.verifyRelPlan(
                 "SELECT\n"
                         + "  sum(amount),\n"
                         + "  name,\n"
                         + "  type\n"
-                        + "FROM inventory\n"
+                        + "FROM inventory_without_agg_push_down\n"
                         + "  group by name, type");
-
-        // reset config
-        util.getTableEnv()
-                .getConfig()
-                .set(
-                        OptimizerConfigOptions.TABLE_OPTIMIZER_SOURCE_AGGREGATE_PUSHDOWN_ENABLED,
-                        true);
     }
 
     @Test
@@ -274,7 +273,9 @@ class PushLocalAggIntoTableSourceScanRuleTest extends TableTestBase {
         // enable two-phase aggregate, otherwise there is no local aggregate
         util.getTableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "TWO_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.TWO_PHASE);
 
         util.verifyRelPlan(
                 "SELECT\n"

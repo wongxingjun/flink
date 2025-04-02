@@ -39,12 +39,12 @@ import org.apache.flink.runtime.state.LocalRecoveryConfig;
 import org.apache.flink.runtime.state.TestLocalRecoveryConfig;
 import org.apache.flink.runtime.state.TestTaskStateManager;
 import org.apache.flink.runtime.state.TestTaskStateManagerBuilder;
+import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
 import org.apache.flink.runtime.taskmanager.CheckpointResponder;
 import org.apache.flink.runtime.taskmanager.TaskManagerRuntimeInfo;
 import org.apache.flink.runtime.taskmanager.TestCheckpointResponder;
 import org.apache.flink.runtime.throughput.BufferDebloatConfiguration;
 import org.apache.flink.runtime.util.TestingTaskManagerRuntimeInfo;
-import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.graph.NonChainedOutput;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.graph.StreamConfig.InputConfig;
@@ -116,7 +116,6 @@ public class StreamTaskMailboxTestHarnessBuilder<OUT> {
             TypeInformation<OUT> outputType) {
         this.taskFactory = checkNotNull(taskFactory);
         outputSerializer = outputType.createSerializer(executionConfig.getSerializerConfig());
-        streamConfig.setTimeCharacteristic(TimeCharacteristic.EventTime);
     }
 
     public <T> StreamTaskMailboxTestHarnessBuilder<OUT> modifyExecutionConfig(
@@ -252,6 +251,9 @@ public class StreamTaskMailboxTestHarnessBuilder<OUT> {
         Queue<Object> outputList = new ArrayDeque<>();
         streamMockEnvironment.addOutput(outputList, outputStreamRecordSerializer);
         streamMockEnvironment.setTaskMetricGroup(taskMetricGroup);
+        streamMockEnvironment.setCheckpointStorageAccess(
+                new JobManagerCheckpointStorage()
+                        .createCheckpointStorage(streamMockEnvironment.getJobID()));
 
         for (ResultPartitionWriter writer : additionalOutputs) {
             streamMockEnvironment.addOutput(writer);
@@ -377,7 +379,6 @@ public class StreamTaskMailboxTestHarnessBuilder<OUT> {
                         ResultPartitionType.PIPELINED_BOUNDED));
 
         StreamConfig sourceConfig = new StreamConfig(new Configuration());
-        sourceConfig.setTimeCharacteristic(streamConfig.getTimeCharacteristic());
         sourceConfig.setVertexNonChainedOutputs(streamOutputsInOrder);
         sourceConfig.setChainedOutputs(chainedOutputs);
         sourceConfig.setTypeSerializerOut(sourceInput.getSourceSerializer());

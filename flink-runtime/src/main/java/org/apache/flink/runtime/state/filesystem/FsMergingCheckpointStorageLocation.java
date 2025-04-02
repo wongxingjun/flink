@@ -28,6 +28,7 @@ import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.state.filemerging.DirectoryStreamStateHandle;
 
 import java.io.IOException;
+import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -112,5 +113,27 @@ public class FsMergingCheckpointStorageLocation extends FsCheckpointStorageLocat
             CheckpointedStateScope scope) throws IOException {
         return fileMergingSnapshotManager.createCheckpointStateOutputStream(
                 subtaskKey, checkpointId, scope);
+    }
+
+    @Override
+    public void reusePreviousStateHandle(Collection<? extends StreamStateHandle> previousHandle) {
+        fileMergingSnapshotManager.reusePreviousStateHandle(checkpointId, previousHandle);
+    }
+
+    @Override
+    public boolean couldReuseStateHandle(StreamStateHandle stateHandle) {
+        return fileMergingSnapshotManager.couldReusePreviousStateHandle(stateHandle);
+    }
+
+    @Override
+    public String toString() {
+        return "FsMergingCheckpointStorageLocation {"
+                + "subtaskKey="
+                + subtaskKey
+                + ", FileMergingSnapshotManager="
+                + fileMergingSnapshotManager
+                + ", checkpointId="
+                + checkpointId
+                + "}";
     }
 }

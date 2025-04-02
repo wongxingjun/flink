@@ -19,9 +19,9 @@
 package org.apache.flink.runtime.rest.handler.job.checkpoints;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
+import org.apache.flink.runtime.checkpoint.DefaultCheckpointStatsTracker;
 import org.apache.flink.runtime.messages.FlinkJobNotFoundException;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
@@ -38,8 +38,8 @@ import org.apache.flink.runtime.webmonitor.TestingRestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 import org.apache.flink.util.concurrent.Executors;
 
-import org.apache.flink.shaded.guava31.com.google.common.cache.Cache;
-import org.apache.flink.shaded.guava31.com.google.common.cache.CacheBuilder;
+import org.apache.flink.shaded.guava33.com.google.common.cache.Cache;
+import org.apache.flink.shaded.guava33.com.google.common.cache.CacheBuilder;
 import org.apache.flink.shaded.netty4.io.netty.handler.codec.http.HttpResponseStatus;
 
 import org.junit.jupiter.api.Test;
@@ -57,15 +57,13 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOf
 /** Test class for {@link AbstractCheckpointStatsHandler}. */
 class AbstractCheckpointStatsHandlerTest {
 
-    private static final Time TIMEOUT = Time.seconds(10);
+    private static final Duration TIMEOUT = Duration.ofSeconds(10);
 
     private static final JobID JOB_ID = new JobID();
 
     private static final CheckpointStatsTracker checkpointStatsTracker =
-            new CheckpointStatsTracker(
-                    10,
-                    UnregisteredMetricGroups.createUnregisteredTaskManagerMetricGroup(),
-                    new JobID());
+            new DefaultCheckpointStatsTracker(
+                    10, UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
 
     @Test
     void testRetrieveSnapshotFromCache() throws Exception {
@@ -238,7 +236,7 @@ class AbstractCheckpointStatsHandlerTest {
 
         protected RecordingCheckpointStatsHandler(
                 GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-                Time timeout,
+                Duration timeout,
                 Map<String, String> responseHeaders,
                 MessageHeaders<EmptyRequestBody, CheckpointingStatistics, JobMessageParameters>
                         messageHeaders,
@@ -277,7 +275,7 @@ class AbstractCheckpointStatsHandlerTest {
 
         protected ThrowingCheckpointStatsHandler(
                 GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-                Time timeout,
+                Duration timeout,
                 Map<String, String> responseHeaders,
                 MessageHeaders<EmptyRequestBody, CheckpointingStatistics, JobMessageParameters>
                         messageHeaders,

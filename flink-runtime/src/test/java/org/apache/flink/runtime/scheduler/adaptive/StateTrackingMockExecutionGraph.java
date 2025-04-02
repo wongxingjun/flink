@@ -50,12 +50,14 @@ import org.apache.flink.runtime.executiongraph.TaskExecutionStateTransition;
 import org.apache.flink.runtime.executiongraph.failover.ResultPartitionAvailabilityChecker;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.query.KvStateLocationRegistry;
 import org.apache.flink.runtime.scheduler.InternalFailuresListener;
+import org.apache.flink.runtime.scheduler.VertexParallelismStore;
 import org.apache.flink.runtime.scheduler.exceptionhistory.TestingAccessExecution;
 import org.apache.flink.runtime.scheduler.strategy.SchedulingTopology;
 import org.apache.flink.runtime.scheduler.strategy.TestingSchedulingTopology;
@@ -77,6 +79,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 /**
  * Mocked ExecutionGraph which (partially) tracks the job status, and provides some basic mocks to
@@ -88,6 +92,7 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
             LoggerFactory.getLogger(StateTrackingMockExecutionGraph.class);
 
     private JobStatus state = JobStatus.INITIALIZING;
+    private JobType jobType = JobType.STREAMING;
     private final CompletableFuture<JobStatus> terminationFuture = new CompletableFuture<>();
     private final JobID jobId = new JobID();
     private static final ArchivedExecutionConfig archivedExecutionConfig =
@@ -125,6 +130,11 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
     }
 
     @Override
+    public JobType getJobType() {
+        return jobType;
+    }
+
+    @Override
     public CompletableFuture<JobStatus> getTerminationFuture() {
         return terminationFuture;
     }
@@ -158,7 +168,8 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
 
     @Override
     public Map<JobVertexID, ExecutionJobVertex> getAllVertices() {
-        return Collections.emptyMap();
+        return StreamSupport.stream(getVerticesTopologically().spliterator(), false)
+                .collect(Collectors.toMap(ExecutionJobVertex::getJobVertexId, v -> v));
     }
 
     @Override
@@ -174,6 +185,11 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
     @Override
     public String getJsonPlan() {
         return "";
+    }
+
+    @Override
+    public String getStreamGraphJson() {
+        return null;
     }
 
     @Override
@@ -239,6 +255,11 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
     }
 
     @Override
+    public int getPendingOperatorCount() {
+        return 0;
+    }
+
+    @Override
     public StringifiedAccumulatorResult[] getAccumulatorResultsStringified() {
         return new StringifiedAccumulatorResult[0];
     }
@@ -284,12 +305,6 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
     @Nullable
     @Override
     public CheckpointCoordinator getCheckpointCoordinator() {
-        throw new UnsupportedOperationException();
-    }
-
-    @Nullable
-    @Override
-    public CheckpointStatsTracker getCheckpointStatsTracker() {
         throw new UnsupportedOperationException();
     }
 
@@ -397,6 +412,15 @@ class StateTrackingMockExecutionGraph implements ExecutionGraph {
 
     @Override
     public void notifyNewlyInitializedJobVertices(List<ExecutionJobVertex> vertices) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void addNewJobVertices(
+            List<JobVertex> sortedJobVertices,
+            JobManagerJobMetricGroup jobManagerJobMetricGroup,
+            VertexParallelismStore newVerticesParallelismStore)
+            throws JobException {
         throw new UnsupportedOperationException();
     }
 

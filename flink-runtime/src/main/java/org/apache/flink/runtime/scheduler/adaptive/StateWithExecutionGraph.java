@@ -141,7 +141,8 @@ abstract class StateWithExecutionGraph implements State {
         return executionGraph;
     }
 
-    JobID getJobId() {
+    @Override
+    public JobID getJobId() {
         return executionGraph.getJobID();
     }
 
@@ -253,8 +254,11 @@ abstract class StateWithExecutionGraph implements State {
                 executionAttemptID, checkpointId, checkpointMetrics);
     }
 
-    void reportInitializationMetrics(SubTaskInitializationMetrics initializationMetrics) {
-        executionGraphHandler.reportInitializationMetrics(initializationMetrics);
+    void reportInitializationMetrics(
+            ExecutionAttemptID executionAttemptId,
+            SubTaskInitializationMetrics initializationMetrics) {
+        executionGraphHandler.reportInitializationMetrics(
+                executionAttemptId, initializationMetrics);
     }
 
     void updateAccumulators(AccumulatorSnapshot accumulatorSnapshot) {

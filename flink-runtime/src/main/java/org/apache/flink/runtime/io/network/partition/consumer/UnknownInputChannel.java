@@ -168,11 +168,12 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
     // Graduation to a local or remote input channel at runtime
     // ------------------------------------------------------------------------
 
-    public RemoteInputChannel toRemoteInputChannel(ConnectionID producerAddress) {
+    public RemoteInputChannel toRemoteInputChannel(
+            ConnectionID producerAddress, ResultPartitionID resultPartitionID) {
         return new RemoteInputChannel(
                 inputGate,
                 getChannelIndex(),
-                partitionId,
+                resultPartitionID,
                 consumedSubpartitionIndexSet,
                 checkNotNull(producerAddress),
                 connectionManager,
@@ -195,8 +196,8 @@ class UnknownInputChannel extends InputChannel implements ChannelStateHolder {
                 taskEventPublisher,
                 initialBackoff,
                 maxBackoff,
-                metrics.getNumBytesInRemoteCounter(),
-                metrics.getNumBuffersInRemoteCounter(),
+                metrics.getNumBytesInLocalCounter(),
+                metrics.getNumBuffersInLocalCounter(),
                 channelStateWriter == null ? ChannelStateWriter.NO_OP : channelStateWriter);
     }
 

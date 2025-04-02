@@ -74,11 +74,7 @@ stored in a variable `JOB_ID` for the commands below:
 $ export JOB_ID="cca7bc1061d61cf15238e92312c2fc20"
 ```
 
-There is another action called `run-application` available to run the job in 
-[Application Mode]({{< ref "docs/deployment/overview" >}}#application-mode). This documentation does not address
-this action individually as it works similarly to the `run` action in terms of the CLI frontend.
-
-The `run` and `run-application` commands support passing additional configuration parameters via the
+The `run` command support passing additional configuration parameters via the
 `-D` argument. For example setting the [maximum parallelism]({{< ref "docs/deployment/config#pipeline-max-parallelism" >}}#application-mode) 
 for a job can be done by setting `-Dpipeline.max-parallelism=120`. This argument is very useful for
 configuring application mode clusters, because you can pass any configuration parameter 
@@ -117,7 +113,7 @@ Savepoint completed. Path: file:/tmp/flink-savepoints/savepoint-cca7bc-bb1e257f0
 You can resume your program from this savepoint with the run command.
 ```
 The savepoint folder is optional and needs to be specified if 
-[state.savepoints.dir]({{< ref "docs/deployment/config" >}}#state-savepoints-dir) isn't set.
+[execution.checkpointing.savepoint-dir]({{< ref "docs/deployment/config" >}}#state-savepoints-dir) isn't set.
 
 Lastly, you can optionally provide what should be the [binary format]({{< ref "docs/ops/state/savepoints" >}}#savepoint-format) of the savepoint.
 
@@ -236,7 +232,7 @@ Suspending job "cca7bc1061d61cf15238e92312c2fc20" with a savepoint.
 Savepoint completed. Path: file:/tmp/flink-savepoints/savepoint-cca7bc-bb1e257f0dab
 ```
 We have to use `--savepointPath` to specify the savepoint folder if 
-[state.savepoints.dir]({{< ref "docs/deployment/config" >}}#state-savepoints-dir) isn't set.
+[execution.checkpointing.savepoint-dir]({{< ref "docs/deployment/config" >}}#state-savepoints-dir) isn't set.
 
 If the `--drain` flag is specified, then a `MAX_WATERMARK` will be emitted before the last checkpoint 
 barrier. This will make all registered event-time timers fire, thus flushing out any state that 
@@ -274,7 +270,7 @@ Use the [stop](#stopping-a-job-gracefully-creating-a-final-savepoint) action ins
 
 ### Starting a Job from a Savepoint
 
-Starting a job from a savepoint can be achieved using the `run` (and `run-application`) action.
+Starting a job from a savepoint can be achieved using the `run` action.
 ```bash
 $ ./bin/flink run \
       --detached \ 
@@ -338,14 +334,6 @@ Here's an overview of actions supported by Flink's CLI tool:
             </td>
         </tr>
         <tr>
-            <td><code class="highlighter-rouge">run-application</code></td>
-            <td>
-                This action executes jobs in <a href="{{< ref "docs/deployment/overview" >}}#application-mode">
-                Application Mode</a>. Other than that, it requires the same parameters as the 
-                <code class="highlighter-rouge">run</code> action.
-            </td>
-        </tr>
-        <tr>
             <td><code class="highlighter-rouge">info</code></td>
             <td>
                 This action can be used to print an optimized execution graph of the passed job. Again,
@@ -363,7 +351,7 @@ Here's an overview of actions supported by Flink's CLI tool:
             <td>
                 This action can be used to create or disposing savepoints for a given job. It might be
                 necessary to specify a savepoint directory besides the JobID, if the 
-                <a href="{{< ref "docs/deployment/config" >}}#state-savepoints-dir">state.savepoints.dir</a> 
+                <a href="{{< ref "docs/deployment/config" >}}#state-savepoints-dir">execution.checkpointing.savepoint-dir</a> 
                 parameter was not specified in <code class="highlighter-rouge">Flink configuration file</code>.
             </td>
         </tr>
@@ -413,17 +401,15 @@ Resource Provider section. Jobs can be submitted in different [Deployment Modes]
 The parameterization of a job submission differs based on the underlying framework and Deployment Mode. 
 
 `bin/flink` offers a parameter `--target` to handle the different options. In addition to that, jobs 
-have to be submitted using either `run` (for [Session]({{< ref "docs/deployment/overview" >}}#session-mode) 
-and [Per-Job Mode (deprecated)]({{< ref "docs/deployment/overview" >}}#per-job-mode)) or `run-application` (for 
-[Application Mode]({{< ref "docs/deployment/overview" >}}#application-mode)). See the following summary of 
+have to be submitted using `run` (for [Session]({{< ref "docs/deployment/overview" >}}#session-mode) 
+and [Application Mode]({{< ref "docs/deployment/overview" >}}#application-mode)). See the following summary of 
 parameter combinations: 
 * YARN
   * `./bin/flink run --target yarn-session`: Submission to an already running Flink on YARN cluster
-  * `./bin/flink run --target yarn-per-job`: Submission spinning up a Flink on YARN cluster in Per-Job Mode (deprecated)
-  * `./bin/flink run-application --target yarn-application`: Submission spinning up Flink on YARN cluster in Application Mode
+  * `./bin/flink run --target yarn-application`: Submission spinning up Flink on YARN cluster in Application Mode
 * Kubernetes
   * `./bin/flink run --target kubernetes-session`: Submission to an already running Flink on Kubernetes cluster
-  * `./bin/flink run-application --target kubernetes-application`: Submission spinning up a Flink on Kubernetes cluster in Application Mode
+  * `./bin/flink run --target kubernetes-application`: Submission spinning up a Flink on Kubernetes cluster in Application Mode
 * Standalone:
   * `./bin/flink run --target local`: Local submission using a MiniCluster in Session Mode
   * `./bin/flink run --target remote`: Submission to an already running Flink cluster
@@ -484,16 +470,9 @@ $ ./bin/flink run \
       --python examples/python/table/word_count.py
 ```
 
-- Run a PyFlink job using a [YARN cluster in Per-Job Mode]({{< ref "docs/deployment/resource-providers/yarn" >}}#per-job-cluster-mode):
-```bash
-$ ./bin/flink run \
-      --target yarn-per-job
-      --python examples/python/table/word_count.py
-```
-
 - Run a PyFlink job using a [YARN cluster in Application Mode]({{< ref "docs/deployment/resource-providers/yarn" >}}#application-mode):
 ```bash
-$ ./bin/flink run-application -t yarn-application \
+$ ./bin/flink run -t yarn-application \
       -Djobmanager.memory.process.size=1024m \
       -Dtaskmanager.memory.process.size=1024m \
       -Dyarn.application.name=<ApplicationName> \
@@ -514,7 +493,7 @@ If the size of an archive file is more than 2 GB, you could upload it to a distr
 
 - Run a PyFlink application on a native Kubernetes cluster having the cluster ID `<ClusterId>`, it requires a docker image with PyFlink installed, please refer to [Enabling PyFlink in docker]({{< ref "docs/deployment/resource-providers/standalone/docker" >}}#enabling-python):
 ```bash
-$ ./bin/flink run-application \
+$ ./bin/flink run \
       --target kubernetes-application \
       --parallelism 8 \
       -Dkubernetes.cluster-id=<ClusterId> \
@@ -532,7 +511,7 @@ Resource Provider section.
 
 Besides `--pyFiles`, `--pyModule` and `--python` mentioned above, there are also some other Python
 related options. Here's an overview of all the Python related options for the actions
-`run` and `run-application` supported by Flink's CLI tool:
+`run` supported by Flink's CLI tool:
 <table class="table table-bordered">
     <thead>
         <tr>
@@ -585,7 +564,7 @@ related options. Here's an overview of all the Python related options for the ac
             <td><code class="highlighter-rouge">-pyclientexec,--pyClientExecutable</code></td>
             <td>
                 The path of the Python interpreter used to launch the Python process when submitting
-                the Python jobs via \"flink run\" or compiling the Java/Scala jobs containing
+                the Python jobs via \"flink run\" or compiling the Java jobs containing
                 Python UDFs.
                 (e.g., --pyArchives file:///tmp/py37.zip --pyClientExecutable py37.zip/py37/python)
             </td>
@@ -595,7 +574,7 @@ related options. Here's an overview of all the Python related options for the ac
             <td>
                 Specify the path of the python interpreter used to execute the python UDF worker
                 (e.g.: --pyExecutable /usr/local/bin/python3).
-                The python UDF worker depends on Python 3.8+, Apache Beam (version == 2.43.0),
+                The python UDF worker depends on Python 3.8+, Apache Beam (version >= 2.54.0,<= 2.61.0),
                 Pip (version >= 20.3) and SetupTools (version >= 37.0.0).
                 Please ensure that the specified environment meets the above requirements.
             </td>

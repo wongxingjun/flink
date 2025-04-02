@@ -38,7 +38,7 @@ public interface NonKeyedPartitionStream<T> extends DataStream {
      * @param processFunction to perform operation.
      * @return new stream with this operation.
      */
-    <OUT> NonKeyedPartitionStream<OUT> process(
+    <OUT> ProcessConfigurableAndNonKeyedPartitionStream<OUT> process(
             OneInputStreamProcessFunction<T, OUT> processFunction);
 
     /**
@@ -47,7 +47,7 @@ public interface NonKeyedPartitionStream<T> extends DataStream {
      * @param processFunction to perform two output operation.
      * @return new stream with this operation.
      */
-    <OUT1, OUT2> TwoNonKeyedPartitionStreams<OUT1, OUT2> process(
+    <OUT1, OUT2> ProcessConfigurableAndTwoNonKeyedPartitionStream<OUT1, OUT2> process(
             TwoOutputStreamProcessFunction<T, OUT1, OUT2> processFunction);
 
     /**
@@ -57,7 +57,7 @@ public interface NonKeyedPartitionStream<T> extends DataStream {
      * @param processFunction to perform operation.
      * @return new stream with this operation.
      */
-    <T_OTHER, OUT> NonKeyedPartitionStream<OUT> connectAndProcess(
+    <T_OTHER, OUT> ProcessConfigurableAndNonKeyedPartitionStream<OUT> connectAndProcess(
             NonKeyedPartitionStream<T_OTHER> other,
             TwoInputNonBroadcastStreamProcessFunction<T, T_OTHER, OUT> processFunction);
 
@@ -67,7 +67,7 @@ public interface NonKeyedPartitionStream<T> extends DataStream {
      * @param processFunction to perform operation.
      * @return new stream with this operation.
      */
-    <T_OTHER, OUT> NonKeyedPartitionStream<OUT> connectAndProcess(
+    <T_OTHER, OUT> ProcessConfigurableAndNonKeyedPartitionStream<OUT> connectAndProcess(
             BroadcastStream<T_OTHER> other,
             TwoInputBroadcastStreamProcessFunction<T, T_OTHER, OUT> processFunction);
 
@@ -101,18 +101,26 @@ public interface NonKeyedPartitionStream<T> extends DataStream {
      */
     BroadcastStream<T> broadcast();
 
-    void toSink(Sink<T> sink);
+    ProcessConfigurable<?> toSink(Sink<T> sink);
+
+    /** This interface represents a configurable {@link NonKeyedPartitionStream}. */
+    @Experimental
+    interface ProcessConfigurableAndNonKeyedPartitionStream<T>
+            extends NonKeyedPartitionStream<T>,
+                    ProcessConfigurable<ProcessConfigurableAndNonKeyedPartitionStream<T>> {}
 
     /**
      * This interface represents a combination of two {@link NonKeyedPartitionStream}. It will be
      * used as the return value of operation with two output.
      */
     @Experimental
-    interface TwoNonKeyedPartitionStreams<T1, T2> {
+    interface ProcessConfigurableAndTwoNonKeyedPartitionStream<OUT1, OUT2>
+            extends ProcessConfigurable<
+                    ProcessConfigurableAndTwoNonKeyedPartitionStream<OUT1, OUT2>> {
         /** Get the first stream. */
-        NonKeyedPartitionStream<T1> getFirst();
+        ProcessConfigurableAndNonKeyedPartitionStream<OUT1> getFirst();
 
         /** Get the second stream. */
-        NonKeyedPartitionStream<T2> getSecond();
+        ProcessConfigurableAndNonKeyedPartitionStream<OUT2> getSecond();
     }
 }

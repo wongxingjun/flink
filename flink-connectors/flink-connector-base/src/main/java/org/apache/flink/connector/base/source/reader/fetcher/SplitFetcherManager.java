@@ -38,6 +38,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -60,6 +61,7 @@ import static org.apache.flink.configuration.PipelineOptions.ALLOW_UNALIGNED_SOU
 @PublicEvolving
 public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
     private static final Logger LOG = LoggerFactory.getLogger(SplitFetcherManager.class);
+    static final String THREAD_NAME_PREFIX = "Source Data Fetcher for ";
 
     private final Consumer<Throwable> errorHandler;
 
@@ -79,6 +81,13 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
     protected final Map<Integer, SplitFetcher<E, SplitT>> fetchers;
 
     /**
+     * To Track the total number of fetcher threads that needs to be cleaned up when the
+     * SplitFetcherManager shuts down. It is different from the fetchers Map as the map only
+     * contains alive fetchers, but not shutting down fetchers.
+     */
+    private final AtomicInteger fetchersToShutDown;
+
+    /**
      * An executor service with two threads. One for the fetcher and one for the future completing
      * thread.
      */
@@ -94,69 +103,6 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
     private final Consumer<Collection<String>> splitFinishedHook;
 
     private final boolean allowUnalignedSourceSplits;
-
-    /**
-     * Create a split fetcher manager.
-     *
-     * @param elementsQueue the queue that split readers will put elements into.
-     * @param splitReaderFactory a supplier that could be used to create split readers.
-     * @param configuration the configuration of this fetcher manager.
-     * @deprecated Please use {@link #SplitFetcherManager(Supplier, Configuration)} instead.
-     */
-    @Deprecated
-    public SplitFetcherManager(
-            FutureCompletingBlockingQueue<RecordsWithSplitIds<E>> elementsQueue,
-            Supplier<SplitReader<E, SplitT>> splitReaderFactory,
-            Configuration configuration) {
-        this(elementsQueue, splitReaderFactory, configuration, (ignore) -> {});
-    }
-
-    /**
-     * Create a split fetcher manager.
-     *
-     * @param elementsQueue the queue that split readers will put elements into.
-     * @param splitReaderFactory a supplier that could be used to create split readers.
-     * @param configuration the configuration of this fetcher manager.
-     * @param splitFinishedHook Hook for handling finished splits in split fetchers.
-     * @deprecated Please use {@link #SplitFetcherManager(Supplier, Configuration, Consumer)}
-     *     instead.
-     */
-    @Deprecated
-    @VisibleForTesting
-    public SplitFetcherManager(
-            FutureCompletingBlockingQueue<RecordsWithSplitIds<E>> elementsQueue,
-            Supplier<SplitReader<E, SplitT>> splitReaderFactory,
-            Configuration configuration,
-            Consumer<Collection<String>> splitFinishedHook) {
-        this.elementsQueue = elementsQueue;
-        this.errorHandler =
-                new Consumer<Throwable>() {
-                    @Override
-                    public void accept(Throwable t) {
-                        LOG.error("Received uncaught exception.", t);
-                        if (!uncaughtFetcherException.compareAndSet(null, t)) {
-                            // Add the exception to the exception list.
-                            uncaughtFetcherException.get().addSuppressed(t);
-                        }
-                        // Wake up the main thread to let it know the exception.
-                        elementsQueue.notifyAvailable();
-                    }
-                };
-        this.splitReaderFactory = splitReaderFactory;
-        this.splitFinishedHook = splitFinishedHook;
-        this.uncaughtFetcherException = new AtomicReference<>(null);
-        this.fetcherIdGenerator = new AtomicInteger(0);
-        this.fetchers = new ConcurrentHashMap<>();
-        this.allowUnalignedSourceSplits = configuration.get(ALLOW_UNALIGNED_SOURCE_SPLITS);
-
-        // Create the executor with a thread factory that fails the source reader if one of
-        // the fetcher thread exits abnormally.
-        final String taskThreadName = Thread.currentThread().getName();
-        this.executors =
-                Executors.newCachedThreadPool(
-                        r -> new Thread(r, "Source Data Fetcher for " + taskThreadName));
-        this.closed = false;
-    }
 
     /**
      * Create a split fetcher manager.
@@ -202,13 +148,14 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
         this.fetcherIdGenerator = new AtomicInteger(0);
         this.fetchers = new ConcurrentHashMap<>();
         this.allowUnalignedSourceSplits = configuration.get(ALLOW_UNALIGNED_SOURCE_SPLITS);
+        this.fetchersToShutDown = new AtomicInteger(0);
 
         // Create the executor with a thread factory that fails the source reader if one of
         // the fetcher thread exits abnormally.
         final String taskThreadName = Thread.currentThread().getName();
         this.executors =
                 Executors.newCachedThreadPool(
-                        r -> new Thread(r, "Source Data Fetcher for " + taskThreadName));
+                        r -> new Thread(r, THREAD_NAME_PREFIX + taskThreadName));
         this.closed = false;
     }
 
@@ -259,6 +206,7 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
         SplitReader<E, SplitT> splitReader = splitReaderFactory.get();
 
         int fetcherId = fetcherIdGenerator.getAndIncrement();
+        fetchersToShutDown.incrementAndGet();
         SplitFetcher<E, SplitT> splitFetcher =
                 new SplitFetcher<>(
                         fetcherId,
@@ -267,6 +215,7 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
                         errorHandler,
                         () -> {
                             fetchers.remove(fetcherId);
+                            fetchersToShutDown.decrementAndGet();
                             // We need this to synchronize status of fetchers to concurrent partners
                             // as
                             // ConcurrentHashMap's aggregate status methods including size, isEmpty,
@@ -292,7 +241,7 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
             SplitFetcher<E, SplitT> fetcher = entry.getValue();
             if (fetcher.isIdle()) {
                 LOG.info("Closing splitFetcher {} because it is idle.", entry.getKey());
-                fetcher.shutdown();
+                fetcher.shutdown(true);
                 iter.remove();
             }
         }
@@ -315,14 +264,39 @@ public abstract class SplitFetcherManager<E, SplitT extends SourceSplit> {
      * @throws Exception when failed to close the split fetcher manager.
      */
     public synchronized void close(long timeoutMs) throws Exception {
+        final long startTime = System.currentTimeMillis();
         closed = true;
         fetchers.values().forEach(SplitFetcher::shutdown);
+        // Actively drain the element queue in case there are previously shutting down
+        // fetcher threads blocking on putting batches into the element queue.
+        executors.submit(
+                () -> {
+                    long timeElapsed = System.currentTimeMillis() - startTime;
+                    while (fetchersToShutDown.get() > 0 && timeElapsed < timeoutMs) {
+                        try {
+                            elementsQueue
+                                    .getAvailabilityFuture()
+                                    .thenRun(() -> elementsQueue.poll().recycle())
+                                    .get(timeoutMs - timeElapsed, TimeUnit.MILLISECONDS);
+                        } catch (ExecutionException ee) {
+                            // Ignore the exception and continue.
+                        } catch (Exception e) {
+                            LOG.warn(
+                                    "Received exception when waiting for the fetchers to "
+                                            + "shutdown.",
+                                    e);
+                            break;
+                        }
+                        timeElapsed = System.currentTimeMillis() - startTime;
+                    }
+                });
         executors.shutdown();
-        if (!executors.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)) {
+        long timeElapsed = System.currentTimeMillis() - startTime;
+        if (!executors.awaitTermination(timeoutMs - timeElapsed, TimeUnit.MILLISECONDS)) {
             LOG.warn(
-                    "Failed to close the source reader in {} ms. There are still {} split fetchers running",
+                    "Failed to close the split fetchers in {} ms. There are still {} split fetchers running",
                     timeoutMs,
-                    fetchers.size());
+                    fetchersToShutDown.get());
         }
     }
 

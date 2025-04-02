@@ -27,14 +27,15 @@ import org.apache.flink.util.NetUtils;
 import org.apache.flink.util.TimeUtils;
 import org.apache.flink.util.function.FunctionUtils;
 
+import org.apache.flink.shaded.netty4.io.netty.util.internal.logging.InternalLoggerFactory;
+import org.apache.flink.shaded.netty4.io.netty.util.internal.logging.Slf4JLoggerFactory;
+
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import org.apache.pekko.actor.ActorRef;
 import org.apache.pekko.actor.ActorSystem;
 import org.apache.pekko.actor.Address;
 import org.apache.pekko.actor.AddressFromURIString;
-import org.jboss.netty.logging.InternalLoggerFactory;
-import org.jboss.netty.logging.Slf4JLoggerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -210,15 +211,11 @@ class PekkoUtils {
 
         final String startupTimeout =
                 TimeUtils.getStringInMillis(
-                        TimeUtils.parseDuration(
-                                configuration.get(
-                                        RpcOptions.STARTUP_TIMEOUT,
-                                        TimeUtils.getStringInMillis(
-                                                askTimeout.multipliedBy(10L)))));
+                        configuration.get(
+                                RpcOptions.STARTUP_TIMEOUT, askTimeout.multipliedBy(10L)));
 
         final String tcpTimeout =
-                TimeUtils.getStringInMillis(
-                        TimeUtils.parseDuration(configuration.get(RpcOptions.TCP_TIMEOUT)));
+                TimeUtils.getStringInMillis(configuration.get(RpcOptions.TCP_TIMEOUT));
 
         final String framesize = configuration.get(RpcOptions.FRAMESIZE);
 
@@ -326,6 +323,8 @@ class PekkoUtils {
                 configuration.get(
                         SecurityOptions.SSL_INTERNAL_KEYSTORE_PASSWORD,
                         configuration.get(SecurityOptions.SSL_KEYSTORE_PASSWORD));
+        final String sslKeyStoreType =
+                configuration.get(SecurityOptions.SSL_INTERNAL_KEYSTORE_TYPE);
 
         final String sslKeyPassword =
                 configuration.get(
@@ -341,6 +340,8 @@ class PekkoUtils {
                 configuration.get(
                         SecurityOptions.SSL_INTERNAL_TRUSTSTORE_PASSWORD,
                         configuration.get(SecurityOptions.SSL_TRUSTSTORE_PASSWORD));
+        final String sslTrustStoreType =
+                configuration.get(SecurityOptions.SSL_INTERNAL_TRUSTSTORE_TYPE);
 
         final String sslCertFingerprintString =
                 configuration.get(SecurityOptions.SSL_INTERNAL_CERT_FINGERPRINT);
@@ -372,9 +373,11 @@ class PekkoUtils {
                 .add("        security {")
                 .add("          key-store = \"" + sslKeyStore + "\"")
                 .add("          key-store-password = \"" + sslKeyStorePassword + "\"")
+                .add("          key-store-type = \"" + sslKeyStoreType + "\"")
                 .add("          key-password = \"" + sslKeyPassword + "\"")
                 .add("          trust-store = \"" + sslTrustStore + "\"")
                 .add("          trust-store-password = \"" + sslTrustStorePassword + "\"")
+                .add("          trust-store-type = \"" + sslTrustStoreType + "\"")
                 .add("          protocol = " + sslProtocol + "")
                 .add("          enabled-algorithms = " + sslAlgorithms + "")
                 .add("          random-number-generator = \"\"")

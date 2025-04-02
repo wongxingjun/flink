@@ -18,10 +18,8 @@
 
 package org.apache.flink.api.java.typeutils;
 
-import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.serialization.SerializerConfig;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeInformationTestBase;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple1;
@@ -47,19 +45,13 @@ class TupleTypeInfoTest extends TypeInformationTestBase<TupleTypeInfo<?>> {
                 new TupleTypeInfo<>(BasicTypeInfo.INT_TYPE_INFO);
 
         TupleTypeInfoBase<Tuple1> anonymousTupleTypeInfo =
-                new TupleTypeInfoBase<Tuple1>(
-                        Tuple1.class, (TypeInformation<?>) BasicTypeInfo.INT_TYPE_INFO) {
+                new TupleTypeInfoBase<Tuple1>(Tuple1.class, BasicTypeInfo.INT_TYPE_INFO) {
 
                     private static final long serialVersionUID = -7985593598027660836L;
 
                     @Override
                     public TypeSerializer<Tuple1> createSerializer(SerializerConfig config) {
                         return null;
-                    }
-
-                    @Override
-                    public TypeSerializer<Tuple1> createSerializer(ExecutionConfig config) {
-                        return createSerializer(config.getSerializerConfig());
                     }
 
                     @Override

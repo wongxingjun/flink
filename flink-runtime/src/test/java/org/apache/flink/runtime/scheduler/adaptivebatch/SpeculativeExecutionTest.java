@@ -55,8 +55,8 @@ import org.apache.flink.testutils.executor.TestExecutorExtension;
 import org.apache.flink.util.ExecutorUtils;
 import org.apache.flink.util.concurrent.ManuallyTriggeredScheduledExecutor;
 
-import org.apache.flink.shaded.guava31.com.google.common.collect.ImmutableMap;
-import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava33.com.google.common.collect.ImmutableMap;
+import org.apache.flink.shaded.guava33.com.google.common.collect.Iterables;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -85,6 +85,7 @@ import static org.apache.flink.runtime.scheduler.SchedulerTestingUtils.createCan
 import static org.apache.flink.runtime.scheduler.SchedulerTestingUtils.createFailedTaskExecutionState;
 import static org.apache.flink.runtime.scheduler.SchedulerTestingUtils.createFinishedTaskExecutionState;
 import static org.apache.flink.runtime.scheduler.adaptivebatch.AdaptiveBatchSchedulerTest.createResultPartitionBytesForExecution;
+import static org.apache.flink.runtime.util.JobVertexConnectionUtils.connectNewDataSetAsInput;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link AdaptiveBatchScheduler} with speculative execution enabled. */
@@ -361,7 +362,7 @@ class SpeculativeExecutionTest {
             ResultPartitionType resultPartitionType) throws Exception {
         final JobVertex source = createNoOpVertex("source", 1);
         final JobVertex sink = createNoOpVertex("sink", -1);
-        sink.connectNewDataSetAsInput(source, DistributionPattern.ALL_TO_ALL, resultPartitionType);
+        connectNewDataSetAsInput(sink, source, DistributionPattern.ALL_TO_ALL, resultPartitionType);
         final JobGraph jobGraph = JobGraphTestUtils.batchJobGraph(source, sink);
 
         final ComponentMainThreadExecutor mainThreadExecutor =
@@ -408,11 +409,11 @@ class SpeculativeExecutionTest {
         final Execution attempt1 = ev.getCurrentExecutionAttempt();
 
         notifySlowTask(scheduler, attempt1);
-        assertThat(getNumSlowExecutionVertices(scheduler)).isEqualTo(1);
+        assertThat(getNumSlowExecutionVertices(scheduler)).isOne();
 
         // notify a slow vertex twice
         notifySlowTask(scheduler, attempt1);
-        assertThat(getNumSlowExecutionVertices(scheduler)).isEqualTo(1);
+        assertThat(getNumSlowExecutionVertices(scheduler)).isOne();
 
         // vertex no longer slow
         notifySlowTask(scheduler, Collections.emptyMap());
@@ -432,7 +433,7 @@ class SpeculativeExecutionTest {
         final Execution attempt2 = getExecution(ev, 1);
         scheduler.updateTaskExecutionState(
                 createFinishedTaskExecutionState(attempt2.getAttemptId()));
-        assertThat(getNumEffectiveSpeculativeExecutions(scheduler)).isEqualTo(1);
+        assertThat(getNumEffectiveSpeculativeExecutions(scheduler)).isOne();
 
         // complete cancellation
         scheduler.updateTaskExecutionState(

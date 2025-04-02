@@ -19,22 +19,27 @@
 package org.apache.flink.datastream.impl.operators;
 
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.datastream.api.context.ProcessingTimeManager;
 import org.apache.flink.datastream.api.function.TwoOutputStreamProcessFunction;
-import org.apache.flink.datastream.impl.common.KeyCheckedOutputCollector;
-import org.apache.flink.datastream.impl.common.OutputCollector;
-import org.apache.flink.datastream.impl.common.TimestampCollector;
+import org.apache.flink.datastream.impl.context.DefaultProcessingTimeManager;
+import org.apache.flink.datastream.impl.extension.eventtime.functions.EventTimeWrappedTwoOutputStreamProcessFunction;
+import org.apache.flink.runtime.state.VoidNamespace;
+import org.apache.flink.runtime.state.VoidNamespaceSerializer;
+import org.apache.flink.streaming.api.operators.InternalTimer;
+import org.apache.flink.streaming.api.operators.InternalTimerService;
+import org.apache.flink.streaming.api.operators.Triggerable;
 import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
+import java.util.function.Supplier;
+
 /** */
 public class KeyedTwoOutputProcessOperator<KEY, IN, OUT_MAIN, OUT_SIDE>
-        extends TwoOutputProcessOperator<IN, OUT_MAIN, OUT_SIDE> {
-
-    @Nullable private final KeySelector<OUT_MAIN, KEY> mainOutKeySelector;
-
-    @Nullable private final KeySelector<OUT_SIDE, KEY> sideOutKeySelector;
+        extends BaseKeyedTwoOutputProcessOperator<KEY, IN, OUT_MAIN, OUT_SIDE>
+        implements Triggerable<KEY, VoidNamespace> {
+    private transient InternalTimerService<VoidNamespace> timerService;
 
     public KeyedTwoOutputProcessOperator(
             TwoOutputStreamProcessFunction<IN, OUT_MAIN, OUT_SIDE> userFunction,
@@ -47,32 +52,49 @@ public class KeyedTwoOutputProcessOperator<KEY, IN, OUT_MAIN, OUT_SIDE>
             OutputTag<OUT_SIDE> outputTag,
             @Nullable KeySelector<OUT_MAIN, KEY> mainOutKeySelector,
             @Nullable KeySelector<OUT_SIDE, KEY> sideOutKeySelector) {
-        super(userFunction, outputTag);
+        super(userFunction, outputTag, mainOutKeySelector, sideOutKeySelector);
         Preconditions.checkArgument(
                 (mainOutKeySelector == null && sideOutKeySelector == null)
                         || (mainOutKeySelector != null && sideOutKeySelector != null),
                 "Both mainOutKeySelector and sideOutKeySelector must be null or not null.");
-        this.mainOutKeySelector = mainOutKeySelector;
-        this.sideOutKeySelector = sideOutKeySelector;
     }
 
     @Override
-    protected TimestampCollector<OUT_MAIN> getMainCollector() {
-        return mainOutKeySelector != null && sideOutKeySelector != null
-                ? new KeyCheckedOutputCollector<>(
-                        new OutputCollector<>(output),
-                        mainOutKeySelector,
-                        () -> (KEY) getCurrentKey())
-                : new OutputCollector<>(output);
+    public void open() throws Exception {
+        this.timerService =
+                getInternalTimerService("processing timer", VoidNamespaceSerializer.INSTANCE, this);
+        super.open();
+    }
+
+    protected ProcessingTimeManager getProcessingTimeManager() {
+        return new DefaultProcessingTimeManager(timerService);
     }
 
     @Override
-    public TimestampCollector<OUT_SIDE> getSideCollector() {
-        return mainOutKeySelector != null && sideOutKeySelector != null
-                ? new KeyCheckedOutputCollector<>(
-                        new SideOutputCollector(output),
-                        sideOutKeySelector,
-                        () -> (KEY) getCurrentKey())
-                : new SideOutputCollector(output);
+    public void onEventTime(InternalTimer<KEY, VoidNamespace> timer) throws Exception {
+        if (userFunction instanceof EventTimeWrappedTwoOutputStreamProcessFunction) {
+            ((EventTimeWrappedTwoOutputStreamProcessFunction<IN, OUT_MAIN, OUT_SIDE>) userFunction)
+                    .onEventTime(
+                            timer.getTimestamp(),
+                            getMainCollector(),
+                            getSideCollector(),
+                            partitionedContext);
+        }
+    }
+
+    @Override
+    public void onProcessingTime(InternalTimer<KEY, VoidNamespace> timer) throws Exception {
+        userFunction.onProcessingTimer(
+                timer.getTimestamp(), getMainCollector(), getSideCollector(), partitionedContext);
+    }
+
+    @Override
+    protected InternalTimerService<VoidNamespace> getTimerService() {
+        return timerService;
+    }
+
+    @Override
+    protected Supplier<Long> getEventTimeSupplier() {
+        return () -> timerService.currentWatermark();
     }
 }

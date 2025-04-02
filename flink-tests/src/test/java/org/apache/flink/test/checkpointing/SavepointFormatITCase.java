@@ -31,7 +31,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.configuration.StateChangelogOptions;
-import org.apache.flink.core.execution.RestoreMode;
+import org.apache.flink.core.execution.RecoveryClaimMode;
 import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.metadata.CheckpointMetadata;
@@ -49,7 +49,6 @@ import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.testutils.logging.LoggerAuditingExtension;
 import org.apache.flink.util.TestLogger;
 
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -58,6 +57,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
+
+import javax.annotation.Nonnull;
 
 import java.nio.file.Path;
 import java.util.LinkedList;
@@ -187,7 +188,7 @@ public class SavepointFormatITCase extends TestLogger {
 
             @Override
             protected String getConfigName() {
-                return "filesystem";
+                return "hashmap";
             }
 
             @Override
@@ -271,7 +272,7 @@ public class SavepointFormatITCase extends TestLogger {
         }
     }
 
-    @NotNull
+    @Nonnull
     private Predicate<OperatorState> hasKeyedState() {
         return op ->
                 op.hasSubtaskStates()
@@ -295,7 +296,7 @@ public class SavepointFormatITCase extends TestLogger {
         final JobGraph jobGraph = createJobGraph(config);
         jobGraph.setSavepointRestoreSettings(
                 SavepointRestoreSettings.forPath(
-                        renamedSavepointDir.toUri().toString(), false, RestoreMode.CLAIM));
+                        renamedSavepointDir.toUri().toString(), false, RecoveryClaimMode.CLAIM));
 
         final JobID jobId = jobGraph.getJobID();
         ClusterClient<?> client = cluster.getClusterClient();

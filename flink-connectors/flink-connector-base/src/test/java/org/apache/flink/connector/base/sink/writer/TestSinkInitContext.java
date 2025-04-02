@@ -47,7 +47,7 @@ import java.util.OptionalLong;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ScheduledFuture;
 
-/** A mock implementation of a {@code Sink.InitContext} to be used in sink unit tests. */
+/** A mock implementation of a {@code WriterInitContext} to be used in sink unit tests. */
 public class TestSinkInitContext implements WriterInitContext {
 
     private static final TestProcessingTimeService processingTimeService;
@@ -124,9 +124,8 @@ public class TestSinkInitContext implements WriterInitContext {
             @Override
             public ScheduledFuture<?> registerTimer(
                     long time, ProcessingTimeCallback processingTimerCallback) {
-                processingTimeService.registerTimer(
+                return processingTimeService.registerTimer(
                         time, processingTimerCallback::onProcessingTime);
-                return null;
             }
         };
     }

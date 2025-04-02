@@ -18,34 +18,37 @@
 
 package org.apache.flink.runtime.asyncprocessing;
 
-import org.apache.flink.api.common.operators.MailboxExecutor;
 import org.apache.flink.core.state.InternalStateFuture;
+import org.apache.flink.core.state.StateFutureImpl.AsyncFrameworkExceptionHandler;
 
 /**
  * An internal factory for {@link InternalStateFuture} that build future with necessary context
  * switch and wired with mailbox executor.
  */
-public class StateFutureFactory<R, K> {
+public class StateFutureFactory<K> {
 
-    private final AsyncExecutionController<R, K> asyncExecutionController;
-    private final MailboxExecutor mailboxExecutor;
+    private final AsyncExecutionController<K> asyncExecutionController;
+    private final CallbackRunnerWrapper callbackRunner;
+    private final AsyncFrameworkExceptionHandler exceptionHandler;
 
     StateFutureFactory(
-            AsyncExecutionController<R, K> asyncExecutionController,
-            MailboxExecutor mailboxExecutor) {
+            AsyncExecutionController<K> asyncExecutionController,
+            CallbackRunnerWrapper callbackRunner,
+            AsyncFrameworkExceptionHandler exceptionHandler) {
         this.asyncExecutionController = asyncExecutionController;
-        this.mailboxExecutor = mailboxExecutor;
+        this.callbackRunner = callbackRunner;
+        this.exceptionHandler = exceptionHandler;
     }
 
-    public <OUT> InternalStateFuture<OUT> create(RecordContext<R, K> context) {
+    public <OUT> InternalStateFuture<OUT> create(RecordContext<K> context) {
         return new ContextStateFutureImpl<>(
                 (runnable) ->
-                        mailboxExecutor.submit(
+                        callbackRunner.submit(
                                 () -> {
                                     asyncExecutionController.setCurrentContext(context);
                                     runnable.run();
-                                },
-                                "State callback."),
+                                }),
+                exceptionHandler,
                 context);
     }
 }

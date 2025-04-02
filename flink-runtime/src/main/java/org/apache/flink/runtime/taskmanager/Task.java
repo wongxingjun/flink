@@ -54,7 +54,6 @@ import org.apache.flink.runtime.executiongraph.TaskInformation;
 import org.apache.flink.runtime.externalresource.ExternalResourceInfoProvider;
 import org.apache.flink.runtime.filecache.FileCache;
 import org.apache.flink.runtime.io.disk.iomanager.IOManager;
-import org.apache.flink.runtime.io.network.NettyShuffleEnvironment;
 import org.apache.flink.runtime.io.network.TaskEventDispatcher;
 import org.apache.flink.runtime.io.network.api.writer.ResultPartitionWriter;
 import org.apache.flink.runtime.io.network.partition.PartitionProducerStateProvider;
@@ -62,6 +61,7 @@ import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.io.network.partition.consumer.IndexedInputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointableTask;
@@ -161,6 +161,9 @@ public class Task
 
     /** The job that the task belongs to. */
     private final JobID jobId;
+
+    /** The type of this job. */
+    private final JobType jobType;
 
     /** The vertex in the JobGraph whose code the task executes. */
     private final JobVertexID vertexId;
@@ -282,6 +285,7 @@ public class Task
 
     /** atomic flag that makes sure the invokable is canceled exactly once upon error. */
     private final AtomicBoolean invokableHasBeenCanceled;
+
     /**
      * The invokable of this task, if initialized. All accesses must copy the reference and check
      * for null, as this field is cleared as part of the disposal logic.
@@ -352,6 +356,7 @@ public class Task
                         String.valueOf(slotAllocationId));
 
         this.jobId = jobInformation.getJobId();
+        this.jobType = jobInformation.getJobType();
         this.vertexId = taskInformation.getJobVertexId();
         this.executionId = Preconditions.checkNotNull(executionAttemptID);
         this.allocationId = Preconditions.checkNotNull(slotAllocationId);
@@ -364,8 +369,10 @@ public class Task
         this.serializedExecutionConfig = jobInformation.getSerializedExecutionConfig();
 
         Configuration tmConfig = taskManagerConfig.getConfiguration();
-        this.taskCancellationInterval = tmConfig.get(TaskManagerOptions.TASK_CANCELLATION_INTERVAL);
-        this.taskCancellationTimeout = tmConfig.get(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT);
+        this.taskCancellationInterval =
+                tmConfig.get(TaskManagerOptions.TASK_CANCELLATION_INTERVAL).toMillis();
+        this.taskCancellationTimeout =
+                tmConfig.get(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT).toMillis();
 
         this.memoryManager = Preconditions.checkNotNull(memManager);
         this.sharedResources = Preconditions.checkNotNull(sharedResources);
@@ -424,13 +431,6 @@ public class Task
             inputGates[counter++] =
                     new InputGateWithMetrics(
                             gate, metrics.getIOMetricGroup().getNumBytesInCounter());
-        }
-
-        if (shuffleEnvironment instanceof NettyShuffleEnvironment) {
-            //noinspection deprecation
-            ((NettyShuffleEnvironment) shuffleEnvironment)
-                    .registerLegacyNetworkMetrics(
-                            metrics.getIOMetricGroup(), resultPartitionWriters, gates);
         }
 
         invokableHasBeenCanceled = new AtomicBoolean(false);
@@ -636,13 +636,15 @@ public class Task
             taskCancellationInterval =
                     executionConfigConfiguration
                             .getOptional(TaskManagerOptions.TASK_CANCELLATION_INTERVAL)
-                            .orElse(taskCancellationInterval);
+                            .orElse(Duration.ofMillis(taskCancellationInterval))
+                            .toMillis();
 
             // override task cancellation timeout from Flink config if set in ExecutionConfig
             taskCancellationTimeout =
                     executionConfigConfiguration
                             .getOptional(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT)
-                            .orElse(taskCancellationTimeout);
+                            .orElse(Duration.ofMillis(taskCancellationTimeout))
+                            .toMillis();
 
             if (isCanceledOrFailed()) {
                 throw new CancelTaskException();
@@ -695,6 +697,7 @@ public class Task
             Environment env =
                     new RuntimeEnvironment(
                             jobId,
+                            jobType,
                             vertexId,
                             executionId,
                             executionConfig,
@@ -1200,10 +1203,17 @@ public class Task
                 return;
             }
 
-            if (current == ExecutionState.DEPLOYING || current == ExecutionState.CREATED) {
+            if (current == ExecutionState.CREATED) {
                 if (transitionState(current, targetState, cause)) {
                     // if we manage this state transition, then the invokable gets never called
                     // we need not call cancel on it
+                    return;
+                }
+            } else if (current == ExecutionState.DEPLOYING) {
+                if (transitionState(current, targetState, cause)) {
+                    // task may hang on the invokable constructor or static code
+                    // we need watchdog to ensure the task does not remain hanging
+                    startTaskCancellationWatchDog();
                     return;
                 }
             } else if (current == ExecutionState.INITIALIZING
@@ -1268,29 +1278,7 @@ public class Task
                                 FatalExitExceptionHandler.INSTANCE);
                         interruptingThread.start();
 
-                        // if a cancellation timeout is set, the watchdog thread kills the process
-                        // if graceful cancellation does not succeed
-                        if (taskCancellationTimeout > 0) {
-                            Runnable cancelWatchdog =
-                                    new TaskCancelerWatchDog(
-                                            taskInfo,
-                                            executingThread,
-                                            taskManagerActions,
-                                            taskCancellationTimeout,
-                                            jobId);
-
-                            Thread watchDogThread =
-                                    new Thread(
-                                            executingThread.getThreadGroup(),
-                                            cancelWatchdog,
-                                            String.format(
-                                                    "Cancellation Watchdog for %s (%s).",
-                                                    taskNameWithSubtask, executionId));
-                            watchDogThread.setDaemon(true);
-                            watchDogThread.setUncaughtExceptionHandler(
-                                    FatalExitExceptionHandler.INSTANCE);
-                            watchDogThread.start();
-                        }
+                        startTaskCancellationWatchDog();
                     }
                     return;
                 }
@@ -1300,6 +1288,31 @@ public class Task
                                 "Unexpected state: %s of task %s (%s).",
                                 current, taskNameWithSubtask, executionId));
             }
+        }
+    }
+
+    private void startTaskCancellationWatchDog() {
+        // if a cancellation timeout is set, the watchdog thread kills the process
+        // if graceful cancellation does not succeed
+        if (taskCancellationTimeout > 0) {
+            Runnable cancelWatchdog =
+                    new TaskCancelerWatchDog(
+                            taskInfo,
+                            executingThread,
+                            taskManagerActions,
+                            taskCancellationTimeout,
+                            jobId);
+
+            Thread watchDogThread =
+                    new Thread(
+                            executingThread.getThreadGroup(),
+                            cancelWatchdog,
+                            String.format(
+                                    "Cancellation Watchdog for %s (%s).",
+                                    taskNameWithSubtask, executionId));
+            watchDogThread.setDaemon(true);
+            watchDogThread.setUncaughtExceptionHandler(FatalExitExceptionHandler.INSTANCE);
+            watchDogThread.start();
         }
     }
 

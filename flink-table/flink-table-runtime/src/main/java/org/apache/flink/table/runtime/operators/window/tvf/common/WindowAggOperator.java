@@ -32,7 +32,6 @@ import org.apache.flink.runtime.memory.MemoryManager;
 import org.apache.flink.runtime.state.KeyedStateBackend;
 import org.apache.flink.runtime.state.StateInitializationContext;
 import org.apache.flink.runtime.state.StateSnapshotContext;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.InternalTimer;
 import org.apache.flink.streaming.api.operators.InternalTimerService;
 import org.apache.flink.streaming.api.operators.KeyContext;
@@ -44,8 +43,8 @@ import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.operators.TableStreamOperator;
-import org.apache.flink.table.runtime.operators.window.tvf.slicing.SlicingWindowProcessor;
-import org.apache.flink.table.runtime.operators.window.tvf.unslicing.UnslicingWindowProcessor;
+import org.apache.flink.table.runtime.operators.window.tvf.slicing.SlicingSyncStateWindowProcessor;
+import org.apache.flink.table.runtime.operators.window.tvf.unslicing.UnslicingSyncStateWindowProcessor;
 
 import java.util.Collections;
 
@@ -90,7 +89,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * <p>Note: currently, {@link WindowAggOperator} doesn't support early-fire and late-arrival. Thus
  * late elements (elements belong to emitted windows) will be simply dropped.
  *
- * <p>See more in {@link SlicingWindowProcessor} and {@link UnslicingWindowProcessor}.
+ * <p>See more in {@link SlicingSyncStateWindowProcessor} and {@link
+ * UnslicingSyncStateWindowProcessor}.
  */
 @Internal
 public final class WindowAggOperator<K, W> extends TableStreamOperator<RowData>
@@ -103,33 +103,35 @@ public final class WindowAggOperator<K, W> extends TableStreamOperator<RowData>
     private static final String WATERMARK_LATENCY_METRIC_NAME = "watermarkLatency";
 
     /** The concrete window operator implementation. */
-    protected final WindowProcessor<W> windowProcessor;
+    private final SyncStateWindowProcessor<W> windowProcessor;
+
+    private final boolean isEventTime;
 
     // ------------------------------------------------------------------------
 
     /** This is used for emitting elements with a given timestamp. */
-    protected transient TimestampedCollector<RowData> collector;
+    private transient TimestampedCollector<RowData> collector;
 
     /** The service to register timers. */
-    protected transient InternalTimerService<W> internalTimerService;
+    private transient InternalTimerService<W> internalTimerService;
 
     /** The tracked processing time triggered last time. */
-    protected transient long lastTriggeredProcessingTime;
+    private transient long lastTriggeredProcessingTime;
 
     /** The operator state to store watermark. */
-    protected transient ListState<Long> watermarkState;
+    private transient ListState<Long> watermarkState;
 
     // ------------------------------------------------------------------------
     // Metrics
     // ------------------------------------------------------------------------
 
-    protected transient Counter numLateRecordsDropped;
-    protected transient Meter lateRecordsDroppedRate;
-    protected transient Gauge<Long> watermarkLatency;
+    private transient Counter numLateRecordsDropped;
+    private transient Meter lateRecordsDroppedRate;
+    private transient Gauge<Long> watermarkLatency;
 
-    public WindowAggOperator(WindowProcessor<W> windowProcessor) {
+    public WindowAggOperator(SyncStateWindowProcessor<W> windowProcessor, boolean isEventTime) {
         this.windowProcessor = windowProcessor;
-        setChainingStrategy(ChainingStrategy.ALWAYS);
+        this.isEventTime = isEventTime;
     }
 
     @Override
@@ -145,7 +147,7 @@ public final class WindowAggOperator<K, W> extends TableStreamOperator<RowData>
                         "window-timers", windowProcessor.createWindowSerializer(), this);
 
         windowProcessor.open(
-                new WindowProcessorContext<>(
+                new WindowProcessorSyncStateContext<>(
                         getContainingTask(),
                         getContainingTask().getEnvironment().getMemoryManager(),
                         computeMemorySize(),
@@ -222,7 +224,11 @@ public final class WindowAggOperator<K, W> extends TableStreamOperator<RowData>
     @Override
     public void processWatermark(Watermark mark) throws Exception {
         if (mark.getTimestamp() > currentWatermark) {
-            windowProcessor.advanceProgress(mark.getTimestamp());
+            // If this is a proctime window, progress should not be advanced by watermark, or it'll
+            // disturb timer-based processing
+            if (isEventTime) {
+                windowProcessor.advanceProgress(mark.getTimestamp());
+            }
             super.processWatermark(mark);
         } else {
             super.processWatermark(new Watermark(currentWatermark));
@@ -261,8 +267,9 @@ public final class WindowAggOperator<K, W> extends TableStreamOperator<RowData>
         windowProcessor.prepareCheckpoint();
     }
 
-    /** Context implementation for {@link WindowProcessor.Context}. */
-    private static final class WindowProcessorContext<W> implements WindowProcessor.Context<W> {
+    /** Context implementation for {@link SyncStateWindowProcessor.SyncStateContext}. */
+    private static final class WindowProcessorSyncStateContext<W>
+            implements SyncStateWindowProcessor.SyncStateContext<W> {
 
         private final Object operatorOwner;
         private final MemoryManager memoryManager;
@@ -272,7 +279,7 @@ public final class WindowAggOperator<K, W> extends TableStreamOperator<RowData>
         private final Output<RowData> collector;
         private final RuntimeContext runtimeContext;
 
-        private WindowProcessorContext(
+        private WindowProcessorSyncStateContext(
                 Object operatorOwner,
                 MemoryManager memoryManager,
                 long memorySize,

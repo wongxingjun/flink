@@ -18,6 +18,7 @@
 package org.apache.flink.table.planner.plan.batch.sql;
 
 import org.apache.flink.table.api.TableConfig;
+import org.apache.flink.table.api.config.AggregatePhaseStrategy;
 import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.table.api.config.OptimizerConfigOptions;
 import org.apache.flink.table.planner.utils.BatchTableTestUtil;
@@ -34,13 +35,6 @@ class ForwardHashExchangeTest extends TableTestBase {
     @BeforeEach
     void before() {
         util = batchTestUtil(TableConfig.getDefault());
-
-        util.tableEnv()
-                .getConfig()
-                .getConfiguration()
-                .set(
-                        OptimizerConfigOptions.TABLE_OPTIMIZER_SOURCE_AGGREGATE_PUSHDOWN_ENABLED,
-                        false);
         util.tableEnv()
                 .executeSql(
                         "CREATE TABLE T (\n"
@@ -50,7 +44,8 @@ class ForwardHashExchangeTest extends TableTestBase {
                                 + "  d BIGINT\n"
                                 + ") WITH (\n"
                                 + " 'connector' = 'values',\n"
-                                + " 'bounded' = 'true'\n"
+                                + " 'bounded' = 'true',\n"
+                                + " 'enable-aggregate-push-down' = 'false'\n"
                                 + ")");
         util.tableEnv()
                 .executeSql(
@@ -61,7 +56,8 @@ class ForwardHashExchangeTest extends TableTestBase {
                                 + "  d1 BIGINT\n"
                                 + ") WITH (\n"
                                 + " 'connector' = 'values',\n"
-                                + " 'bounded' = 'true'\n"
+                                + " 'bounded' = 'true',\n"
+                                + " 'enable-aggregate-push-down' = 'false'\n"
                                 + ")");
         util.tableEnv()
                 .executeSql(
@@ -72,7 +68,8 @@ class ForwardHashExchangeTest extends TableTestBase {
                                 + "  d2 BIGINT\n"
                                 + ") WITH (\n"
                                 + " 'connector' = 'values',\n"
-                                + " 'bounded' = 'true'\n"
+                                + " 'bounded' = 'true',\n"
+                                + " 'enable-aggregate-push-down' = 'false'\n"
                                 + ")");
     }
 
@@ -157,7 +154,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                         "HashJoin,NestedLoopJoin,HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "ONE_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("ONE_PHASE"));
         util.verifyExecPlan(
                 "WITH r AS (SELECT * FROM T1, T2 WHERE a1 = a2 AND c1 LIKE 'He%')\n"
                         + "SELECT sum(b1) FROM r group by a1");
@@ -172,7 +171,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                         "HashJoin,NestedLoopJoin,HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "TWO_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("TWO_PHASE"));
         util.verifyExecPlan(
                 "WITH r AS (SELECT * FROM T1, T2 WHERE a1 = a2 AND c1 LIKE 'He%')\n"
                         + "SELECT sum(b1) FROM r group by a1");
@@ -187,7 +188,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                         "HashJoin,NestedLoopJoin,HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "AUTO");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("AUTO"));
         util.verifyExecPlan(
                 "WITH r AS (SELECT * FROM T1, T2 WHERE a1 = a2 AND c1 LIKE 'He%')\n"
                         + "SELECT sum(b1) FROM r group by a1");
@@ -200,7 +203,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                 .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "SortAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "ONE_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("ONE_PHASE"));
         // TODO the shuffle between join and agg can be removed
         util.verifyExecPlan(
                 "WITH r AS (SELECT * FROM T1 FULL OUTER JOIN T2 ON true)\n"
@@ -214,7 +219,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                 .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "ONE_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("ONE_PHASE"));
         // TODO the shuffle between join and agg can be removed
         util.verifyExecPlan(
                 "WITH r AS (SELECT * FROM T1 FULL OUTER JOIN T2 ON true)\n"
@@ -254,7 +261,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                 .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "ONE_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("ONE_PHASE"));
         util.verifyExecPlan(
                 "SELECT * FROM (\n"
                         + "                SELECT a, b, RANK() OVER(PARTITION BY a ORDER BY b) rk FROM (\n"
@@ -270,7 +279,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                 .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "TWO_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("TWO_PHASE"));
         util.verifyExecPlan(
                 "SELECT * FROM (\n"
                         + "                SELECT a, b, RANK() OVER(PARTITION BY a ORDER BY b) rk FROM (\n"
@@ -286,7 +297,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                 .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "ONE_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("ONE_PHASE"));
         util.verifyExecPlan(
                 "SELECT * FROM (\n"
                         + "                SELECT b, RANK() OVER(ORDER BY b) rk FROM (\n"
@@ -302,7 +315,9 @@ class ForwardHashExchangeTest extends TableTestBase {
                 .set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
         util.tableEnv()
                 .getConfig()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "TWO_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.valueOf("TWO_PHASE"));
         util.verifyExecPlan(
                 "SELECT * FROM (\n"
                         + "                SELECT b, RANK() OVER(ORDER BY b) rk FROM (\n"

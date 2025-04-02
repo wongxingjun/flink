@@ -17,9 +17,8 @@
  */
 package org.apache.flink.table.planner.plan.batch.sql
 
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
-import org.apache.flink.table.planner.plan.optimize.RelNodeBlockPlanBuilder
+import org.apache.flink.table.api.config.OptimizerConfigOptions
 import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.flink.table.types.logical.{BigIntType, IntType}
 
@@ -65,7 +64,7 @@ class TableSinkTest extends TableTestBase {
                      |""".stripMargin)
 
     util.tableEnv.getConfig.set(
-      RelNodeBlockPlanBuilder.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED,
+      OptimizerConfigOptions.TABLE_OPTIMIZER_REUSE_OPTIMIZE_BLOCK_WITH_DIGEST_ENABLED,
       Boolean.box(true))
     val table1 = util.tableEnv.sqlQuery("SELECT SUM(a) AS sum_a, c FROM MyTable GROUP BY c")
     util.tableEnv.createTemporaryView("table1", table1)
@@ -144,35 +143,16 @@ class TableSinkTest extends TableTestBase {
   }
 
   @Test
-  def testManagedTableSinkWithDisableCheckpointing(): Unit = {
-    util.addTable(s"""
-                     |CREATE TABLE sink (
-                     |  `a` INT,
-                     |  `b` BIGINT,
-                     |  `c` STRING
-                     |) WITH(
-                     |)
-                     |""".stripMargin)
-    val stmtSet = util.tableEnv.createStatementSet()
-    stmtSet.addInsertSql("INSERT INTO sink SELECT * FROM MyTable")
-
-    util.verifyAstPlan(stmtSet)
-  }
-
-  @Test
-  def testManagedTableSinkWithEnableCheckpointing(): Unit = {
-    util.getStreamEnv.enableCheckpointing(10)
-    util.addTable(s"""
-                     |CREATE TABLE sink (
-                     |  `a` INT,
-                     |  `b` BIGINT,
-                     |  `c` STRING
-                     |) WITH(
-                     |)
-                     |""".stripMargin)
-    val stmtSet = util.tableEnv.createStatementSet()
-    stmtSet.addInsertSql("INSERT INTO sink SELECT * FROM MyTable")
-
-    util.verifyAstPlan(stmtSet)
+  def testCreateTableAsSelectWithOrderKeyNotProjected(): Unit = {
+    util.verifyExplainInsert(s"""
+                                |create table MyCtasSource
+                                |WITH (
+                                |   'connector' = 'values'
+                                |) as select b, c, d from
+                                |  (values
+                                |    (1, 1, 2, 'd1')
+                                |  ) as V(a, b, c, d)
+                                |  order by a
+                                |""".stripMargin)
   }
 }

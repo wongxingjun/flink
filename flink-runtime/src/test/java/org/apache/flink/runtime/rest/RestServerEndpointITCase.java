@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.rest;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.configuration.SecurityOptions;
@@ -95,6 +94,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -121,7 +121,7 @@ public class RestServerEndpointITCase {
     private static final JobID PATH_JOB_ID = new JobID();
     private static final JobID QUERY_JOB_ID = new JobID();
     private static final String JOB_ID_KEY = "jobid";
-    private static final Time timeout = Time.seconds(10L);
+    private static final Duration timeout = Duration.ofSeconds(10L);
     private static final int TEST_REST_MAX_CONTENT_LENGTH = 4096;
 
     @RegisterExtension
@@ -262,7 +262,7 @@ public class RestServerEndpointITCase {
         }
 
         if (serverEndpoint != null) {
-            serverEndpoint.closeAsync().get(timeout.getSize(), timeout.getUnit());
+            serverEndpoint.closeAsync().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             serverEndpoint = null;
         }
     }
@@ -374,30 +374,43 @@ public class RestServerEndpointITCase {
     @TestTemplate
     void testFileUpload() throws Exception {
         final String boundary = generateMultiPartBoundary();
-        final String crlf = "\r\n";
         final String uploadedContent = "hello";
-        final HttpURLConnection connection = openHttpConnectionForUpload(boundary);
+        final HttpURLConnection connection =
+                openHttpConnectionForUpload(
+                        boundary, TestUploadHeaders.INSTANCE.getTargetRestEndpointURL());
 
-        try (OutputStream output = connection.getOutputStream();
-                PrintWriter writer =
-                        new PrintWriter(
-                                new OutputStreamWriter(output, StandardCharsets.UTF_8), true)) {
-
-            writer.append("--" + boundary).append(crlf);
-            writer.append("Content-Disposition: form-data; name=\"foo\"; filename=\"bar\"")
-                    .append(crlf);
-            writer.append("Content-Type: plain/text; charset=utf8").append(crlf);
-            writer.append(crlf).flush();
-            output.write(uploadedContent.getBytes(StandardCharsets.UTF_8));
-            output.flush();
-            writer.append(crlf).flush();
-            writer.append("--" + boundary + "--").append(crlf).flush();
-        }
+        uploadFile(connection, uploadedContent, boundary);
 
         assertThat(connection.getResponseCode()).isEqualTo(200);
         final byte[] lastUploadedFileContents = testUploadHandler.getLastUploadedFileContents();
         assertThat(uploadedContent)
                 .isEqualTo(new String(lastUploadedFileContents, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Tests that when a handler is marked as not accepting file uploads we (1) return an error and
+     * (2) don't upload the file to the upload directory.
+     */
+    @TestTemplate
+    void testFileUploadLimitedToAllowedUris() throws Exception {
+        final String boundary = generateMultiPartBoundary();
+        final File uploadDir = new File(tempFolder.toString(), "flink-web-upload");
+        final File[] preUploadFiles = uploadDir.listFiles();
+
+        // We need a handler that does not accept file uploads for this test
+        assertThat(TestVersionHeaders.INSTANCE.acceptsFileUploads()).isFalse();
+        String uri = TestVersionHeaders.INSTANCE.getTargetRestEndpointURL();
+
+        final HttpURLConnection connection = openHttpConnectionForUpload(boundary, uri);
+
+        uploadFile(connection, "hello", boundary);
+
+        assertThat(connection.getResponseCode()).isEqualTo(400);
+
+        // This is the important check. We don't want additional files when the handler does
+        // not accept file uploads.
+        final File[] postUploadFiles = uploadDir.listFiles();
+        assertThat(postUploadFiles).isEqualTo(preUploadFiles);
     }
 
     /**
@@ -408,7 +421,9 @@ public class RestServerEndpointITCase {
     void testMultiPartFormDataWithoutFileUpload() throws Exception {
         final String boundary = generateMultiPartBoundary();
         final String crlf = "\r\n";
-        final HttpURLConnection connection = openHttpConnectionForUpload(boundary);
+        final HttpURLConnection connection =
+                openHttpConnectionForUpload(
+                        boundary, TestUploadHeaders.INSTANCE.getTargetRestEndpointURL());
 
         try (OutputStream output = connection.getOutputStream();
                 PrintWriter writer =
@@ -589,8 +604,8 @@ public class RestServerEndpointITCase {
         // Finish the in-flight request.
         sync.releaseBlocker();
 
-        request.get(timeout.getSize(), timeout.getUnit());
-        closeRestServerEndpointFuture.get(timeout.getSize(), timeout.getUnit());
+        request.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        closeRestServerEndpointFuture.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     /** Tests that new requests are ignored after a handler is shut down. */
@@ -614,7 +629,7 @@ public class RestServerEndpointITCase {
                 sendRequestToTestHandler(new TestRequest(1));
 
         try {
-            request.get(timeout.getSize(), timeout.getUnit());
+            request.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             fail("Expected a ConnectionClosedException");
         } catch (ExecutionException ee) {
             if (!ExceptionUtils.findThrowable(ee, ConnectionClosedException.class).isPresent()) {
@@ -715,11 +730,11 @@ public class RestServerEndpointITCase {
         return new File(resource.getFile());
     }
 
-    private HttpURLConnection openHttpConnectionForUpload(final String boundary)
-            throws IOException {
+    private HttpURLConnection openHttpConnectionForUpload(
+            final String boundary, final String uploadUri) throws IOException {
         final HttpURLConnection connection =
                 (HttpURLConnection)
-                        new URL(serverEndpoint.getRestBaseUrl() + "/upload").openConnection();
+                        new URL(serverEndpoint.getRestBaseUrl() + uploadUri).openConnection();
         connection.setDoOutput(true);
         connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         return connection;
@@ -737,6 +752,26 @@ public class RestServerEndpointITCase {
         return sb.toString();
     }
 
+    private static void uploadFile(HttpURLConnection connection, String content, String boundary)
+            throws IOException {
+        final String crlf = "\r\n";
+        try (OutputStream output = connection.getOutputStream();
+                PrintWriter writer =
+                        new PrintWriter(
+                                new OutputStreamWriter(output, StandardCharsets.UTF_8), true)) {
+
+            writer.append("--" + boundary).append(crlf);
+            writer.append("Content-Disposition: form-data; name=\"foo\"; filename=\"bar\"")
+                    .append(crlf);
+            writer.append("Content-Type: plain/text; charset=utf8").append(crlf);
+            writer.append(crlf).flush();
+            output.write(content.getBytes(StandardCharsets.UTF_8));
+            output.flush();
+            writer.append(crlf).flush();
+            writer.append("--" + boundary + "--").append(crlf).flush();
+        }
+    }
+
     private static class TestHandler
             extends AbstractRestHandler<RestfulGateway, TestRequest, TestResponse, TestParameters> {
 
@@ -746,7 +781,7 @@ public class RestServerEndpointITCase {
 
         private Function<Integer, CompletableFuture<TestResponse>> handlerBody;
 
-        TestHandler(GatewayRetriever<RestfulGateway> leaderRetriever, Time timeout) {
+        TestHandler(GatewayRetriever<RestfulGateway> leaderRetriever, Duration timeout) {
             super(leaderRetriever, timeout, Collections.emptyMap(), new TestHeaders());
         }
 
@@ -962,7 +997,7 @@ public class RestServerEndpointITCase {
 
         private TestUploadHandler(
                 final GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-                final Time timeout) {
+                final Duration timeout) {
             super(leaderRetriever, timeout, Collections.emptyMap(), TestUploadHeaders.INSTANCE);
         }
 
@@ -1008,7 +1043,7 @@ public class RestServerEndpointITCase {
 
         TestVersionHandler(
                 final GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-                final Time timeout) {
+                final Duration timeout) {
             super(leaderRetriever, timeout, Collections.emptyMap(), TestVersionHeaders.INSTANCE);
         }
 

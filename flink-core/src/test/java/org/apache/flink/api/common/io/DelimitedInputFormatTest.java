@@ -53,13 +53,13 @@ class DelimitedInputFormatTest {
     // --------------------------------------------------------------------------------------------
 
     @BeforeEach
-    public void setup() {
+    void setup() {
         format = new MyTextInputFormat();
         this.format.setFilePath(new Path("file:///some/file/that/will/not/be/read"));
     }
 
     @AfterEach
-    public void shutdown() throws Exception {
+    void shutdown() throws Exception {
         if (this.format != null) {
             this.format.close();
         }
@@ -609,11 +609,6 @@ class DelimitedInputFormatTest {
         @Override
         public String readRecord(String reuse, byte[] bytes, int offset, int numBytes) {
             return new String(bytes, offset, numBytes, ConfigConstants.DEFAULT_CHARSET);
-        }
-
-        @Override
-        public boolean supportsMultiPaths() {
-            return true;
         }
     }
 

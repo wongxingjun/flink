@@ -65,6 +65,7 @@ import org.junit.rules.TemporaryFolder;
 import javax.annotation.Nonnull;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -916,8 +917,8 @@ public class TaskTest extends TestLogger {
         final TaskManagerActions taskManagerActions = new ProhibitFatalErrorTaskManagerActions();
 
         final Configuration config = new Configuration();
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_INTERVAL.key(), 5);
-        config.setLong(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT.key(), 60 * 1000);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(60 * 1000));
 
         final Task task =
                 createTaskBuilder()
@@ -935,6 +936,36 @@ public class TaskTest extends TestLogger {
     }
 
     /**
+     * Tests that interrupt happens via watch dog if canceller is stuck in cancel. Task cancellation
+     * blocks the task canceller. Interrupt after cancel via cancellation watch dog.
+     */
+    @Test
+    public void testWatchDogThrowFatalErrorOnTaskStuckInInstantiation() throws Exception {
+        final InterruptOnFatalErrorTaskManagerActions taskManagerActions =
+                new InterruptOnFatalErrorTaskManagerActions();
+
+        final Configuration config = new Configuration();
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(1000L));
+
+        final Task task =
+                createTaskBuilder()
+                        .setInvokable(InvokableBlockingInInstantiation.class)
+                        .setTaskManagerConfig(config)
+                        .setTaskManagerActions(taskManagerActions)
+                        .build(Executors.directExecutor());
+        taskManagerActions.setExecutingThread(task.getExecutingThread());
+
+        task.startTaskThread();
+        InvokableBlockingInInstantiation.await();
+        task.cancelExecution();
+        task.getExecutingThread().join();
+
+        // Expect fatal error to recover
+        assertTrue(taskManagerActions.hasFatalError());
+    }
+
+    /**
      * The 'invoke' method holds a lock (trigger awaitLatch after acquisition) and cancel cannot
      * complete because it also tries to acquire the same lock. This is resolved by the watch dog,
      * no fatal error.
@@ -944,8 +975,8 @@ public class TaskTest extends TestLogger {
         final TaskManagerActions taskManagerActions = new ProhibitFatalErrorTaskManagerActions();
 
         final Configuration config = new Configuration();
-        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, 5L);
-        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 1000L);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5L));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(1000L));
 
         final Task task =
                 createTaskBuilder()
@@ -976,7 +1007,7 @@ public class TaskTest extends TestLogger {
                         .build();
 
         final Configuration config = new Configuration();
-        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 10L);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(10L));
 
         final Task task =
                 createTaskBuilder()
@@ -1014,8 +1045,8 @@ public class TaskTest extends TestLogger {
                         .build();
 
         final Configuration config = new Configuration();
-        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, 5L);
-        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, 50L);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(5L));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(50L));
 
         // We need to remember the original object since all changes in  `startTaskThread` applies
         // to it rather than to spy object.
@@ -1054,8 +1085,8 @@ public class TaskTest extends TestLogger {
         long timeout = interval + 19292;
 
         final Configuration config = new Configuration();
-        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, interval);
-        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, timeout);
+        config.set(TaskManagerOptions.TASK_CANCELLATION_INTERVAL, Duration.ofMillis(interval));
+        config.set(TaskManagerOptions.TASK_CANCELLATION_TIMEOUT, Duration.ofMillis(timeout));
 
         final ExecutionConfig executionConfig = new ExecutionConfig();
         executionConfig.setTaskCancellationInterval(interval + 1337);
@@ -1280,6 +1311,26 @@ public class TaskTest extends TestLogger {
         @Override
         public void notifyFatalError(String message, Throwable cause) {
             throw new RuntimeException("Unexpected FatalError notification");
+        }
+    }
+
+    /** Customized TaskManagerActions that interrupts task thread on fatal error. */
+    private static class InterruptOnFatalErrorTaskManagerActions extends NoOpTaskManagerActions {
+        private boolean fatalError = false;
+        private Thread executingThread;
+
+        @Override
+        public void notifyFatalError(String message, Throwable cause) {
+            fatalError = true;
+            executingThread.interrupt();
+        }
+
+        public boolean hasFatalError() {
+            return fatalError;
+        }
+
+        public void setExecutingThread(Thread executingThread) {
+            this.executingThread = executingThread;
         }
     }
 
@@ -1568,6 +1619,30 @@ public class TaskTest extends TestLogger {
 
         @Override
         public void cancel() {}
+    }
+
+    /** {@link AbstractInvokable} which blocks in instantiation. */
+    public static final class InvokableBlockingInInstantiation extends AbstractInvokable {
+        /** Declared static, otherwise there's no way to access it when blocking in constructor. */
+        static final OneShotLatch AWAIT_LATCH = new OneShotLatch();
+
+        public InvokableBlockingInInstantiation(Environment environment)
+                throws InterruptedException {
+            super(environment);
+            while (true) {
+                synchronized (this) {
+                    AWAIT_LATCH.trigger();
+                    wait();
+                }
+            }
+        }
+
+        @Override
+        public void invoke() {}
+
+        static void await() throws InterruptedException {
+            AWAIT_LATCH.await();
+        }
     }
 
     // ------------------------------------------------------------------------

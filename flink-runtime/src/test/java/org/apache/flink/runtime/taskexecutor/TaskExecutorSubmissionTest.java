@@ -20,7 +20,6 @@ package org.apache.flink.runtime.taskexecutor;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
@@ -41,6 +40,7 @@ import org.apache.flink.runtime.io.network.partition.PartitionNotFoundException;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionType;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.IntermediateResultPartitionID;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
 import org.apache.flink.runtime.jobmaster.TestingAbstractInvokables;
@@ -93,7 +93,7 @@ class TaskExecutorSubmissionTest {
     private static final TestExecutorExtension<ScheduledExecutorService> EXECUTOR_EXTENSION =
             TestingUtils.defaultExecutorExtension();
 
-    private static final Time timeout = Time.milliseconds(10000L);
+    private static final Duration timeout = Duration.ofMillis(10000L);
 
     private JobID jobId = new JobID();
 
@@ -381,7 +381,7 @@ class TaskExecutorSubmissionTest {
             taskFinishedFuture.get();
 
             Collection<PartitionWithMetrics> partitionWithMetricsCollection =
-                    tmGateway.getPartitionWithMetrics(jobId).get();
+                    tmGateway.getAndRetainPartitionWithMetrics(jobId).get();
             assertThat(partitionWithMetricsCollection.size()).isOne();
             PartitionWithMetrics partitionWithMetrics =
                     partitionWithMetricsCollection.iterator().next();
@@ -736,6 +736,7 @@ class TaskExecutorSubmissionTest {
         JobInformation jobInformation =
                 new JobInformation(
                         jobId,
+                        JobType.STREAMING,
                         jobName,
                         serializedExecutionConfig,
                         jobConfiguration,

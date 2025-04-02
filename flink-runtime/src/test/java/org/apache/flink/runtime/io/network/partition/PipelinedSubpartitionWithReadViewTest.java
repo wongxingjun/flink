@@ -31,7 +31,6 @@ import org.apache.flink.runtime.io.network.api.serialization.EventSerializer;
 import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.buffer.BufferBuilder;
 import org.apache.flink.runtime.io.network.buffer.BufferConsumer;
-import org.apache.flink.runtime.io.network.buffer.NetworkBufferPool;
 import org.apache.flink.runtime.state.CheckpointStorageLocationReference;
 import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
 import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
@@ -82,7 +81,7 @@ class PipelinedSubpartitionWithReadViewTest {
     @BeforeEach
     void before() throws IOException {
         setup(ResultPartitionType.PIPELINED);
-        subpartition = new PipelinedSubpartition(0, 2, resultPartition);
+        subpartition = new PipelinedSubpartition(0, 2, Integer.MAX_VALUE, resultPartition);
         availablityListener = new AwaitableBufferAvailablityListener();
         readView = subpartition.createReadView(availablityListener);
     }
@@ -671,12 +670,10 @@ class PipelinedSubpartitionWithReadViewTest {
     }
 
     void setup(ResultPartitionType resultPartitionType) throws IOException {
-        NetworkBufferPool networkBufferPool = new NetworkBufferPool(4, BUFFER_SIZE);
         resultPartition =
                 PartitionTestUtils.createPartition(
                         resultPartitionType,
                         NoOpFileChannelManager.INSTANCE,
-                        networkBufferPool,
                         compressionEnabled,
                         BUFFER_SIZE);
         resultPartition.setup();
